@@ -80,6 +80,7 @@ type Props = {
   handleShareSession: (session: Session) => void;
   copiedSessionId: string | null;
   handleCopyShareUrl: (url: string, sessionId: string) => void;
+  handleCopySessionId: (sessionId: string) => void;
   handleUnshareSession: (sessionId: string) => void;
   openSidebarMenuKey: string | null;
   setOpenSidebarMenuKey: (key: string | null) => void;
@@ -91,6 +92,7 @@ type Props = {
   createFolderAndStartRename: (scopeKey: string, parentId?: string | null) => { id: string } | null;
   openContextPanelTab: (directory: string, options: { mode: 'chat'; dedupeKey: string; label: string; sessionTitleFallback?: string; readOnly?: boolean }) => void;
   handleDeleteSession: (session: Session, source?: { archivedBucket?: boolean; hardDelete?: boolean; skipConfirm?: boolean }) => void;
+  handleRestoreSession: (session: Session) => void;
   mobileVariant: boolean;
   alwaysShowActions: boolean;
   renderSessionNode: (
@@ -274,6 +276,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
     handleShareSession,
     copiedSessionId,
     handleCopyShareUrl,
+    handleCopySessionId,
     handleUnshareSession,
     openSidebarMenuKey,
     setOpenSidebarMenuKey,
@@ -285,6 +288,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
     createFolderAndStartRename,
     openContextPanelTab,
     handleDeleteSession,
+    handleRestoreSession,
     mobileVariant,
     alwaysShowActions,
     renderSessionNode,
@@ -478,7 +482,8 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
     let skipped = 0;
     for (const child of children) {
       try {
-        await sync.ensureSessionRenderable(child.session.id, false, sessionDirectory ?? undefined);
+        if (!sessionDirectory) throw new Error('Session directory is required for export');
+        await sync.loadCompleteHistory(child.session.id, sessionDirectory);
         const childRecords = buildSessionMessageRecordsSnapshot(directoryStore.getState(), child.session.id).list;
         const childTitle = child.session.title || t('sessions.sidebar.session.export.untitledSubagent');
         const childAgent = (child.session as Session & { agent?: string }).agent;
@@ -510,7 +515,12 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
       return;
     }
 
-    await sync.ensureSessionRenderable(session.id, false, sessionDirectory);
+    try {
+      await sync.loadCompleteHistory(session.id, sessionDirectory);
+    } catch {
+      toast.error(t('sessions.sidebar.session.export.failedLoadHistory'));
+      return;
+    }
 
     const records = buildSessionMessageRecordsSnapshot(directoryStore.getState(), session.id).list;
     if (records.length === 0) {
@@ -900,6 +910,10 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
         <Icon name="pencil-ai" className="mr-1 h-4 w-4" />
         {t('sessions.sidebar.session.menu.rename')}
       </Item>
+      <Item onClick={() => handleCopySessionId(session.id)} className="[&>svg]:mr-1">
+        <Icon name="file-copy" className="mr-1 h-4 w-4" />
+        {t('sessions.sidebar.session.menu.copyId')}
+      </Item>
       <Item onClick={() => sessionDirectory && togglePinnedSession({ directory: sessionDirectory, sessionId: session.id })} className="[&>svg]:mr-1">
         {isPinnedSession ? <Icon name="unpin" className="mr-1 h-4 w-4" /> : <Icon name="pushpin" className="mr-1 h-4 w-4" />}
         {isPinnedSession ? t('sessions.sidebar.session.menu.unpin') : t('sessions.sidebar.session.menu.pin')}
@@ -1080,6 +1094,12 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
           {t('sessions.sidebar.bulkActions.archive')}
         </Item>
       ) : null}
+      {archivedBucket ? (
+        <Item className="[&>svg]:mr-1" onClick={() => handleRestoreSession(session)}>
+          <Icon name="inbox-unarchive" className="mr-1 h-4 w-4" />
+          {t('sessions.sidebar.bulkActions.restore')}
+        </Item>
+      ) : null}
       <Item className="text-destructive focus:text-destructive [&>svg]:mr-1" onClick={() => handleDeleteSession(session, { archivedBucket, hardDelete: true })}>
         <Icon name="delete-bin" className="mr-1 h-4 w-4" />
         {t('sessions.sidebar.bulkActions.delete')}
@@ -1192,7 +1212,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
                       handleSessionDoubleClick(session.id, sessionTitle);
                     }}
                     className={cn(
-	                      'flex min-w-0 flex-1 cursor-pointer flex-col gap-0 overflow-hidden rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 text-foreground select-none transition-[padding]',
+	                      'flex min-w-0 flex-1 cursor-pointer flex-col gap-0 overflow-hidden text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 text-foreground select-none transition-[padding]',
 	                      isTouchPressed && 'bg-interactive-hover/70',
                       alwaysShowActions
                         ? (isVSCode ? revealPaddingClass : alwaysActionPaddingClass)
@@ -1585,6 +1605,7 @@ const areSessionNodeItemPropsEqual = (prev: Props, next: Props): boolean => {
     && prev.togglePinnedSession === next.togglePinnedSession
     && prev.handleShareSession === next.handleShareSession
     && prev.handleCopyShareUrl === next.handleCopyShareUrl
+    && prev.handleCopySessionId === next.handleCopySessionId
     && prev.handleUnshareSession === next.handleUnshareSession
     && prev.setOpenSidebarMenuKey === next.setOpenSidebarMenuKey
     && prev.getFoldersForScope === next.getFoldersForScope
@@ -1594,6 +1615,7 @@ const areSessionNodeItemPropsEqual = (prev: Props, next: Props): boolean => {
     && prev.createFolderAndStartRename === next.createFolderAndStartRename
     && prev.openContextPanelTab === next.openContextPanelTab
     && prev.handleDeleteSession === next.handleDeleteSession
+    && prev.handleRestoreSession === next.handleRestoreSession
     && prev.renderSessionNode === next.renderSessionNode;
 };
 
