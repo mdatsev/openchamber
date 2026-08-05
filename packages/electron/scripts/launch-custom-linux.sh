@@ -25,4 +25,4 @@ printf 'Starting OpenChamber CUSTOM from %s\n' "$repo_root"
 printf 'Writing this run to %s\n\n' "$log_file"
 
 cd "$repo_root"
-exec "$bun_bin" run electron:dev
+exec "$bun_bin" run electron:dev:bundled

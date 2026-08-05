@@ -134,7 +134,7 @@ export PATH="\$(dirname -- "\$bun_bin"):\$PATH"
 export OPENCHAMBER_ELECTRON_BIN="\$macos_dir/openchamber-custom-bin"
 
 cd "\$repo_root"
-exec "\$bun_bin" run electron:dev
+exec "\$bun_bin" run electron:dev:bundled
 EOF
   chmod +x "$wrapper" "$custom_binary"
 

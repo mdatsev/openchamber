@@ -15,11 +15,11 @@
 | Session folders | `~/.config/openchamber/sessions-directories.json` | Yes, with browser mirrors |
 | Electron browser profile | `~/.config/OpenChamber` or `~/.config/OpenChamber Dev` | No |
 
-The source runtime deliberately keeps the `OpenChamber Dev` Electron profile. This isolates Chromium local storage, cookies, window state, service workers, and embedded-browser data while leaving sessions and canonical server settings shared.
+The source runtime deliberately keeps the `OpenChamber Dev` Electron profile. This isolates Chromium local storage, cookies, window state, service workers, and embedded-browser data while leaving sessions and canonical server settings shared. The installed custom launcher uses built UI assets without HMR; terminal development may still opt into HMR with `bun run electron:dev`.
 
 ## Browser-Local State
 
-Browser storage is scoped by both Electron profile and page origin. The packaged UI uses `openchamber-ui://app`; HMR source runs use `http://127.0.0.1:<port>`. A changed HMR port creates another browser-storage namespace.
+Browser storage is scoped by both Electron profile and page origin. Packaged and bundled-UI source runs use `openchamber-ui://app`; HMR source runs use `http://127.0.0.1:<port>`. The separate packaged/source Electron profiles still isolate those applications even when their page origin matches. A changed HMR port creates another browser-storage namespace.
 
 Important durable key families include:
 
