@@ -15,7 +15,7 @@
 | Session folders | `~/.config/openchamber/sessions-directories.json` | Yes, with browser mirrors |
 | Electron browser profile | `~/.config/OpenChamber` or `~/.config/OpenChamber Dev` | No |
 
-The source runtime deliberately keeps the `OpenChamber Dev` Electron profile. This isolates Chromium local storage, cookies, window state, service workers, and embedded-browser data while leaving sessions and canonical server settings shared. The installed custom launcher uses built UI assets without HMR; terminal development may still opt into HMR with `bun run electron:dev`.
+The source runtime deliberately keeps the `OpenChamber Dev` Electron profile. This isolates Chromium local storage, cookies, window state, service workers, and embedded-browser data while leaving sessions and canonical server settings shared. The installed custom launcher uses content-hash-cached built UI assets without HMR; terminal development may still opt into HMR with `bun run electron:dev`.
 
 ## Browser-Local State
 

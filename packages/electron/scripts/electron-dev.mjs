@@ -198,6 +198,7 @@ async function stopChildTree(child) {
 
 async function main() {
   const useBundledUi = process.env.OPENCHAMBER_ELECTRON_USE_BUNDLED_UI === '1';
+  const cacheBundledUi = process.env.OPENCHAMBER_ELECTRON_CACHE_BUNDLED_UI === '1';
   let devServer = null;
   let hmrApiPort = '';
   let hmrUiPort = '';
@@ -205,7 +206,13 @@ async function main() {
   ensureElectronInstalled();
 
   if (useBundledUi) {
-    await runProcess('bun', ['run', '--cwd', 'packages/electron', 'build:web-assets']);
+    await runProcess('bun', [
+      'run',
+      '--cwd',
+      'packages/electron',
+      'build:web-assets',
+      ...(cacheBundledUi ? ['--cache'] : []),
+    ]);
   } else {
     hmrApiPort = String(await findAvailablePort(preferredHmrApiPort));
     hmrUiPort = String(await findAvailablePort(preferredHmrUiPort));

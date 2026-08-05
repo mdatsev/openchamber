@@ -20,6 +20,7 @@ if [[ -z "$bun_bin" ]]; then
 fi
 
 export PATH="$(dirname -- "$bun_bin"):$PATH"
+export OPENCHAMBER_ELECTRON_CACHE_BUNDLED_UI=1
 
 printf 'Starting OpenChamber CUSTOM from %s\n' "$repo_root"
 printf 'Writing this run to %s\n\n' "$log_file"
