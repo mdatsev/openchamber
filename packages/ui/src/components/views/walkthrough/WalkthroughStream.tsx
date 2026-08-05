@@ -14,6 +14,21 @@ import { stopElementId } from './stopElementId';
 interface WalkthroughStreamProps {
   view: WalkthroughView;
   activeStopId: string | null;
+  activeSearchMatch: {
+    id: string;
+    stopId: string | null;
+    hunkId: string;
+    path: string;
+    lineNumber: number;
+    side: 'deletions' | 'additions';
+  } | null;
+  searchMatchesByHunkId: ReadonlyMap<string, ReadonlyArray<{
+    id: string;
+    lineNumber: number;
+    side: 'deletions' | 'additions';
+    matchStart: number;
+    matchLength: number;
+  }>>;
   scrollToStopId: string | null;
   onActiveStopChange: (stopId: string) => void;
   onScrollHandled: () => void;
@@ -92,14 +107,22 @@ const FileHeader = ({ path }: { path: string }) => (
 
 const HunkRuns = ({
   hunks,
+  activeSearchMatch,
+  searchMatchesByHunkId,
   renderSideBySide,
   wrapLines,
 }: {
   hunks: WalkthroughHunk[];
+  activeSearchMatch: WalkthroughStreamProps['activeSearchMatch'];
+  searchMatchesByHunkId: WalkthroughStreamProps['searchMatchesByHunkId'];
   renderSideBySide: boolean;
   wrapLines: boolean;
 }) => {
   const runs = useMemo(() => groupHunksByFile(hunks), [hunks]);
+  const runSearchMatches = useMemo(
+    () => runs.map((run) => run.hunks.flatMap((hunk) => searchMatchesByHunkId.get(hunk.id) ?? [])),
+    [runs, searchMatchesByHunkId]
+  );
 
   return (
     <>
@@ -109,6 +132,11 @@ const HunkRuns = ({
           <WalkthroughHunkRun
             path={run.path}
             hunks={run.hunks}
+            searchMatches={runSearchMatches[index]}
+            activeSearchMatchId={activeSearchMatch?.path === run.path
+              && run.hunks.some((hunk) => hunk.id === activeSearchMatch.hunkId)
+              ? activeSearchMatch.id
+              : null}
             renderSideBySide={renderSideBySide}
             wrapLines={wrapLines}
           />
@@ -126,6 +154,8 @@ const HunkRuns = ({
 export const WalkthroughStream = memo(function WalkthroughStream({
   view,
   activeStopId,
+  activeSearchMatch,
+  searchMatchesByHunkId,
   scrollToStopId,
   onActiveStopChange,
   onScrollHandled,
@@ -135,6 +165,10 @@ export const WalkthroughStream = memo(function WalkthroughStream({
   const { t } = useI18n();
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [uncoveredOpen, setUncoveredOpen] = useState(false);
+
+  useEffect(() => {
+    if (activeSearchMatch?.stopId === null) setUncoveredOpen(true);
+  }, [activeSearchMatch]);
 
   // Set while a click-driven jump is in flight. Without it the observer reports
   // every stop the viewport passes over on the way to the target and the
@@ -214,8 +248,6 @@ export const WalkthroughStream = memo(function WalkthroughStream({
     return () => observer.disconnect();
   }, [handleIntersection, view.stops]);
 
-  const uncoveredRuns = useMemo(() => groupHunksByFile(view.uncoveredHunks), [view.uncoveredHunks]);
-
   return (
     <div
       ref={scrollRef}
@@ -237,6 +269,8 @@ export const WalkthroughStream = memo(function WalkthroughStream({
           {stopView.hunks.length > 0 ? (
             <HunkRuns
               hunks={stopView.hunks}
+              activeSearchMatch={activeSearchMatch?.stopId === stopView.stop.id ? activeSearchMatch : null}
+              searchMatchesByHunkId={searchMatchesByHunkId}
               renderSideBySide={renderSideBySide}
               wrapLines={wrapLines}
             />
@@ -267,18 +301,15 @@ export const WalkthroughStream = memo(function WalkthroughStream({
               {t('walkthrough.uncovered.description')}
             </p>
           )}
-          {uncoveredOpen
-            && uncoveredRuns.map((run, index) => (
-              <div key={`${run.path}-${index}`}>
-                <FileHeader path={run.path} />
-                <WalkthroughHunkRun
-                  path={run.path}
-                  hunks={run.hunks}
-                  renderSideBySide={renderSideBySide}
-                  wrapLines={wrapLines}
-                />
-              </div>
-            ))}
+          {uncoveredOpen && (
+            <HunkRuns
+              hunks={view.uncoveredHunks}
+              activeSearchMatch={activeSearchMatch?.stopId === null ? activeSearchMatch : null}
+              searchMatchesByHunkId={searchMatchesByHunkId}
+              renderSideBySide={renderSideBySide}
+              wrapLines={wrapLines}
+            />
+          )}
         </section>
       )}
     </div>

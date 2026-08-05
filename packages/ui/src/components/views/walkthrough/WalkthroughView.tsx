@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@/components/icon/Icon';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -14,7 +15,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { useI18n, type Locale } from '@/lib/i18n';
 import { openExternalUrl } from '@/lib/url';
 import { buildWalkthroughView } from '@/lib/walkthrough/model';
-import type { WalkthroughSource, WalkthroughWorkingTreeScope } from '@/lib/walkthrough/types';
+import type { WalkthroughHunk, WalkthroughSource, WalkthroughWorkingTreeScope } from '@/lib/walkthrough/types';
 import { ModelSelector } from '@/components/sections/agents/ModelSelector';
 import { deriveBaseBranch } from '@/components/views/git/baseBranch';
 import { runtimeFetch } from '@/lib/runtime-fetch';
@@ -72,6 +73,84 @@ const TOC_MAX_FRACTION = 0.5;
 // scale rather than a number picked here. Three heights in one row (28px
 // pickers, 32px action, 36px arrows) read as misalignment, not hierarchy.
 const HEADER_COMPACT_WIDTH = 680;
+
+interface WalkthroughSearchLine {
+  stopId: string | null;
+  hunkId: string;
+  path: string;
+  lineNumber: number;
+  side: 'deletions' | 'additions';
+  text: string;
+}
+
+interface WalkthroughSearchMatch extends Omit<WalkthroughSearchLine, 'text'> {
+  id: string;
+  matchStart: number;
+  matchLength: number;
+}
+
+const HUNK_HEADER_PATTERN = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
+
+const getSearchLinesForHunk = (hunk: WalkthroughHunk, stopId: string | null) => {
+  const lines: WalkthroughSearchLine[] = [];
+  let oldLineNumber = 0;
+  let newLineNumber = 0;
+  let insideHunk = false;
+
+  for (const rawLine of hunk.patch.split('\n')) {
+    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
+    const headerMatch = HUNK_HEADER_PATTERN.exec(line);
+    if (headerMatch) {
+      oldLineNumber = Number.parseInt(headerMatch[1], 10);
+      newLineNumber = Number.parseInt(headerMatch[2], 10);
+      insideHunk = true;
+      continue;
+    }
+    if (!insideHunk) continue;
+
+    const prefix = line[0];
+    if (prefix === '+') {
+      lines.push({
+        stopId,
+        hunkId: hunk.id,
+        path: hunk.path,
+        lineNumber: newLineNumber,
+        side: 'additions',
+        text: line.slice(1),
+      });
+      newLineNumber += 1;
+      continue;
+    }
+    if (prefix === '-') {
+      lines.push({
+        stopId,
+        hunkId: hunk.id,
+        path: hunk.path,
+        lineNumber: oldLineNumber,
+        side: 'deletions',
+        text: line.slice(1),
+      });
+      oldLineNumber += 1;
+      continue;
+    }
+    if (prefix === ' ') {
+      // Context appears on both sides of a split diff. Index it once and reveal
+      // the additions side so one visible line does not produce two results.
+      lines.push({
+        stopId,
+        hunkId: hunk.id,
+        path: hunk.path,
+        lineNumber: newLineNumber,
+        side: 'additions',
+        text: line.slice(1),
+      });
+      oldLineNumber += 1;
+      newLineNumber += 1;
+    }
+  }
+
+  return lines;
+};
 
 export const WalkthroughView = ({ directory }: WalkthroughViewProps) => {
   const { t, locale, locales, label } = useI18n();
@@ -147,6 +226,16 @@ export const WalkthroughView = ({ directory }: WalkthroughViewProps) => {
   const [activeStopId, setActiveStopId] = useState<string | null>(null);
   const [scrollToStopId, setScrollToStopId] = useState<string | null>(null);
   const [visitedStopIds, setVisitedStopIds] = useState<ReadonlySet<string>>(() => new Set());
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [activeSearchIndex, setActiveSearchIndex] = useState(0);
+  const deferredSearchQuery = useDeferredValue(searchQuery);
+
+  const focusSearchInput = useCallback(() => {
+    searchInputRef.current?.focus();
+    searchInputRef.current?.select();
+  }, []);
 
   const diffLayoutPreference = useUIStore((state) => state.diffLayoutPreference);
   const wrapLines = useUIStore((state) => state.diffWrapLines);
@@ -314,6 +403,115 @@ export const WalkthroughView = ({ directory }: WalkthroughViewProps) => {
     },
     [activeStopId, handleSelectStop, view]
   );
+
+  const searchableDiffLines = useMemo(() => {
+    if (!view) return [];
+    const lines: WalkthroughSearchLine[] = [];
+    for (const stopView of view.stops) {
+      for (const hunk of stopView.hunks) {
+        lines.push(...getSearchLinesForHunk(hunk, stopView.stop.id));
+      }
+    }
+    for (const hunk of view.uncoveredHunks) {
+      lines.push(...getSearchLinesForHunk(hunk, null));
+    }
+    return lines;
+  }, [view]);
+
+  const searchMatches = useMemo(() => {
+    const normalizedQuery = deferredSearchQuery.toLowerCase();
+    if (!normalizedQuery) return [];
+
+    const matches: WalkthroughSearchMatch[] = [];
+    for (const line of searchableDiffLines) {
+      const normalizedLine = line.text.toLowerCase();
+      let matchStart = normalizedLine.indexOf(normalizedQuery);
+      while (matchStart !== -1) {
+        matches.push({
+          stopId: line.stopId,
+          hunkId: line.hunkId,
+          path: line.path,
+          lineNumber: line.lineNumber,
+          side: line.side,
+          matchStart,
+          matchLength: deferredSearchQuery.length,
+          id: `${line.hunkId}:${line.side}:${line.lineNumber}:${matchStart}`,
+        });
+        matchStart = normalizedLine.indexOf(normalizedQuery, matchStart + normalizedQuery.length);
+      }
+    }
+    return matches;
+  }, [deferredSearchQuery, searchableDiffLines]);
+
+  const searchMatchesByHunkId = useMemo(() => {
+    const matchesByHunkId = new Map<string, WalkthroughSearchMatch[]>();
+    if (!searchOpen) return matchesByHunkId;
+    for (const match of searchMatches) {
+      const matches = matchesByHunkId.get(match.hunkId);
+      if (matches) {
+        matches.push(match);
+      } else {
+        matchesByHunkId.set(match.hunkId, [match]);
+      }
+    }
+    return matchesByHunkId;
+  }, [searchMatches, searchOpen]);
+
+  useEffect(() => {
+    setActiveSearchIndex(0);
+  }, [deferredSearchQuery, view]);
+
+  const currentSearchIndex = searchMatches.length > 0
+    ? Math.min(activeSearchIndex, searchMatches.length - 1)
+    : -1;
+  const activeSearchMatch = searchOpen && currentSearchIndex >= 0
+    ? searchMatches[currentSearchIndex]
+    : null;
+
+  // Pierre owns the exact line reveal. A stop-level jump here could run later
+  // and move the viewport back to the stop header.
+  useEffect(() => {
+    if (activeSearchMatch?.stopId) handleActiveStopChange(activeSearchMatch.stopId);
+  }, [activeSearchMatch, handleActiveStopChange]);
+
+  useEffect(() => {
+    if (!searchOpen) return;
+    focusSearchInput();
+  }, [focusSearchInput, searchOpen]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (!rootRef.current?.getClientRects().length) return;
+      const openSearch = (event.ctrlKey || event.metaKey)
+        && !event.altKey
+        && !event.shiftKey
+        && event.key.toLowerCase() === 'f';
+      if (openSearch) {
+        if (!view) return;
+        event.preventDefault();
+        if (searchOpen) {
+          focusSearchInput();
+          return;
+        }
+        setSearchOpen(true);
+        return;
+      }
+      if (searchOpen && event.key === 'Escape') {
+        event.preventDefault();
+        setSearchOpen(false);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown, true);
+    return () => window.removeEventListener('keydown', handleKeyDown, true);
+  }, [focusSearchInput, searchOpen, view]);
+
+  const moveSearchResult = useCallback((delta: number) => {
+    if (searchMatches.length === 0) return;
+    setActiveSearchIndex((current) => (
+      (current + delta + searchMatches.length) % searchMatches.length
+    ));
+  }, [searchMatches.length]);
 
   const [sourceMenuOpen, setSourceMenuOpen] = useState(false);
   const [languageMenuOpen, setLanguageMenuOpen] = useState(false);
@@ -535,6 +733,26 @@ export const WalkthroughView = ({ directory }: WalkthroughViewProps) => {
         </DropdownMenu>
 
         <div className="ml-auto flex min-w-0 items-center gap-1">
+          {view && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  aria-label={t('walkthrough.search.placeholder')}
+                  aria-pressed={searchOpen}
+                  onClick={() => setSearchOpen((open) => !open)}
+                >
+                  <Icon name="search" className="size-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                <p className="typography-micro leading-tight">{t('walkthrough.search.placeholder')}</p>
+              </TooltipContent>
+            </Tooltip>
+          )}
+
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
@@ -671,6 +889,67 @@ export const WalkthroughView = ({ directory }: WalkthroughViewProps) => {
         </div>
       </header>
 
+      {searchOpen && view && (
+        <div className="flex shrink-0 items-center justify-end gap-1 border-b border-border/60 bg-[var(--surface-elevated)] px-3 py-1.5">
+          <div className="relative min-w-0 flex-1 sm:max-w-80">
+            <Icon name="search" className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              ref={searchInputRef}
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key !== 'Enter') return;
+                event.preventDefault();
+                moveSearchResult(event.shiftKey ? -1 : 1);
+              }}
+              placeholder={t('walkthrough.search.placeholder')}
+              className="h-8 rounded-md pl-8 pr-2"
+            />
+          </div>
+          <span className="typography-micro min-w-16 text-center tabular-nums text-muted-foreground" aria-live="polite">
+            {t('walkthrough.search.resultCount', {
+              current: currentSearchIndex + 1,
+              total: searchMatches.length,
+            })}
+          </span>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="size-8"
+            aria-label={t('walkthrough.search.previous')}
+            title={t('walkthrough.search.previous')}
+            disabled={searchMatches.length === 0}
+            onClick={() => moveSearchResult(-1)}
+          >
+            <Icon name="arrow-up-s" className="size-4" />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="size-8"
+            aria-label={t('walkthrough.search.next')}
+            title={t('walkthrough.search.next')}
+            disabled={searchMatches.length === 0}
+            onClick={() => moveSearchResult(1)}
+          >
+            <Icon name="arrow-down-s" className="size-4" />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="size-8"
+            aria-label={t('walkthrough.search.close')}
+            title={t('walkthrough.search.close')}
+            onClick={() => setSearchOpen(false)}
+          >
+            <Icon name="close" className="size-4" />
+          </Button>
+        </div>
+      )}
+
       {/* While regenerating over an existing walkthrough the stream keeps showing
           the old content, so the only other signal would be the button swapping
           to Cancel — far too quiet for something that runs for tens of seconds. */}
@@ -795,6 +1074,8 @@ export const WalkthroughView = ({ directory }: WalkthroughViewProps) => {
             <WalkthroughStream
               view={view}
               activeStopId={activeStopId}
+              activeSearchMatch={activeSearchMatch}
+              searchMatchesByHunkId={searchMatchesByHunkId}
               scrollToStopId={scrollToStopId}
               onActiveStopChange={handleActiveStopChange}
               onScrollHandled={() => setScrollToStopId(null)}

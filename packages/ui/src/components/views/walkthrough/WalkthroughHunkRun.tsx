@@ -8,6 +8,14 @@ import type { WalkthroughHunk } from '@/lib/walkthrough/types';
 interface WalkthroughHunkRunProps {
   path: string;
   hunks: WalkthroughHunk[];
+  searchMatches?: ReadonlyArray<{
+    id: string;
+    lineNumber: number;
+    side: 'deletions' | 'additions';
+    matchStart: number;
+    matchLength: number;
+  }>;
+  activeSearchMatchId?: string | null;
   renderSideBySide: boolean;
   wrapLines: boolean;
 }
@@ -25,6 +33,8 @@ interface WalkthroughHunkRunProps {
 export const WalkthroughHunkRun = memo(function WalkthroughHunkRun({
   path,
   hunks,
+  searchMatches,
+  activeSearchMatchId,
   renderSideBySide,
   wrapLines,
 }: WalkthroughHunkRunProps) {
@@ -42,6 +52,8 @@ export const WalkthroughHunkRun = memo(function WalkthroughHunkRun({
       fileDiff={fileDiff}
       language={getLanguageFromExtension(path) || ''}
       fileName={path}
+      searchMatches={searchMatches}
+      activeSearchMatchId={activeSearchMatchId}
       renderSideBySide={renderSideBySide}
       wrapLines={wrapLines}
       layout="inline"

@@ -33,6 +33,105 @@ import { cn } from '@/lib/utils';
 
 // Threshold (bytes) above which syntax highlighting is degraded for performance
 const LARGE_CONTENT_BYTES = 500_000;
+const SEARCH_REVEAL_MAX_ATTEMPTS = 120;
+const SEARCH_MATCH_HIGHLIGHT = 'openchamber-diff-search-match';
+const ACTIVE_SEARCH_MATCH_HIGHLIGHT = 'openchamber-diff-search-match-active';
+
+interface DiffSearchMatch {
+  id: string;
+  lineNumber: number;
+  side: AnnotationSide;
+  matchStart: number;
+  matchLength: number;
+}
+
+const EMPTY_DIFF_SEARCH_MATCHES: ReadonlyArray<DiffSearchMatch> = [];
+
+const searchHighlightRanges = new Map<string, { matches: AbstractRange[]; active: AbstractRange[] }>();
+
+const syncSearchHighlights = () => {
+  if (typeof CSS === 'undefined' || !CSS.highlights || typeof Highlight === 'undefined') return;
+
+  const matchRanges: AbstractRange[] = [];
+  const activeRanges: AbstractRange[] = [];
+  for (const ranges of searchHighlightRanges.values()) {
+    matchRanges.push(...ranges.matches);
+    activeRanges.push(...ranges.active);
+  }
+
+  if (matchRanges.length > 0) {
+    const matches = new Highlight(...matchRanges);
+    matches.priority = 1;
+    CSS.highlights.set(SEARCH_MATCH_HIGHLIGHT, matches);
+  } else {
+    CSS.highlights.delete(SEARCH_MATCH_HIGHLIGHT);
+  }
+
+  if (activeRanges.length > 0) {
+    const active = new Highlight(...activeRanges);
+    active.priority = 2;
+    CSS.highlights.set(ACTIVE_SEARCH_MATCH_HIGHLIGHT, active);
+  } else {
+    CSS.highlights.delete(ACTIVE_SEARCH_MATCH_HIGHLIGHT);
+  }
+};
+
+const setSearchHighlightRanges = (
+  key: string,
+  matches: AbstractRange[],
+  active: AbstractRange[],
+) => {
+  if (matches.length > 0 || active.length > 0) {
+    searchHighlightRanges.set(key, { matches, active });
+  } else {
+    searchHighlightRanges.delete(key);
+  }
+  syncSearchHighlights();
+};
+
+const isSearchMatchLine = (element: HTMLElement, side: AnnotationSide) => {
+  const lineType = element.getAttribute('data-line-type');
+  const isDeletion = lineType === 'change-deletion' || Boolean(element.closest('[data-deletions]'));
+  return side === 'deletions' ? isDeletion : !isDeletion;
+};
+
+const findSearchMatchLine = (shadowRoot: ShadowRoot, match: DiffSearchMatch) => {
+  const candidates = shadowRoot.querySelectorAll(`[data-line="${match.lineNumber}"]`);
+  return Array.from(candidates).find(
+    (candidate): candidate is HTMLElement => candidate instanceof HTMLElement && isSearchMatchLine(candidate, match.side),
+  );
+};
+
+const createSearchMatchRange = (line: HTMLElement, match: DiffSearchMatch) => {
+  const matchEnd = match.matchStart + match.matchLength;
+  const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+  let textOffset = 0;
+  let startNode: Text | null = null;
+  let startOffset = 0;
+  let endNode: Text | null = null;
+  let endOffset = 0;
+
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (!(node instanceof Text)) continue;
+    const nextTextOffset = textOffset + node.data.length;
+    if (!startNode && match.matchStart >= textOffset && match.matchStart < nextTextOffset) {
+      startNode = node;
+      startOffset = match.matchStart - textOffset;
+    }
+    if (startNode && matchEnd > textOffset && matchEnd <= nextTextOffset) {
+      endNode = node;
+      endOffset = matchEnd - textOffset;
+      break;
+    }
+    textOffset = nextTextOffset;
+  }
+
+  if (!startNode || !endNode) return null;
+  const range = new Range();
+  range.setStart(startNode, startOffset);
+  range.setEnd(endNode, endOffset);
+  return range;
+};
 
 interface PierreDiffViewerProps {
   original: string;
@@ -44,6 +143,8 @@ interface PierreDiffViewerProps {
   wrapLines?: boolean;
   layout?: 'fill' | 'inline';
   enableComments?: boolean;
+  searchMatches?: ReadonlyArray<DiffSearchMatch>;
+  activeSearchMatchId?: string | null;
 }
 
 /**
@@ -97,6 +198,14 @@ const WEBKIT_SCROLL_FIX_CSS = `
     height: 24px !important;
     background: var(--diffs-bg) !important;
     position: relative;
+  }
+
+  ::highlight(${SEARCH_MATCH_HIGHLIGHT}) {
+    background-color: color-mix(in lab, var(--interactive-selection) 80%, transparent);
+  }
+
+  ::highlight(${ACTIVE_SEARCH_MATCH_HIGHLIGHT}) {
+    background-color: color-mix(in lab, var(--interactive-focus-ring) 65%, var(--interactive-selection));
   }
 
   [data-diff-type="single"] [data-gutter],
@@ -470,6 +579,8 @@ export const PierreDiffViewer: React.FC<PierreDiffViewerProps> = ({
   wrapLines,
   layout = 'fill',
   enableComments = true,
+  searchMatches = EMPTY_DIFF_SEARCH_MATCHES,
+  activeSearchMatchId = null,
 }) => {
   const themeContext = useOptionalThemeSystem();
 
@@ -649,6 +760,7 @@ export const PierreDiffViewer: React.FC<PierreDiffViewerProps> = ({
 
   const diffRootRef = useRef<HTMLDivElement | null>(null);
   const diffContainerRef = useRef<HTMLDivElement | null>(null);
+  const searchHighlightKey = React.useId();
   const diffInstanceRef = useRef<PierreFileDiff<PierreAnnotationData> | null>(null);
   const sharedVirtualizerRef = useRef<SharedVirtualizer | null>(null);
   const instanceVirtualizerRef = useRef<Virtualizer | null>(null);
@@ -913,6 +1025,99 @@ export const PierreDiffViewer: React.FC<PierreDiffViewerProps> = ({
       preserveDone();
     };
   }, [diffThemeKey, fileDiff, fileName, language, modified, options, original, workerPool]);
+
+  useEffect(() => {
+    const container = diffContainerRef.current;
+    if (!container) return;
+
+    if (searchMatches.length === 0) {
+      setSearchHighlightRanges(searchHighlightKey, [], []);
+      return () => setSearchHighlightRanges(searchHighlightKey, [], []);
+    }
+
+    let frameId: number | null = null;
+    let observedShadowRoot: ShadowRoot | null = null;
+    let attempts = 0;
+    let positioned = false;
+    let revealed = false;
+    const activeSearchMatch = activeSearchMatchId
+      ? searchMatches.find((match) => match.id === activeSearchMatchId) ?? null
+      : null;
+
+    const queueApply = () => {
+      if (frameId !== null) return;
+      frameId = window.requestAnimationFrame(applyHighlights);
+    };
+
+    const retryApply = () => {
+      attempts += 1;
+      if (attempts < SEARCH_REVEAL_MAX_ATTEMPTS) queueApply();
+    };
+
+    const applyHighlights = () => {
+      frameId = null;
+      const instance = diffInstanceRef.current;
+      const sharedVirtualizer = sharedVirtualizerRef.current;
+      const host = container.querySelector('diffs-container');
+      const shadowRoot = host instanceof HTMLElement ? host.shadowRoot : null;
+      if (!instance || !(host instanceof HTMLElement) || !shadowRoot) {
+        retryApply();
+        return;
+      }
+      if (observedShadowRoot !== shadowRoot) {
+        observer.observe(shadowRoot, { childList: true, subtree: true });
+        observedShadowRoot = shadowRoot;
+      }
+
+      const matchRanges: AbstractRange[] = [];
+      const activeRanges: AbstractRange[] = [];
+      let activeLine: HTMLElement | null = null;
+      for (const match of searchMatches) {
+        const line = findSearchMatchLine(shadowRoot, match);
+        if (!line) continue;
+        const range = createSearchMatchRange(line, match);
+        if (!range) continue;
+        matchRanges.push(range);
+        if (match.id === activeSearchMatchId) {
+          activeRanges.push(range);
+          activeLine = line;
+        }
+      }
+      setSearchHighlightRanges(searchHighlightKey, matchRanges, activeRanges);
+
+      if (!positioned && activeSearchMatch && instance instanceof VirtualizedFileDiff && sharedVirtualizer?.root instanceof HTMLElement) {
+        const position = instance.getLinePosition(activeSearchMatch.lineNumber, activeSearchMatch.side);
+        if (position) {
+          const scrollRoot = sharedVirtualizer.root;
+          const fileTop = sharedVirtualizer.virtualizer.getOffsetInScrollContainer(host);
+          scrollRoot.scrollTo({
+            top: Math.max(0, fileTop + position.top - (scrollRoot.clientHeight - position.height) / 2),
+            behavior: 'auto',
+          });
+          scrollRoot.dispatchEvent(new Event('scroll', { bubbles: false }));
+          positioned = true;
+        }
+      }
+
+      if (activeLine && !revealed) {
+        activeLine.scrollIntoView({ behavior: 'auto', block: 'center', inline: 'nearest' });
+        revealed = true;
+      }
+
+      if (activeSearchMatch && !revealed) {
+        retryApply();
+      }
+    };
+
+    const observer = new MutationObserver(queueApply);
+    observer.observe(container, { childList: true, subtree: true });
+    queueApply();
+    return () => {
+      if (frameId !== null) window.cancelAnimationFrame(frameId);
+      observer.disconnect();
+      setSearchHighlightRanges(searchHighlightKey, [], []);
+    };
+  }, [activeSearchMatchId, diffThemeKey, fileName, searchHighlightKey, searchMatches]);
 
   useEffect(() => {
     const instance = diffInstanceRef.current;
