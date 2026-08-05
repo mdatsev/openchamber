@@ -9,7 +9,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Icon } from '@/components/icon/Icon';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { useGlobalSessionStatus } from '@/sync/sync-context';
+import { useGlobalSessionStatus, useSessionQuestions } from '@/sync/sync-context';
 import { useSessionUnseenCount } from '@/sync/notification-store';
 import { useSwitcherItems, type SwitcherItem } from '@/components/session/sidebar/hooks/useSwitcherItems';
 import { useUIStore } from '@/stores/useUIStore';
@@ -192,6 +192,8 @@ function SwitcherRow({ session, depth, variant, secondaryMeta, hasChildren, isEx
   const notifyOnSubtasks = useUIStore((state) => state.notifyOnSubtasks);
 
   const sessionStatus = useGlobalSessionStatus(session.id);
+  const sessionDirectory = resolveGlobalSessionDirectory(session) ?? undefined;
+  const sessionQuestions = useSessionQuestions(session.id, sessionDirectory, { bootstrap: false });
   const unseenCount = useSessionUnseenCount(session.id);
 
   const isActive = currentSessionId === session.id;
@@ -199,8 +201,9 @@ function SwitcherRow({ session, depth, variant, secondaryMeta, hasChildren, isEx
   const isSubtask = Boolean((session as Session & { parentID?: string | null }).parentID);
   const needsAttention = unseenCount > 0 && (!isSubtask || notifyOnSubtasks);
   const statusType = sessionStatus?.type ?? 'idle';
-  const isStreaming = statusType === 'busy' || statusType === 'retry';
-  const showUnreadDot = !isStreaming && needsAttention && !isActive;
+  const hasPendingQuestion = sessionQuestions.length > 0;
+  const isStreaming = !hasPendingQuestion && (statusType === 'busy' || statusType === 'retry');
+  const showUnreadDot = !isStreaming && (hasPendingQuestion || (needsAttention && !isActive));
 
   const timestamp = session.time?.updated || session.time?.created || Date.now();
   const timeLabel = formatSessionCompactDateLabel(timestamp);

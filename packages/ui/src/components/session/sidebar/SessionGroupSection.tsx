@@ -97,6 +97,7 @@ type Props = {
   openSidebarMenuKey: string | null;
   activeActivitySessionIds: Set<string>;
   unreadActivitySessionIds: Set<string>;
+  pendingQuestionSessionIds: Set<string>;
   notifyOnSubtasks: boolean;
   onToggleCollapsedGroup: (groupKey: string) => void;
   dragHandleProps?: SortableDragHandleProps | null;
@@ -235,6 +236,11 @@ const areGroupPropsEqual = (prev: Props, next: Props): boolean => {
     return false;
   }
 
+  if (prev.pendingQuestionSessionIds !== next.pendingQuestionSessionIds
+    && groupHasActivityMembershipChange(next.group, prev.pendingQuestionSessionIds, next.pendingQuestionSessionIds)) {
+    return false;
+  }
+
   if (prev.notifyOnSubtasks !== next.notifyOnSubtasks
     && groupHasAnyActivityMembership(next.group, next.unreadActivitySessionIds)) {
     return false;
@@ -317,6 +323,7 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
     openSidebarMenuKey,
     activeActivitySessionIds,
     unreadActivitySessionIds,
+    pendingQuestionSessionIds,
     notifyOnSubtasks,
     onToggleCollapsedGroup,
     dragHandleProps,
@@ -477,11 +484,11 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
 
       const entry = foldersById.get(folderId);
       let state = entry
-        ? getSessionNodesActivityState(entry.nodes, activeActivitySessionIds, unreadActivitySessionIds, notifyOnSubtasks)
+        ? getSessionNodesActivityState(entry.nodes, activeActivitySessionIds, unreadActivitySessionIds, notifyOnSubtasks, pendingQuestionSessionIds)
         : null;
       for (const child of childFoldersByParentId.get(folderId) ?? []) {
         state = mergeCollapsedActivityStates(state, visit(child.folder.id, seen));
-        if (state === 'active') break;
+        if (state === 'question') break;
       }
       result.set(folderId, state);
       return state;
@@ -489,7 +496,7 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
 
     allFoldersForGroup.forEach(({ folder }) => visit(folder.id, new Set()));
     return result;
-  }, [activeActivitySessionIds, allFoldersForGroup, childFoldersByParentId, notifyOnSubtasks, unreadActivitySessionIds]);
+  }, [activeActivitySessionIds, allFoldersForGroup, childFoldersByParentId, notifyOnSubtasks, pendingQuestionSessionIds, unreadActivitySessionIds]);
 
   // Precompute the per-row "subtree contains editing session" lookup once per
   // render. The previous design walked the
@@ -748,7 +755,7 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
     ? { label: group.branch, color: null as string | null }
     : null;
   const groupActivityState = isCollapsed
-    ? getSessionNodesActivityState(sourceGroupNodes, activeActivitySessionIds, unreadActivitySessionIds, notifyOnSubtasks)
+    ? getSessionNodesActivityState(sourceGroupNodes, activeActivitySessionIds, unreadActivitySessionIds, notifyOnSubtasks, pendingQuestionSessionIds)
     : null;
   const groupActivityIndicator = groupActivityState ? (
     <CollapsedActivityIndicator

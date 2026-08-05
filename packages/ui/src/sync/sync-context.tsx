@@ -2429,11 +2429,19 @@ export function useSessionPermissions(sessionID: string, directory?: string, opt
 }
 
 /** Get questions for a specific session */
-export function useSessionQuestions(sessionID: string, directory?: string) {
-  return useDirectorySync(
-    useCallback((state: State) => state.question[sessionID] ?? EMPTY_QUESTION_REQUESTS, [sessionID]),
-    directory,
-  )
+export function useSessionQuestions(sessionID: string, directory?: string, options?: { bootstrap?: boolean }) {
+  const store = useDirectoryStore(directory, options)
+  const getSnapshot = useCallback(() => {
+    if (!sessionID) return EMPTY_QUESTION_REQUESTS
+    return store.getState().question[sessionID] ?? EMPTY_QUESTION_REQUESTS
+  }, [sessionID, store])
+  const subscribe = useCallback((notify: () => void) => {
+    if (!sessionID) return () => undefined
+    return store.subscribe((state, previous) => {
+      if (state.question[sessionID] !== previous.question[sessionID]) notify()
+    })
+  }, [sessionID, store])
+  return React.useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 }
 
 /** Get sessions list for a directory */

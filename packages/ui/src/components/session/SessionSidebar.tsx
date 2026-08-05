@@ -150,6 +150,48 @@ const SIDEBAR_PR_NO_PR_RETRY_MS = 5 * 60_000;
 
 const EMPTY_SUBTREE_SET: Set<string> = new Set();
 const EMPTY_STRING_ARRAY: string[] = [];
+const EMPTY_PENDING_QUESTION_INDEX = {
+  sessionIds: new Set<string>(),
+  directories: new Set<string>(),
+};
+
+const usePendingQuestionIndex = (
+  childStores: ReturnType<typeof useChildStoreManager>,
+  enabled: boolean,
+): typeof EMPTY_PENDING_QUESTION_INDEX => {
+  const cacheRef = React.useRef({ signature: '', index: EMPTY_PENDING_QUESTION_INDEX });
+  const getSnapshot = React.useCallback(() => {
+    if (!enabled) return EMPTY_PENDING_QUESTION_INDEX;
+
+    const entries: Array<[directory: string, sessionId: string]> = [];
+    for (const [directory, store] of childStores.children) {
+      for (const [sessionId, questions] of Object.entries(store.getState().question)) {
+        if (questions.length > 0) entries.push([directory, sessionId]);
+      }
+    }
+    entries.sort(([leftDirectory, leftSessionId], [rightDirectory, rightSessionId]) => (
+      leftDirectory.localeCompare(rightDirectory) || leftSessionId.localeCompare(rightSessionId)
+    ));
+
+    const signature = JSON.stringify(entries);
+    if (cacheRef.current.signature === signature) return cacheRef.current.index;
+
+    const index = {
+      sessionIds: new Set(entries.map(([, sessionId]) => sessionId)),
+      directories: new Set(entries.map(([directory]) => normalizePath(directory)?.toLowerCase()).filter((directory): directory is string => Boolean(directory))),
+    };
+    cacheRef.current = { signature, index };
+    return index;
+  }, [childStores, enabled]);
+  const subscribe = React.useCallback(
+    (notify: () => void) => enabled
+      ? childStores.subscribeAllSelected((state) => state.question, notify)
+      : () => undefined,
+    [childStores, enabled],
+  );
+
+  return React.useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+};
 
 const useStableRenderCallback = <Args extends unknown[], Return>(handler: (...args: Args) => Return): ((...args: Args) => Return) => {
   const handlerRef = React.useRef(handler);
@@ -216,7 +258,10 @@ const SidebarBootstrapDemandEffect: React.FC<{
 // Aggregated activity/attention dot for a collapsed project header. Only
 // mounted while the project is collapsed, so the per-status-event scans stay
 // rare and bounded by the project's directory count.
-const ProjectAggregateStatusIndicator: React.FC<{ directories: Array<string | null> }> = ({ directories }) => {
+const ProjectAggregateStatusIndicator: React.FC<{
+  directories: Array<string | null>;
+  hasPendingQuestion: boolean;
+}> = ({ directories, hasPendingQuestion }) => {
   const { t } = useI18n();
   const directorySet = React.useMemo(() => {
     const set = new Set<string>();
@@ -243,6 +288,15 @@ const ProjectAggregateStatusIndicator: React.FC<{ directories: Array<string | nu
     return false;
   }, [directorySet]));
 
+  if (hasPendingQuestion) {
+    return (
+      <span
+        className="h-1.5 w-1.5 rounded-full bg-[var(--status-info)]"
+        aria-label={t('sessions.sidebar.session.status.unread')}
+        title={t('sessions.sidebar.session.status.unread')}
+      />
+    );
+  }
   if (hasBusySession) {
     return (
       <Icon
@@ -434,6 +488,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
 
   const sync = useSync();
   const childStores = useChildStoreManager();
+  const pendingQuestionIndex = usePendingQuestionIndex(childStores, isVisible);
   const bootstrapDemandOwner = `session-sidebar:${React.useId()}`;
   const liveSessionIndex = getAllSyncSessionMap();
   const liveSessions = React.useMemo(() => Array.from(liveSessionIndex.values()), [liveSessionIndex]);
@@ -1618,8 +1673,12 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
       directories.push(group.directory);
       group.folderScopes?.forEach((scope) => directories.push(scope.directory));
     });
-    return <ProjectAggregateStatusIndicator directories={directories} />;
-  }, []);
+    const hasPendingQuestion = directories.some((directory) => {
+      const normalized = normalizePath(directory)?.toLowerCase();
+      return normalized ? pendingQuestionIndex.directories.has(normalized) : false;
+    });
+    return <ProjectAggregateStatusIndicator directories={directories} hasPendingQuestion={hasPendingQuestion} />;
+  }, [pendingQuestionIndex.directories]);
 
   const toggleCollapsedGroup = React.useCallback((key: string) => {
     resetGroupSessionLimit(key);
@@ -1684,6 +1743,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
         openSidebarMenuKey={openSidebarMenuKey}
         activeActivitySessionIds={activeSessionIdSet}
         unreadActivitySessionIds={unreadSessionIdSet}
+        pendingQuestionSessionIds={pendingQuestionIndex.sessionIds}
         notifyOnSubtasks={notifyOnSubtasks}
         onToggleCollapsedGroup={toggleCollapsedGroup}
         scrollContainerRef={scrollContainerRef}
@@ -1723,6 +1783,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
       openSidebarMenuKey,
       activeSessionIdSet,
       unreadSessionIdSet,
+      pendingQuestionIndex.sessionIds,
       notifyOnSubtasks,
       toggleCollapsedGroup,
     ],
