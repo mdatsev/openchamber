@@ -199,7 +199,10 @@ async function main() {
     });
   }
 
-  const electron = spawnProcess('npx', ['electron', './main.mjs'], {
+  const customElectronBinary = process.env.OPENCHAMBER_ELECTRON_BIN?.trim();
+  const electronCommand = customElectronBinary || 'npx';
+  const electronArgs = [...(customElectronBinary ? [] : ['electron']), './main.mjs'];
+  const electron = spawnProcess(electronCommand, electronArgs, {
     cwd: electronDir,
     env: {
       ...process.env,

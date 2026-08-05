@@ -23,6 +23,7 @@ const macVibrancySupported = process.platform === 'darwin';
 // and passes it in). Defaults on when supported unless explicitly '0'.
 const hasMacVibrancy = macVibrancySupported && readArgValue('--openchamber-mac-vibrancy') !== '0';
 const trayEnabled = process.platform !== 'darwin' || readArgValue('--openchamber-tray-enabled') !== '0';
+const packaged = readArgValue('--openchamber-packaged') === '1';
 
 // Preload re-executes on every cross-origin navigation (we run with
 // sandbox:false, per-document). Two separate concerns to balance:
@@ -100,6 +101,7 @@ contextBridge.exposeInMainWorld('__OPENCHAMBER_ELECTRON__', {
   macVibrancy: hasMacVibrancy,
   macVibrancySupported,
   trayEnabled,
+  packaged,
 });
 
 contextBridge.exposeInMainWorld('__OPENCHAMBER_PLATFORM__', process.platform);

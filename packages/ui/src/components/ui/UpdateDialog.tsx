@@ -217,6 +217,7 @@ export const UpdateDialog: React.FC<UpdateDialogProps> = ({
 
   const isWebRuntime = runtimeType === 'web';
   const isMobileRuntime = runtimeType === 'mobile';
+  const isSourceRun = runtimeType === 'desktop' && info?.sourceRun === true;
   const updateCommand = info?.updateCommand || 'openchamber update';
 
   // Reset state when dialog closes
@@ -356,6 +357,15 @@ export const UpdateDialog: React.FC<UpdateDialogProps> = ({
             </div>
           )}
 
+          {isSourceRun && (
+            <div className="flex items-start gap-3 rounded-lg border border-[var(--surface-subtle)] bg-[var(--surface-elevated)]/30 p-4">
+              <Icon name="git-merge" className="mt-0.5 size-5 shrink-0 text-muted-foreground" />
+              <p className="typography-ui text-muted-foreground">
+                {t('updateDialog.sourceRun.description')}
+              </p>
+            </div>
+          )}
+
           {/* Changelog Rendering */}
           {changelog && !isWebUpdating && (
             <div className="rounded-lg border border-[var(--surface-subtle)] bg-[var(--surface-elevated)]/20 overflow-hidden">
@@ -480,8 +490,15 @@ export const UpdateDialog: React.FC<UpdateDialogProps> = ({
           </a>
 
           <div className="flex-1 flex justify-end">
+            {isSourceRun && (
+              <Button disabled variant="outline">
+                <Icon name="git-merge" className="size-4" />
+                {t('updateDialog.actions.mergeUpstreamRelease')}
+              </Button>
+            )}
+
             {/* Desktop Buttons */}
-            {!isWebRuntime && !isMobileRuntime && !downloaded && !downloading && (
+            {!isWebRuntime && !isMobileRuntime && !isSourceRun && !downloaded && !downloading && (
               <button
                 onClick={onDownload}
                 className="flex items-center justify-center gap-2 px-5 py-2 rounded-md text-sm font-medium bg-[var(--primary-base)] text-[var(--primary-foreground)] hover:opacity-90 transition-opacity"

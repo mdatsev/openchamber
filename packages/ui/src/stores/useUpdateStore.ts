@@ -8,6 +8,7 @@ import {
   restartToApplyUpdate,
   isDesktopLocalOriginActive,
   isElectronShell,
+  isElectronSourceRun,
   isVSCodeRuntime,
   isWebRuntime,
 } from '@/lib/desktop';
@@ -214,6 +215,19 @@ export const useUpdateStore = create<UpdateStore>()((set, get) => ({
 
       if (runtime === 'desktop') {
         const appVersion = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : undefined;
+        if (isElectronSourceRun()) {
+          const sourceInfo = await checkForWebUpdates('desktop', appVersion);
+          suggestedSec = sourceInfo?.nextSuggestedCheckInSec ?? null;
+          set({
+            checking: false,
+            available: sourceInfo?.available ?? false,
+            info: sourceInfo ? { ...sourceInfo, sourceRun: true } : null,
+            lastChecked: Date.now(),
+            nextCheckInSec: suggestedSec,
+          });
+          return suggestedSec;
+        }
+
         const [desktopResult, apiResult] = await Promise.allSettled([
           checkForDesktopUpdates(),
           checkForWebUpdates('desktop', appVersion),
@@ -261,10 +275,10 @@ export const useUpdateStore = create<UpdateStore>()((set, get) => ({
   },
 
   downloadUpdate: async () => {
-    const { available, runtimeType } = get();
+    const { available, runtimeType, info } = get();
 
-    // For web runtime, there's no download - user uses in-app update or CLI
-    if (runtimeType !== 'desktop' || !available) {
+    // Source runs and non-desktop runtimes never invoke the desktop binary updater.
+    if (runtimeType !== 'desktop' || !available || info?.sourceRun) {
       return;
     }
 

@@ -23,6 +23,7 @@ export type UpdateInfo = {
   // Web-specific fields
   packageManager?: string;
   updateCommand?: string;
+  sourceRun?: boolean;
 };
 
 export type UpdateProgress = {
@@ -235,6 +236,7 @@ type ElectronRuntimeGlobal = {
   macVibrancy?: boolean;
   macVibrancySupported?: boolean;
   trayEnabled?: boolean;
+  packaged?: boolean;
 };
 
 const getElectronRuntime = (): ElectronRuntimeGlobal | null => {
@@ -248,6 +250,8 @@ const getDesktopBridge = (): DesktopBridgeGlobal | null => {
 };
 
 export const isElectronShell = (): boolean => getElectronRuntime()?.runtime === 'electron';
+
+export const isElectronSourceRun = (): boolean => getElectronRuntime()?.packaged === false;
 
 export const getElectronPlatform = (): string | null => {
   if (typeof window === 'undefined') return null;

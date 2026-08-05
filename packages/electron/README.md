@@ -84,6 +84,24 @@ Running a packaged Linux AppImage requires FUSE (`libfuse.so.2`, typically `libf
 
 Linux updates are supported only when the packaged app is running from a writable AppImage. Update checks, downloads, and installation report an actionable error when `APPIMAGE` is missing, invalid, or read-only; a missing release feed (`latest-linux.yml` 404 before the first Linux publish) is treated as “no update available”. macOS and Windows updater behavior is unchanged. Release builds keep `latest-linux.yml` (x64) and `latest-linux-arm64.yml` separate and validate each manifest against its AppImage before upload. Linux AppImages download full updates (no `.blockmap` differential channel yet).
 
+Desktop source runs do not instantiate or invoke the binary updater. Electron's default development app reports version `0.0`, which `electron-updater` rejects during construction. Source runs instead use the upstream release check as notification-only metadata, show the release notes, and instruct the user to merge the upstream release into the custom branch before restarting OpenChamber. Packaged builds retain the normal download and installation flow.
+
+### Custom Source Launcher
+
+After `bun install`, install the source launcher from the repository root:
+
+```bash
+bun run install:custom
+```
+
+The installer detects Linux or macOS and installs a user-local `OpenChamber CUSTOM` application. Rerun it after moving the checkout. On macOS, also rerun it after an Electron dependency upgrade because the application bundle contains a copy of the installed Electron runtime.
+
+On Linux, the installer writes `${XDG_DATA_HOME:-~/.local/share}/applications/openchamber-custom-source.desktop`. The source runtime uses `openchamber-custom-source` as both its desktop startup class and live `WM_CLASS`, allowing it to be pinned separately from the official `openchamber` AppImage. Electron 41.2 and earlier derive `WM_CLASS` from the application name, while newer Electron versions derive it from the desktop filename; keep both source identities aligned when changing the launcher. `scripts/launch-custom-linux.sh` starts the HMR development runtime without a terminal and writes the current run to `${XDG_STATE_HOME:-~/.local/state}/openchamber-custom/dev.log`. It prepends the discovered Bun directory to `PATH` because the development launcher starts nested `bun` processes by name.
+
+On macOS, the installer writes `~/Applications/OpenChamber CUSTOM.app` with bundle identifier `dev.openchamber.custom.source`. Its executable wrapper starts this checkout through the bundled Electron runtime and writes the current run to `~/Library/Logs/OpenChamber CUSTOM/dev.log`. The bundle is ad-hoc signed after its identity and executable are replaced. Open it once from Finder, then choose **Keep in Dock**.
+
+Source runs retain the isolated Electron profile `OpenChamber Dev`. Canonical OpenChamber backend settings under `~/.config/openchamber` and OpenCode sessions remain shared with the packaged application. See [`../../docs/fork-runtime-state.md`](../../docs/fork-runtime-state.md) for browser-local state and simultaneous-runtime caveats.
+
 ### Updater End-to-End Fixture
 
 A loopback-only updater fixture is available for contributor QA of N-to-N+1 AppImage replacement and restart behavior. It is test infrastructure, not a user-configurable update source. See [`scripts/updater-e2e-fixture.md`](./scripts/updater-e2e-fixture.md) for the controlled test procedure. Unit tests cover feed selection, check failures, no-update results, and fixture generation; actual AppImage replacement and restart remains a manual native N-to-N+1 release boundary because it requires executing two packaged versions on each supported architecture.
