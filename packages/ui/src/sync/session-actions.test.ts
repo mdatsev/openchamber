@@ -20,6 +20,8 @@ const globalUpsertedSessions: unknown[] = []
 const globalRemovedSessionIds: string[] = []
 const deletedCleanupIdentities: Array<{ runtimeKey: string; directory: string; sessionId: string }> = []
 const movedSessionDirectories: Array<{ sessionID: string; directory: string }> = []
+const sideChatRequests: Array<Record<string, unknown>> = []
+const syncMessages: Message[] = []
 
 const mockScopedClient = {
   permission: {
@@ -160,7 +162,21 @@ mock.module("@/lib/opencode/client", () => ({
       if (sessionDeleteError) throw sessionDeleteError
       return Promise.resolve(true)
     }),
+    sendMessage: mock((params: Record<string, unknown>) => {
+      replyCalls.push({ method: "session.sendMessage", params })
+      return Promise.resolve({})
+    }),
   },
+}))
+
+mock.module("@/lib/runtime-fetch", () => ({
+  runtimeFetch: mock(async (_path: string, init: RequestInit) => {
+    sideChatRequests.push(JSON.parse(String(init.body ?? '{}')))
+    return new Response(JSON.stringify({ id: 'session-side', title: 'Side chat', directory: '/test/project', time: { created: 2 } }), {
+      status: 201,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }),
 }))
 
 // Mock useConfigStore
@@ -228,6 +244,8 @@ mock.module("@/stores/useGlobalSessionsStore", () => ({
     getState: () => ({
       activeSessions: [],
       archivedSessions: [],
+      sessionsById: new Map(),
+      getSessionById: () => null,
       upsertSession: (session: unknown) => {
         globalUpsertedSessions.push(session)
       },
@@ -246,6 +264,7 @@ mock.module("./session-deletion-cleanup", () => ({
 
 mock.module("./sync-refs", () => ({
   getSyncSessionDirectory: () => null,
+  getSyncMessages: () => syncMessages,
   registerSessionDirectory: (sessionID: string, directory: string) => {
     registeredSessionDirectories.push({ sessionID, directory })
   },
@@ -511,6 +530,25 @@ describe("confirmed session removal", () => {
     expect(globalRemovedSessionIds).toEqual(["session-a"])
     expect(replyCalls.filter((call) => call.method === "session.delete").map((call) => call.params.sessionID))
       .toEqual(["session-a", "session-b"])
+  })
+
+  test("reconciles known descendants after the server cascade-deletes a root", async () => {
+    const source = createStore({}, {
+      session: [
+        { id: "session-a", directory: "/test/project", time: { created: 1 } } as Session,
+        { id: "session-child", parentID: "session-a", directory: "/test/project", time: { created: 2 } } as Session,
+      ],
+    })
+    const { deleteSessionInDirectory, setActionRefs } = await import("./session-actions")
+    setActionRefs(mockSdk as unknown as OpencodeClient, createChildStores([["/test/project", source]]), () => "/test/project")
+
+    expect(await deleteSessionInDirectory("session-a", "/test/project")).toBe(true)
+    expect(source.getState().session).toEqual([])
+    expect(globalRemovedSessionIds).toEqual(["session-a", "session-child"])
+    expect(deletedCleanupIdentities.map(({ directory, sessionId }) => ({ directory, sessionId }))).toEqual([
+      { directory: "/test/project", sessionId: "session-a" },
+      { directory: "/test/project", sessionId: "session-child" },
+    ])
   })
 
   test("does not archive locally until the server returns the archived session", async () => {
