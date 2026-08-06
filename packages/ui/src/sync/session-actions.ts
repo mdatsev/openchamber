@@ -30,6 +30,7 @@ import { getImperativeSessionMessageLoader } from "./session-message-loader"
 import { cleanupPersistedSessionState } from "./session-deletion-cleanup"
 import { getRuntimeKey } from "@/lib/runtime-switch"
 import { isAmbiguousTransportFailure } from "@/lib/relay/transport-error"
+import type { SideChatRuntimeOperation } from "@/lib/sideChats/runtimeOperation"
 
 const MESSAGE_REFETCH_LIMIT = 100
 const SEND_CONFIRMATION_REFETCH_LIMIT = 30
@@ -426,8 +427,7 @@ type SessionListSnapshot = {
 type DirectoryStoreApi = ReturnType<ChildStoreManager["ensureChild"]>
 
 function getGlobalSessionSnapshot(sessionId: string): Session | null {
-  const global = useGlobalSessionsStore.getState()
-  return [...global.activeSessions, ...global.archivedSessions].find((session) => session.id === sessionId) ?? null
+  return useGlobalSessionsStore.getState().getSessionById(sessionId)
 }
 
 function getSessionDirectory(sessionId: string): string | undefined {
@@ -753,14 +753,15 @@ async function cleanupReviewMetadataBeforeDelete(
 }
 
 /** Remove a server-confirmed session from every live child store that has it. */
-function removeSessionFromLiveStores(sessionId: string, preferredDirectory?: string): SessionListSnapshot[] {
+function removeSessionsFromLiveStores(sessionIds: Set<string>, preferredDirectories: Iterable<string | undefined>): SessionListSnapshot[] {
   if (!_childStores) return []
 
   const snapshots: SessionListSnapshot[] = []
   const visited = new Set<string>()
   const candidates: Array<[string, DirectoryStoreApi]> = []
 
-  if (preferredDirectory) {
+  for (const preferredDirectory of preferredDirectories) {
+    if (!preferredDirectory || visited.has(preferredDirectory)) continue
     const preferredStore = _childStores.children.get(preferredDirectory)
     if (preferredStore) {
       candidates.push([preferredDirectory, preferredStore])
@@ -775,13 +776,23 @@ function removeSessionFromLiveStores(sessionId: string, preferredDirectory?: str
 
   for (const [directory, store] of candidates) {
     const current = store.getState()
-    if (!current.session.some((session) => session.id === sessionId)) {
-      continue
-    }
+    const removedIds = current.session.filter((session) => sessionIds.has(session.id)).map((session) => session.id)
+    if (removedIds.length === 0) continue
     snapshots.push({ directory })
+    let revision = current.sessionRevision ?? 0
+    const sessionEventRevision = { ...(current.sessionEventRevision ?? {}) }
+    const sessionDeletedRevision = { ...(current.sessionDeletedRevision ?? {}) }
+    for (const sessionId of removedIds) {
+      revision += 1
+      sessionDeletedRevision[sessionId] = revision
+      delete sessionEventRevision[sessionId]
+    }
     store.setState({
-      session: current.session.filter((session) => session.id !== sessionId),
-      ...sessionMutationPatch(current, sessionId, true),
+      session: current.session.filter((session) => !sessionIds.has(session.id)),
+      sessionListSource: "live",
+      sessionRevision: revision,
+      sessionEventRevision,
+      sessionDeletedRevision,
     })
   }
 
@@ -806,20 +817,51 @@ function finalizeConfirmedSessionDeletion(
   sessionId: string,
   sessionDirectory?: string,
   expectedRuntimeKey = getRuntimeKey(),
+  knownSubtree = getKnownSessionSubtree(sessionId),
 ): void {
-  const snapshots = removeSessionFromLiveStores(sessionId, sessionDirectory)
-  invalidateSessionLoads(sessionId, [...snapshots.map((snapshot) => snapshot.directory), sessionDirectory])
-  useGlobalSessionsStore.getState().removeSessions([sessionId])
+  const sessionIds = knownSubtree.length > 0 ? knownSubtree.map((session) => session.id) : [sessionId]
+  const sessionIdSet = new Set(sessionIds)
+  const directoryBySession = new Map(knownSubtree.map((session) => [
+    session.id,
+    resolveGlobalSessionDirectory(session) ?? sessionDirectory,
+  ]))
+  const snapshots = removeSessionsFromLiveStores(sessionIdSet, [...directoryBySession.values(), sessionDirectory])
+  const invalidationDirectories = [
+    ...snapshots.map((snapshot) => snapshot.directory),
+    ...directoryBySession.values(),
+    sessionDirectory,
+  ]
   const ui = useSessionUIStore.getState()
-  if (ui.currentSessionId === sessionId) ui.setCurrentSession(null)
-  cleanupSessionWorktreeMetadata(sessionId)
-  if (sessionDirectory) {
+  for (const deletedSessionId of sessionIds) {
+    const directory = directoryBySession.get(deletedSessionId) ?? sessionDirectory
+    invalidateSessionLoads(deletedSessionId, invalidationDirectories)
+    if (ui.currentSessionId === deletedSessionId) ui.setCurrentSession(null)
+    cleanupSessionWorktreeMetadata(deletedSessionId)
+    if (!directory) continue
     cleanupPersistedSessionState({
       runtimeKey: expectedRuntimeKey,
-      directory: sessionDirectory,
-      sessionId,
+      directory,
+      sessionId: deletedSessionId,
     })
   }
+  useGlobalSessionsStore.getState().removeSessions(sessionIds)
+}
+
+function getKnownSessionSubtree(rootSessionId: string): Session[] {
+  const sessions = new Map<string, Session>()
+  const global = useGlobalSessionsStore.getState()
+  for (const session of global.sessionsById.values()) sessions.set(session.id, session)
+  if (_childStores) {
+    for (const store of _childStores.children.values()) {
+      for (const session of store.getState().session) sessions.set(session.id, session)
+    }
+  }
+
+  const subtreeIds = computeSubtreeIds([...sessions.values()], rootSessionId)
+  return [...subtreeIds].flatMap((sessionId) => {
+    const session = sessions.get(sessionId)
+    return session ? [session] : []
+  })
 }
 
 export type DeleteSessionOptions = {
@@ -850,6 +892,7 @@ export async function deleteSession(sessionId: string, options?: DeleteSessionOp
   const expectedRuntimeKey = options?.expectedRuntimeKey ?? getRuntimeKey()
   if (isStaleRuntime(expectedRuntimeKey)) return false
   const sessionDirectory = getSessionDirectory(sessionId)
+  const knownSubtree = getKnownSessionSubtree(sessionId)
   try {
     await cleanupReviewMetadataBeforeDelete(sessionId, sessionDirectory, expectedRuntimeKey)
     if (isStaleRuntime(expectedRuntimeKey)) return false
@@ -858,7 +901,7 @@ export async function deleteSession(sessionId: string, options?: DeleteSessionOp
     if (deleted !== true) {
       throw new Error("session.delete failed: server did not confirm deletion")
     }
-    finalizeConfirmedSessionDeletion(sessionId, sessionDirectory, expectedRuntimeKey)
+    finalizeConfirmedSessionDeletion(sessionId, sessionDirectory, expectedRuntimeKey, knownSubtree)
     return true
   } catch (error) {
     console.error("[session-actions] deleteSession failed", error)
@@ -867,7 +910,7 @@ export async function deleteSession(sessionId: string, options?: DeleteSessionOp
     // success since the session was already deleted by the cascade.
     if ((error as { status?: number })?.status === 404) {
       if (isStaleRuntime(expectedRuntimeKey)) return false
-      finalizeConfirmedSessionDeletion(sessionId, sessionDirectory, expectedRuntimeKey)
+      finalizeConfirmedSessionDeletion(sessionId, sessionDirectory, expectedRuntimeKey, knownSubtree)
       return true
     }
     return false
@@ -881,6 +924,7 @@ export async function deleteSessionInDirectory(
   expectedRuntimeKey = getRuntimeKey(),
 ): Promise<boolean> {
   if (isStaleRuntime(expectedRuntimeKey)) return false
+  const knownSubtree = getKnownSessionSubtree(sessionId)
   try {
     await cleanupReviewMetadataBeforeDelete(sessionId, directory, expectedRuntimeKey)
     if (isStaleRuntime(expectedRuntimeKey)) return false
@@ -889,13 +933,13 @@ export async function deleteSessionInDirectory(
     if (deleted !== true) {
       throw new Error("session.delete failed: server did not confirm deletion")
     }
-    finalizeConfirmedSessionDeletion(sessionId, directory, expectedRuntimeKey)
+    finalizeConfirmedSessionDeletion(sessionId, directory, expectedRuntimeKey, knownSubtree)
     return true
   } catch (error) {
     console.error("[session-actions] deleteSessionInDirectory failed", error)
     if ((error as { status?: number })?.status === 404) {
       if (isStaleRuntime(expectedRuntimeKey)) return false
-      finalizeConfirmedSessionDeletion(sessionId, directory, expectedRuntimeKey)
+      finalizeConfirmedSessionDeletion(sessionId, directory, expectedRuntimeKey, knownSubtree)
       return true
     }
     return false
@@ -939,6 +983,27 @@ export async function deleteSessions(
   return { deletedIds, failedIds }
 }
 
+export async function deleteSessionInCapturedRuntime(
+  sessionId: string,
+  directory: string,
+  operation: SideChatRuntimeOperation,
+): Promise<boolean> {
+  const knownSubtree = getKnownSessionSubtree(sessionId)
+  try {
+    const result = await operation.client.session.delete({ sessionID: sessionId, directory })
+    if (assertSdkData(result, "session.delete") !== true) throw new Error("session.delete failed: server did not confirm deletion")
+    if (operation.isCurrent()) finalizeConfirmedSessionDeletion(sessionId, directory, operation.runtimeKey, knownSubtree)
+    return true
+  } catch (error) {
+    if (getErrorStatus(error) === 404) {
+      if (operation.isCurrent()) finalizeConfirmedSessionDeletion(sessionId, directory, operation.runtimeKey, knownSubtree)
+      return true
+    }
+    console.error("[session-actions] captured runtime delete failed", error)
+    return false
+  }
+}
+
 /**
  * Archive one session.
  *
@@ -963,7 +1028,7 @@ export async function archiveSession(sessionId: string, expectedRuntimeKey = get
     if (!archived) {
       throw new Error("session.update failed: server did not return the archived session")
     }
-    const snapshots = removeSessionFromLiveStores(sessionId, sessionDirectory)
+    const snapshots = removeSessionsFromLiveStores(new Set([sessionId]), [sessionDirectory])
     invalidateSessionLoads(sessionId, [...snapshots.map((snapshot) => snapshot.directory), sessionDirectory])
     useGlobalSessionsStore.getState().upsertSession(archived)
     const ui = useSessionUIStore.getState()
@@ -1430,6 +1495,25 @@ export async function abortCurrentOperation(sessionId: string): Promise<void> {
   } catch (error) {
     console.error("[session-actions] abort failed", error)
   }
+}
+
+export async function abortSessionInDirectory(sessionId: string, directory: string): Promise<void> {
+  const result = await opencodeClient.getScopedSdkClient(directory).session.abort({
+    sessionID: sessionId,
+    directory,
+  })
+  if (assertSdkData(result, "session.abort") !== true) {
+    throw new Error("Session abort failed")
+  }
+}
+
+export async function abortSessionInCapturedRuntime(
+  sessionId: string,
+  directory: string,
+  operation: SideChatRuntimeOperation,
+): Promise<void> {
+  const result = await operation.client.session.abort({ sessionID: sessionId, directory })
+  if (assertSdkData(result, "session.abort") !== true) throw new Error("Session abort failed")
 }
 
 // ---------------------------------------------------------------------------

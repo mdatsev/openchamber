@@ -3,6 +3,14 @@ import React from 'react';
 import { FileTypeIcon } from '@/components/icons/FileTypeIcon';
 import { DiffViewIcon } from '@/components/icons/DiffIcon';
 import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { SortableTabsStrip } from '@/components/ui/sortable-tabs-strip';
 import { DiffView } from '@/components/views/DiffView';
 import { FilesView } from '@/components/views/FilesView';
@@ -20,7 +28,8 @@ import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/lib/i18n';
 import { useFilesViewTabsStore } from '@/stores/useFilesViewTabsStore';
-import { useUIStore, type ContextPanelMode, type PendingDiffScope } from '@/stores/useUIStore';
+import { getSessionContextPanelTabID, useUIStore, type ContextPanelMode, type ContextPanelTab, type PendingDiffScope } from '@/stores/useUIStore';
+import { useDisposableSideChatsStore } from '@/stores/useDisposableSideChatsStore';
 import { useInlineCommentDraftStore } from '@/stores/useInlineCommentDraftStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useInputStore } from '@/sync/input-store';
@@ -33,6 +42,7 @@ import { getRuntimeBearerTokenSync, getRuntimeExtraHeadersSync, refreshRuntimeUr
 import { getRuntimeUrlResolver } from '@/lib/runtime-url';
 import { getRuntimeApiBaseUrl, getRuntimeKey } from '@/lib/runtime-switch';
 import { getActiveRelayDescriptor } from '@/lib/relay/runtime-tunnel';
+import { captureSideChatRuntimeOperation } from '@/lib/sideChats/runtimeOperation';
 import { getPreviewTargetRecoveryAction } from '@/lib/preview/proxy-response';
 import { Icon } from "@/components/icon/Icon";
 import { OpenChamberLogo } from "@/components/ui/OpenChamberLogo";
@@ -45,6 +55,19 @@ import {
   type EmbeddedSessionRuntimeBootstrap,
 } from './contextPanelEmbeddedChat';
 import { getContextSurfaceWidthFraction } from '@/lib/surfaces/registry';
+import {
+  closeDisposableSideChat,
+  hasActiveDisposableSideChatWork,
+  promoteDisposableSideChat,
+  requestDisposableSideChatPromotion,
+  waitForDisposableSideChatToSettle,
+  type DisposableSideChatIdentity,
+} from './disposableSideChatLifecycle';
+import { abortSessionInCapturedRuntime, deleteSessionInCapturedRuntime, mirrorSessionIntoLiveStores } from '@/sync/session-actions';
+import { useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
+import { getAllSyncSessionMap, getDirectoryState } from '@/sync/sync-refs';
+import { computeSubtreeIds } from '@/sync/scoped-blocking-requests';
+import { registerContextPanelCloseHandler } from './contextPanelCloseRequest';
 import {
   type PreviewElementMetadata,
   isPreviewElementMetadata,
@@ -2274,6 +2297,26 @@ export const ContextPanel: React.FC = () => {
   const sessionTitleById = useSessionTitleMap(directoryKey || undefined, chatSessionIDs);
 
   const [isResizing, setIsResizing] = React.useState(false);
+  const [pendingDiscard, setPendingDiscard] = React.useState<{ identity: DisposableSideChatIdentity; closePanel: boolean } | null>(null);
+  const [lifecycleBusy, setLifecycleBusy] = React.useState(false);
+  const getSideChatActivity = React.useCallback((identity: DisposableSideChatIdentity) => {
+    const state = getDirectoryState(identity.directory);
+    const scopedIds = computeSubtreeIds([...getAllSyncSessionMap().values()], identity.sideSessionId);
+    let status = state?.session_status[identity.sideSessionId];
+    let permissionCount = 0;
+    let questionCount = 0;
+    for (const sessionID of scopedIds) {
+      const candidate = state?.session_status[sessionID];
+      if (candidate?.type === 'busy' || candidate?.type === 'retry') status = candidate;
+      permissionCount += state?.permission[sessionID]?.length ?? 0;
+      questionCount += state?.question[sessionID]?.length ?? 0;
+    }
+    return {
+      status,
+      permissionCount,
+      questionCount,
+    };
+  }, []);
   const startXRef = React.useRef(0);
   const startWidthRef = React.useRef(width);
   const resizingWidthRef = React.useRef<number | null>(null);
@@ -2434,12 +2477,98 @@ export const ContextPanel: React.FC = () => {
     }
   }, [isResizing]);
 
+  const runDisposableClose = React.useCallback(async (
+    identity: DisposableSideChatIdentity,
+    closePanelAfter: boolean,
+  ) => {
+    if (getRuntimeKey() !== identity.runtimeKey) return;
+    const operation = captureSideChatRuntimeOperation();
+    setLifecycleBusy(true);
+    useDisposableSideChatsStore.getState().setPhase(identity, 'cleanup-pending');
+    const result = await closeDisposableSideChat(identity, {
+      isActive: () => hasActiveDisposableSideChatWork(getSideChatActivity(identity)),
+       abort: () => abortSessionInCapturedRuntime(identity.sideSessionId, identity.directory, operation),
+      waitUntilSettled: () => waitForDisposableSideChatToSettle(() => {
+        const status = getSideChatActivity(identity).status;
+        return status?.type === 'busy' || status?.type === 'retry';
+      }),
+       deleteSession: () => deleteSessionInCapturedRuntime(identity.sideSessionId, identity.directory, operation),
+       complete: (target) => useDisposableSideChatsStore.getState().complete(target),
+       closeTab: () => {
+         if (!operation.isCurrent()) return;
+        const tabID = getSessionContextPanelTabID(identity.sideSessionId);
+        if (tabID) closeContextPanelTab(identity.directory, tabID);
+      },
+    });
+    setLifecycleBusy(false);
+    if (!result.ok) {
+      toast.error(t('sideChat.cleanup.error'), { description: result.error.message });
+      return;
+    }
+    setPendingDiscard(null);
+    if (closePanelAfter) closeContextPanel(identity.directory);
+  }, [closeContextPanel, closeContextPanelTab, getSideChatActivity, t]);
+
+  const requestDisposableClose = React.useCallback((identity: DisposableSideChatIdentity, closePanelAfter: boolean) => {
+    if (hasActiveDisposableSideChatWork(getSideChatActivity(identity))) {
+      setPendingDiscard({ identity, closePanel: closePanelAfter });
+      return;
+    }
+    void runDisposableClose(identity, closePanelAfter);
+  }, [getSideChatActivity, runDisposableClose]);
+
   const handleClose = React.useCallback(() => {
-    if (!directoryKey) {
+    if (!directoryKey) return;
+    const disposableTab = tabs.find((tab) => tab.disposableSideChat);
+    if (disposableTab?.disposableSideChat) {
+      requestDisposableClose(disposableTab.disposableSideChat, true);
       return;
     }
     closeContextPanel(directoryKey);
-  }, [closeContextPanel, directoryKey]);
+  }, [closeContextPanel, directoryKey, requestDisposableClose, tabs]);
+
+  React.useEffect(() => registerContextPanelCloseHandler((directory) => {
+    if (directory !== directoryKey) return false;
+    handleClose();
+    return true;
+  }), [directoryKey, handleClose]);
+
+  const handleTabClose = React.useCallback((tab: ContextPanelTab) => {
+    if (!directoryKey) return;
+    if (tab.disposableSideChat) {
+      requestDisposableClose(tab.disposableSideChat, false);
+      return;
+    }
+    closeContextPanelTab(directoryKey, tab.id);
+  }, [closeContextPanelTab, directoryKey, requestDisposableClose]);
+
+  const handlePromote = React.useCallback(async (identity: DisposableSideChatIdentity) => {
+    if (getRuntimeKey() !== identity.runtimeKey) return;
+    const operation = captureSideChatRuntimeOperation();
+    setLifecycleBusy(true);
+    useDisposableSideChatsStore.getState().setPhase(identity, 'promotion-pending');
+    const result = await promoteDisposableSideChat(identity, {
+       promote: () => requestDisposableSideChatPromotion(identity, operation),
+       publish: (session) => {
+         if (!operation.isCurrent()) return;
+        useGlobalSessionsStore.getState().upsertSession(session);
+        mirrorSessionIntoLiveStores(session, identity.directory);
+      },
+      complete: (target) => useDisposableSideChatsStore.getState().complete(target),
+       closeTab: () => {
+         if (!operation.isCurrent()) return;
+        const tabID = getSessionContextPanelTabID(identity.sideSessionId);
+        if (tabID) closeContextPanelTab(identity.directory, tabID);
+      },
+       navigate: async (session) => {
+         if (!operation.isCurrent()) return;
+        useUIStore.getState().setActiveMainTab('chat');
+        await useSessionUIStore.getState().setCurrentSession(session.id, identity.directory);
+      },
+    });
+    setLifecycleBusy(false);
+    if (!result.ok) toast.error(t('sideChat.promotion.error'), { description: result.error.message });
+  }, [closeContextPanelTab, t]);
 
   const handleToggleExpanded = React.useCallback(() => {
     if (!directoryKey) {
@@ -2758,7 +2887,8 @@ export const ContextPanel: React.FC = () => {
             if (!directoryKey) {
               return;
             }
-            closeContextPanelTab(directoryKey, tabID);
+            const tab = tabs.find((candidate) => candidate.id === tabID);
+            if (tab) handleTabClose(tab);
           }}
           onReorder={(activeTabID, overTabID) => {
             if (!directoryKey) {
@@ -2778,6 +2908,21 @@ export const ContextPanel: React.FC = () => {
         </div>
       )}
       <div className="flex items-center gap-1 px-1.5">
+        {activeTab?.disposableSideChat ? (
+          <>
+            <span className="typography-micro text-muted-foreground">{t('sideChat.label')}</span>
+            <Button
+              type="button"
+              variant="ghost"
+              size="xs"
+              onClick={() => { void handlePromote(activeTab.disposableSideChat!); }}
+              disabled={lifecycleBusy}
+            >
+              <Icon name="arrow-up" className="h-3.5 w-3.5" />
+              {t('sideChat.promote')}
+            </Button>
+          </>
+        ) : null}
         {isFileTabActive ? (
           <Button
             type="button"
@@ -2843,6 +2988,7 @@ export const ContextPanel: React.FC = () => {
         };
 
   return (
+    <>
     <aside
       ref={panelRef}
       data-context-panel="true"
@@ -3001,5 +3147,31 @@ export const ContextPanel: React.FC = () => {
       </div>
       </div>
     </aside>
+    <Dialog open={pendingDiscard !== null} onOpenChange={(open) => { if (!open && !lifecycleBusy) setPendingDiscard(null); }}>
+      <DialogContent showCloseButton={false} className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>{t('sideChat.discard.title')}</DialogTitle>
+          <DialogDescription>{t('sideChat.discard.description')}</DialogDescription>
+        </DialogHeader>
+        <div className="rounded-lg border border-[var(--status-warning-border)] bg-[var(--status-warning-background)] px-3 py-2 typography-micro text-[var(--status-warning-foreground)]">
+          {t('sideChat.discard.sideEffects')}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setPendingDiscard(null)} disabled={lifecycleBusy}>
+            {t('sideChat.discard.cancel')}
+          </Button>
+          <Button
+            variant="destructive"
+            onClick={() => {
+              if (pendingDiscard) void runDisposableClose(pendingDiscard.identity, pendingDiscard.closePanel);
+            }}
+            disabled={lifecycleBusy}
+          >
+            {t('sideChat.discard.confirm')}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    </>
   );
 };

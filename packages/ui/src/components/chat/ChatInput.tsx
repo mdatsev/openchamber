@@ -141,6 +141,9 @@ import { LinkedReferenceRow } from './composer/ui/LinkedReferenceRow';
 import { RevertedMessageDock } from './composer/ui/RevertedMessageDock';
 import { SessionSuggestionChip } from '@/components/chat/SessionSuggestionChip';
 import { SessionGoalRow } from '@/components/chat/SessionGoalRow';
+import { getOpenChamberCommands, parseSideChatCommand } from './openChamberCommands';
+import { installEmbeddedSessionChatComposerFocusListener, isEmbeddedSessionChat } from '@/components/layout/contextPanelEmbeddedChat';
+import { openDisposableSideChat } from '@/lib/sideChats/controller';
 
 const MAX_VISIBLE_COMPOSER_LINES = 8;
 /**
@@ -354,6 +357,11 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
     const isMobile = useUIStore((state) => state.isMobile);
     const hasHardwareKeyboard = useHardwareKeyboard();
     const { enabled: isTabletLayout } = useTabletLayout();
+    const sideChatCommands = React.useMemo(() => getOpenChamberCommands({
+        surface: currentSessionId && !isEmbeddedSessionChat() ? 'main' : 'embedded',
+        isMobile,
+        isVSCode: isVSCodeRuntime(),
+    }), [currentSessionId, isMobile]);
     const setImagePreviewOpen = useUIStore((state) => state.setImagePreviewOpen);
     const inputBarOffset = useUIStore((state) => state.inputBarOffset);
     const persistChatDraft = useUIStore((state) => state.persistChatDraft);
@@ -535,11 +543,12 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         const names = new Set<string>([
             'init', 'review', 'undo', 'redo', 'timeline', 'compact', 'summary', 'workspace-review', 'plan-feature', 'craft-goal', 'schedule-task', 'catch-up', 'debug', 'weigh', 'explore',
         ]);
+        for (const command of sideChatCommands) names.add(command.name);
         if (!isMobile && !isVSCodeRuntime()) names.add('handoff-review');
         for (const command of availableCommands) names.add(command.name.toLowerCase());
         for (const skill of availableSkills) names.add(skill.name.toLowerCase());
         return names;
-    }, [availableCommands, availableSkills, isMobile]);
+    }, [availableCommands, availableSkills, isMobile, sideChatCommands]);
 
     const availableSnippets = useSnippetsStore((s) => s.snippets);
     const knownSnippetTriggers = React.useMemo(() => {
@@ -858,6 +867,8 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         };
     }, [attachedFiles.length, hasDrafts, message]);
 
+    React.useEffect(() => installEmbeddedSessionChatComposerFocusListener(() => composerRef.current?.focus()), []);
+
     // Keep a ref to handleSubmit so callbacks don't depend on it.
     type SubmitOptions = {
         queuedOnly?: boolean;
@@ -870,9 +881,18 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
     };
     const handleSubmitRef = React.useRef<(options?: SubmitOptions) => Promise<void>>(async () => {});
 
-    // Add message to queue instead of sending
+    // Add message to queue instead of sending. Side-chat commands are app
+    // actions, so the busy-session queue button must submit them immediately.
     const handleQueueMessage = React.useCallback(() => {
         const inputSnapshot = getCurrentInputSnapshot();
+        if (
+            inputMode === 'normal'
+            && sideChatCommands.length > 0
+            && parseSideChatCommand(inputSnapshot.message) !== null
+        ) {
+            void handleSubmitRef.current();
+            return;
+        }
         if (!inputSnapshot.hasContent || !currentSessionId || !messageQueueTarget) return;
 
         const drafts = inlineDraftTarget ? consumeDrafts(inlineDraftTarget) : [];
@@ -906,7 +926,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         if (!isMobile) {
             composerRef.current?.focus();
         }
-    }, [getCurrentInputSnapshot, currentSessionId, messageQueueTarget, inlineDraftTarget, attachedFiles, sanitizeAttachmentsForSend, addToQueue, clearAttachedFiles, isMobile, consumeDrafts, currentProviderId, currentModelId, currentAgentName, currentVariant]);
+    }, [getCurrentInputSnapshot, inputMode, sideChatCommands, currentSessionId, messageQueueTarget, inlineDraftTarget, attachedFiles, sanitizeAttachmentsForSend, addToQueue, clearAttachedFiles, isMobile, consumeDrafts, currentProviderId, currentModelId, currentAgentName, currentVariant]);
 
     const handleQueuedMessageEdit = React.useCallback((content: string) => {
         setMessage(content);
@@ -975,6 +995,33 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
 
         if (!providerIdToSend || !modelIdToSend) {
             console.warn('Cannot send message: provider or model not selected');
+            return;
+        }
+
+        const sideChatCommand = !queuedOnly && inputMode === 'normal' && sideChatCommands.length > 0
+            ? parseSideChatCommand(inputSnapshot.message)
+            : null;
+        const sideChatDirectory = currentSessionDirectoryForSync ?? currentDirectory;
+        if (sideChatCommand) {
+            if (!currentSessionId || !sideChatDirectory) return;
+            try {
+                await openDisposableSideChat({
+                    parentSessionId: currentSessionId,
+                    directory: sideChatDirectory,
+                    prompt: sideChatCommand.prompt,
+                    providerID: providerIdToSend,
+                    modelID: modelIdToSend,
+                    agent: agentNameToSend ?? undefined,
+                    variant: variantToSend ?? undefined,
+                });
+                setMessage('');
+                persistDraftImmediately(chatDraftIdentity, '');
+                closeAutocomplete();
+                setAutocompleteQuery('');
+            } catch (error) {
+                console.error('Side chat command failed:', error);
+                toast.error(error instanceof Error ? error.message : t('sideChat.cleanup.error'));
+            }
             return;
         }
 
@@ -1275,6 +1322,13 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
     // Primary action for send/queue button — respects selected follow-up behavior
     const handlePrimaryAction = React.useCallback(() => {
         const inputSnapshot = getCurrentInputSnapshot();
+        const isSideChatCommand = inputMode === 'normal'
+            && sideChatCommands.length > 0
+            && parseSideChatCommand(inputSnapshot.message) !== null;
+        if (isSideChatCommand) {
+            void handleSubmitRef.current();
+            return;
+        }
         const canQueue = inputMode === 'normal' && inputSnapshot.hasContent && currentSessionId && (sessionPhase !== 'idle' || autoReviewRunning);
         if (followUpBehavior === 'queue' && canQueue) {
             handleQueueMessage();
@@ -1283,7 +1337,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         } else {
             void handleSubmitRef.current();
         }
-    }, [inputMode, getCurrentInputSnapshot, currentSessionId, sessionPhase, autoReviewRunning, followUpBehavior, handleQueueMessage]);
+    }, [inputMode, getCurrentInputSnapshot, currentSessionId, sessionPhase, autoReviewRunning, followUpBehavior, handleQueueMessage, sideChatCommands]);
 
     // Draft welcome presets: submit immediately.
     const submitPresetPrompt = React.useCallback((text: string, type: 'command' | 'skill') => {
@@ -1479,6 +1533,14 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
             e.preventDefault();
 
             const isCtrlEnter = e.ctrlKey || e.metaKey;
+
+            const isSideChatCommand = inputMode === 'normal'
+                && sideChatCommands.length > 0
+                && parseSideChatCommand(message) !== null;
+            if (isSideChatCommand) {
+                handleSubmit();
+                return;
+            }
 
             // Queueing / steering only works when there's an existing busy
             // session (or an active auto-review run).

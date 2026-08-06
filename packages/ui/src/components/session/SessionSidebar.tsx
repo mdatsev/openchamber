@@ -91,6 +91,7 @@ import {
   resolveGlobalSessionDirectory,
   useGlobalSessionsStore,
 } from '@/stores/useGlobalSessionsStore';
+import { isDiscoverableSession } from '@/stores/useDisposableSideChatsStore';
 import { useGitHubAuthStore } from '@/stores/useGitHubAuthStore';
 import { useNotificationStore } from '@/sync/notification-store';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
@@ -512,7 +513,9 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
     [globalActiveSessions],
   );
   const liveFallbackSessions = (() => {
-    const candidates = liveSessions.filter((session) => !globalActiveSessionIds.has(session.id));
+    const candidates = liveSessions.filter((session) => (
+      !globalActiveSessionIds.has(session.id) && isDiscoverableSession(session)
+    ));
     const signature = candidates.map(getSessionStructuralSignature).sort().join('\n');
     if (liveFallbackCacheRef.current.signature === signature) {
       return liveFallbackCacheRef.current.sessions;
