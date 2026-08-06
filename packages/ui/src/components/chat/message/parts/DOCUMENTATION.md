@@ -30,6 +30,7 @@ Use this doc when you ask an agent to change tool/header/description behavior.
   - `part.state.metadata.sessionId` is the only live identity contract between a Task and its child session.
   - A running Task may briefly have no `sessionId`; render it as waiting until the authoritative part update arrives. Never match parallel children by order, title, timestamp, or status.
   - Part-level metadata and output parsing exist only for older persisted records and never override state metadata.
+  - Background Task calls made by a subagent remain in that parent Task's child-session summary; ordinary nested foreground Tasks and todo bookkeeping remain hidden.
 
 - `toolPresentation.tsx`
   - Shared icon mapping for tool names (`getToolIcon`).
