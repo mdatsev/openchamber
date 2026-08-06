@@ -54,7 +54,7 @@ export const resetAppForRuntimeEndpointChange = (detail: RuntimeEndpointChangedD
   // Cross-project session list (mobile sessions sheet & co) belongs to the
   // previous instance — drop it so stale sessions can't linger after a switch.
   useGlobalSessionsStore.getState().resetForRuntimeSwitch();
-  useGlobalSessionStatusStore.setState({ statusById: new Map() });
+  useGlobalSessionStatusStore.setState({ statusById: new Map(), interruptedIds: new Set() });
   resetSessionOrdering();
   usePermissionStore.getState().reset();
   useFileSearchStore.getState().resetForRuntimeSwitch();

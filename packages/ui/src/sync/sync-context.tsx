@@ -206,6 +206,13 @@ export function useGlobalSessionStatus(sessionId: string): SessionStatus | undef
   )
 }
 
+/** Read whether a materialized session was authoritatively found interrupted. */
+export function useGlobalSessionInterrupted(sessionId: string): boolean {
+  return useGlobalSessionStatusStore(
+    useCallback((state) => state.interruptedIds.has(sessionId), [sessionId]),
+  )
+}
+
 /** Read all session statuses (for sidebar) */
 export function useAllSessionStatuses(): Record<string, SessionStatus> {
   return useLiveSyncSelector(
@@ -621,12 +628,14 @@ async function resyncDirectorySessionStatuses(
   candidateSessionIds: string[],
   mode: StatusSnapshotMode,
 ): Promise<DirectorySessionStatusSnapshot | null> {
+  const requestedAt = Date.now()
   const nextStatuses = await opencodeClient.getSessionStatusForDirectory(directory)
   // null = fetch failed; preserve existing state. {} or populated = a snapshot
   // of active sessions — reconciled per `mode` (absence ≠ idle under monotonic).
   if (nextStatuses === null) return null
   applySessionStatusSnapshot(store, nextStatuses, candidateSessionIds, mode)
   if (mode === "authoritative") {
+    store.setState({ sessionStatusSnapshotAt: requestedAt })
     applyGlobalSessionStatusSnapshot(directory, nextStatuses, candidateSessionIds)
   }
   return nextStatuses

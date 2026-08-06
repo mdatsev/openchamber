@@ -1,6 +1,7 @@
 import React from 'react';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { useSessionStatus, useSessionMessages, useSessionPermissions, useSessionQuestions } from '@/sync/sync-context';
+import { useDirectorySync, useSessionStatus, useSessionMessages, useSessionPermissions, useSessionQuestions } from '@/sync/sync-context';
+import { setGlobalSessionInterrupted } from '@/sync/global-session-status';
 
 // Mirrors OpenCode SessionStatus: busy|retry|idle.
 type SessionActivityPhase = 'idle' | 'busy' | 'retry';
@@ -10,6 +11,7 @@ export interface SessionActivityResult {
   isWorking: boolean;
   isBusy: boolean;
   isCooldown: boolean;
+  isInterrupted: boolean;
 }
 
 const IDLE_RESULT: SessionActivityResult = {
@@ -17,6 +19,12 @@ const IDLE_RESULT: SessionActivityResult = {
   isWorking: false,
   isBusy: false,
   isCooldown: false,
+  isInterrupted: false,
+};
+
+const INTERRUPTED_RESULT: SessionActivityResult = {
+  ...IDLE_RESULT,
+  isInterrupted: true,
 };
 
 /**
@@ -32,8 +40,12 @@ function useSessionActivity(sessionId: string | null | undefined, directory?: st
   const messages = useSessionMessages(sessionId ?? '', directory);
   const permissions = useSessionPermissions(sessionId ?? '', directory);
   const questions = useSessionQuestions(sessionId ?? '', directory);
+  const statusSnapshotAt = useDirectorySync(
+    React.useCallback((state) => state.sessionStatusSnapshotAt, []),
+    directory,
+  );
 
-  return React.useMemo<SessionActivityResult>(() => {
+  const activity = React.useMemo<SessionActivityResult>(() => {
     if (!sessionId) return IDLE_RESULT;
 
     // Permissions or questions pending → idle (the blocking indicator takes
@@ -50,22 +62,42 @@ function useSessionActivity(sessionId: string | null | undefined, directory?: st
       && lastMessage.role === 'assistant'
       && typeof (lastMessage as { time?: { completed?: number } }).time?.completed !== 'number',
     );
+    const lastMessageCreatedAt = (lastMessage as { time?: { created?: number } } | undefined)?.time?.created;
 
-    const hasAuthoritativeStatus = status !== undefined;
-    const statusWorking = hasAuthoritativeStatus && phase !== 'idle';
-    const isWorking = statusWorking || hasPendingAssistant;
+    const statusWorking = status !== undefined && phase !== 'idle';
+    if (statusWorking) {
+      return {
+        phase,
+        isWorking: true,
+        isBusy: phase === 'busy',
+        isCooldown: false,
+        isInterrupted: false,
+      };
+    }
 
-    if (hasAuthoritativeStatus && !statusWorking) return IDLE_RESULT;
+    if (status !== undefined) return IDLE_RESULT;
 
-    if (!isWorking) return IDLE_RESULT;
+    if (!hasPendingAssistant) return IDLE_RESULT;
+
+    const predatesAuthoritativeSnapshot = typeof statusSnapshotAt === 'number'
+      && (typeof lastMessageCreatedAt !== 'number' || lastMessageCreatedAt <= statusSnapshotAt);
+    if (predatesAuthoritativeSnapshot) return INTERRUPTED_RESULT;
 
     return {
-      phase: statusWorking ? phase : 'busy',
+      phase: 'busy',
       isWorking: true,
-      isBusy: phase === 'busy' || (!statusWorking && hasPendingAssistant),
+      isBusy: true,
       isCooldown: false,
+      isInterrupted: false,
     };
-  }, [sessionId, status, messages, permissions, questions]);
+  }, [sessionId, status, messages, permissions, questions, statusSnapshotAt]);
+
+  React.useEffect(() => {
+    if (!sessionId) return;
+    setGlobalSessionInterrupted(sessionId, activity.isInterrupted);
+  }, [activity.isInterrupted, sessionId]);
+
+  return activity;
 }
 
 export function useCurrentSessionActivity(): SessionActivityResult {

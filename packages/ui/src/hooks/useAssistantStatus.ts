@@ -7,7 +7,7 @@ import { useDirectorySync, useSessionMessages, useSessionPermissions, useSession
 import { isFullySyntheticMessage } from '@/lib/messages/synthetic';
 import { useCurrentSessionActivity } from './useSessionActivity';
 
-type AssistantActivity = 'idle' | 'streaming' | 'tooling' | 'cooldown' | 'permission';
+type AssistantActivity = 'idle' | 'streaming' | 'tooling' | 'cooldown' | 'permission' | 'interrupted';
 
 interface WorkingSummary {
     activity: AssistantActivity;
@@ -20,6 +20,7 @@ interface WorkingSummary {
     statusText: string | null;
     isGenericStatus: boolean;
     isWaitingForPermission: boolean;
+    isInterrupted: boolean;
     canAbort: boolean;
     compactionDeadline: number | null;
     activePartType?: 'text' | 'tool' | 'reasoning' | 'editing';
@@ -63,6 +64,7 @@ const DEFAULT_WORKING: WorkingSummary = {
     statusText: null,
     isGenericStatus: true,
     isWaitingForPermission: false,
+    isInterrupted: false,
     canAbort: false,
     compactionDeadline: null,
     activePartType: undefined,
@@ -336,7 +338,7 @@ export function useAssistantStatus(): AssistantStatusSnapshot {
         }, [currentSessionId])
     );
 
-    const { phase: activityPhase, isWorking: isPhaseWorking } = useCurrentSessionActivity();
+    const { phase: activityPhase, isWorking: isPhaseWorking, isInterrupted } = useCurrentSessionActivity();
 
     const currentSessionStatus = useSessionStatus(currentSessionId ?? '', currentSessionDirectory ?? undefined);
 
@@ -375,6 +377,14 @@ export function useAssistantStatus(): AssistantStatusSnapshot {
             };
         }
 
+        if (isInterrupted) {
+            return {
+                ...DEFAULT_WORKING,
+                activity: 'interrupted',
+                isInterrupted: true,
+            };
+        }
+
         const isWorking = isPhaseWorking;
         const isStreaming = activityPhase === 'busy';
         const isCooldown = false;
@@ -404,6 +414,7 @@ export function useAssistantStatus(): AssistantStatusSnapshot {
             statusText: isWorking ? parsedStatus.statusText : null,
             isGenericStatus: isWorking ? parsedStatus.isGenericStatus : true,
             isWaitingForPermission: false,
+            isInterrupted: false,
             canAbort: isWorking,
             compactionDeadline: null,
             activePartType: isWorking ? parsedStatus.activePartType : undefined,
@@ -414,7 +425,7 @@ export function useAssistantStatus(): AssistantStatusSnapshot {
             isComplete: false,
             retryInfo,
         };
-    }, [activityPhase, isPhaseWorking, parsedStatus, abortState, sessionRetryAttempt, sessionRetryNext]);
+    }, [activityPhase, isPhaseWorking, isInterrupted, parsedStatus, abortState, sessionRetryAttempt, sessionRetryNext]);
 
     const forming = React.useMemo<FormingSummary>(() => {
         const isActive = isPhaseWorking && parsedStatus.activePartType === 'text';

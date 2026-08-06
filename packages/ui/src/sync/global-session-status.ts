@@ -11,9 +11,11 @@ import {
 // incrementally and authoritative directory snapshots reconcile it, so each
 // sidebar row can subscribe to one leaf instead of every child store.
 //
-// Only non-idle entries are kept; absence means idle. Entries carry their
-// directory so a polled per-directory snapshot can authoritatively replace
-// that directory's slice (the server omits idle sessions from snapshots).
+// Only non-idle status entries are kept; absence means idle. Entries carry
+// their directory so a polled per-directory snapshot can authoritatively
+// replace that directory's slice (the server omits idle sessions from
+// snapshots). Interrupted markers are separate leaf state derived only after
+// message history and an authoritative snapshot have both reconciled.
 
 type ActiveStatusType = 'busy' | 'retry';
 
@@ -21,11 +23,23 @@ type GlobalSessionStatusEntry = { status: SessionStatus; directory: string };
 
 type GlobalSessionStatusState = {
   statusById: Map<string, GlobalSessionStatusEntry>;
+  interruptedIds: Set<string>;
 };
 
 export const useGlobalSessionStatusStore = create<GlobalSessionStatusState>(() => ({
   statusById: new Map(),
+  interruptedIds: new Set(),
 }));
+
+export const setGlobalSessionInterrupted = (sessionId: string, interrupted: boolean): void => {
+  useGlobalSessionStatusStore.setState((state) => {
+    if (state.interruptedIds.has(sessionId) === interrupted) return state;
+    const interruptedIds = new Set(state.interruptedIds);
+    if (interrupted) interruptedIds.add(sessionId);
+    else interruptedIds.delete(sessionId);
+    return { interruptedIds };
+  });
+};
 
 const normalizeStatusType = (type: unknown): ActiveStatusType | 'idle' => {
   if (type === 'busy') return 'busy';
@@ -46,16 +60,21 @@ const normalizeDirectory = (directory: string): string =>
 const setStatus = (sessionId: string, directory: string, status: SessionStatus | { type: 'idle' }): void => {
   useGlobalSessionStatusStore.setState((state) => {
     const current = state.statusById.get(sessionId);
+    const wasInterrupted = state.interruptedIds.has(sessionId);
+    const interruptedIds = wasInterrupted ? new Set(state.interruptedIds) : state.interruptedIds;
+    if (wasInterrupted) interruptedIds.delete(sessionId);
     if (status.type === 'idle') {
-      if (!current) return state;
+      if (!current && !wasInterrupted) return state;
       const next = new Map(state.statusById);
       next.delete(sessionId);
-      return { statusById: next };
+      return { statusById: next, interruptedIds };
     }
-    if (current && current.directory === directory && statusesEqual(current.status, status)) return state;
+    if (current && current.directory === directory && statusesEqual(current.status, status)) {
+      return wasInterrupted ? { interruptedIds } : state;
+    }
     const next = new Map(state.statusById);
     next.set(sessionId, { status, directory });
-    return { statusById: next };
+    return { statusById: next, interruptedIds };
   });
 };
 
@@ -88,7 +107,10 @@ export const applyGlobalSessionStatusEvent = (directory: string, payload: Event)
     case 'session.deleted': {
       const props = payload.properties as { sessionID?: string; info?: { id?: string } } | undefined;
       const sessionId = props?.sessionID ?? props?.info?.id;
-      if (sessionId) removeSessionOrdering(sessionId);
+      if (sessionId) {
+        setGlobalSessionInterrupted(sessionId, false);
+        removeSessionOrdering(sessionId);
+      }
       return;
     }
     default:
@@ -115,6 +137,7 @@ export const applyGlobalSessionStatusSnapshot = (
   useGlobalSessionStatusStore.setState((state) => {
     let changed = false;
     const next = new Map(state.statusById);
+    let interruptedIds = state.interruptedIds;
 
     for (const [sessionId, entry] of state.statusById) {
       if ((entry.directory === directory || known.has(sessionId)) && !(sessionId in raw)) {
@@ -134,12 +157,17 @@ export const applyGlobalSessionStatusSnapshot = (
         continue;
       }
       const normalizedStatus = { ...status, type } as SessionStatus;
+      if (interruptedIds.has(sessionId)) {
+        if (interruptedIds === state.interruptedIds) interruptedIds = new Set(interruptedIds);
+        interruptedIds.delete(sessionId);
+        changed = true;
+      }
       if (!current || current.directory !== directory || !statusesEqual(current.status, normalizedStatus)) {
         next.set(sessionId, { status: normalizedStatus, directory });
         changed = true;
       }
     }
 
-    return changed ? { statusById: next } : state;
+    return changed ? { statusById: next, interruptedIds } : state;
   });
 };

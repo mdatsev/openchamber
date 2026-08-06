@@ -22,7 +22,7 @@ import { isSessionPinned, type SessionPinnedTarget } from '@/stores/useSessionPi
 import { Icon } from "@/components/icon/Icon";
 import { buildExportFilename, downloadAsMarkdown, formatSessionAsMarkdown, getExportRevealLabelKey, revealExportedMarkdown, saveAsMarkdownDesktop } from '@/lib/exportSession';
 import type { ChildSessionExport } from '@/lib/exportSession';
-import { buildSessionMessageRecordsSnapshot, useDirectoryStore, useGlobalSessionStatus, useSessionPermissions, useSessionQuestions } from '@/sync/sync-context';
+import { buildSessionMessageRecordsSnapshot, useDirectoryStore, useGlobalSessionInterrupted, useGlobalSessionStatus, useSessionPermissions, useSessionQuestions } from '@/sync/sync-context';
 import { useSync } from '@/sync/use-sync';
 import { useViewportStore, viewportSessionKey } from '@/sync/viewport-store';
 import { DraggableSessionRow } from './sessionFolderDnd';
@@ -443,6 +443,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
     React.useCallback((state) => Boolean(state.sessionMemoryState.get(viewportSessionKey(session.id))?.isZombie), [session.id]),
   );
   const sessionStatus = useGlobalSessionStatus(session.id);
+  const isInterrupted = useGlobalSessionInterrupted(session.id);
   const isMovingToWorktree = useIsSessionWorktreeMovePending(session.id);
   const sessionPermissions = useSessionPermissions(session.id, sessionDirectory ?? undefined, { bootstrap: false });
   const sessionQuestions = useSessionQuestions(session.id, sessionDirectory ?? undefined, { bootstrap: false });
@@ -673,10 +674,12 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
   const hasPendingQuestion = sessionQuestions.length > 0;
   const isStreaming = !hasPendingQuestion && (statusType === 'busy' || statusType === 'retry');
   const pendingPermissionCount = sessionPermissions.length;
+  const showInterruptedStatus = !isMovingToWorktree && !hasPendingQuestion && !isStreaming && isInterrupted;
   const showUnreadStatus = !isMovingToWorktree
     && !isStreaming
+    && !showInterruptedStatus
     && (hasPendingQuestion || (needsAttention && !isActive));
-  const showStatusMarker = isStreaming || showUnreadStatus;
+  const showStatusMarker = isStreaming || showInterruptedStatus || showUnreadStatus;
   const statusMarkerContent = isStreaming
     ? (
         <Icon
@@ -685,6 +688,14 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
           aria-label={t('sessions.sidebar.session.status.active')}
         />
       )
+    : showInterruptedStatus
+      ? (
+          <Icon
+            name="error-warning"
+            className="h-3 w-3 text-status-warning"
+            aria-label={t('sessions.sidebar.session.status.interruptedUnexpectedly')}
+          />
+        )
     : (
         <span
           className="h-1.5 w-1.5 rounded-full bg-[var(--status-info)]"

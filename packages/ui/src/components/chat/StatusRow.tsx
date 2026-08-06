@@ -122,6 +122,7 @@ interface StatusRowProps {
   statusText?: string | null;
   isGenericStatus?: boolean;
   isWaitingForPermission?: boolean;
+  isInterrupted?: boolean;
   wasAborted?: boolean;
   abortActive?: boolean;
   retryInfo?: { attempt?: number; next?: number } | null;
@@ -143,6 +144,7 @@ export const StatusRow: React.FC<StatusRowProps> = ({
   statusText = null,
   isGenericStatus,
   isWaitingForPermission,
+  isInterrupted,
   wasAborted,
   abortActive,
   retryInfo,
@@ -221,6 +223,7 @@ export const StatusRow: React.FC<StatusRowProps> = ({
   const hasTodoContent = showTodos && statusSummary.left > 0;
   const hasAssistantContent = showAssistantStatus && (
     isWorking ||
+    Boolean(isInterrupted) ||
     Boolean(wasAborted) ||
     Boolean(showAbortStatus)
   );
@@ -320,6 +323,17 @@ export const StatusRow: React.FC<StatusRowProps> = ({
               <span className="flex items-center gap-1.5 typography-ui-label">
                 <Icon name="close-circle" aria-hidden="true"/>
                 {t('chat.statusRow.aborted')}
+              </span>
+            </div>
+          ) : showAssistantStatus && isInterrupted ? (
+            <div
+              className="flex h-full items-center pl-0.5 text-status-warning"
+              role="status"
+              aria-live="polite"
+            >
+              <span className="flex items-center gap-1.5 typography-ui-label">
+                <Icon name="error-warning" className="size-3.5" aria-hidden="true" />
+                {t('chat.statusRow.interruptedUnexpectedly')}
               </span>
             </div>
           ) : showAssistantStatus && shouldRenderPlaceholder ? (
