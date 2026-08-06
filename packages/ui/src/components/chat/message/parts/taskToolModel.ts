@@ -103,17 +103,24 @@ const projectMessageSummaryEntries = (message: MessageRecord): TaskToolSummaryEn
         for (const part of message.parts) {
             if (part.type !== 'tool') continue;
             const toolName = part.tool?.trim().toLowerCase();
-            if (!toolName || toolName === 'task' || toolName === 'todowrite' || toolName === 'todoread') continue;
-            const state = part.state as { status?: string; title?: string; input?: unknown } | undefined;
+            if (!toolName || toolName === 'todowrite' || toolName === 'todoread') continue;
+            const state = part.state as { status?: string; title?: string; input?: unknown; metadata?: unknown } | undefined;
+            const input = state?.input && typeof state.input === 'object'
+                ? state.input as Record<string, unknown>
+                : undefined;
+            if (toolName === 'task') {
+                const metadata = state?.metadata && typeof state.metadata === 'object'
+                    ? state.metadata as Record<string, unknown>
+                    : undefined;
+                if (metadata?.background !== true && input?.background !== true) continue;
+            }
             entries.push({
                 id: part.id,
                 tool: part.tool,
                 state: {
                     status: state?.status,
                     title: state?.title,
-                    input: state?.input && typeof state.input === 'object'
-                        ? state.input as Record<string, unknown>
-                        : undefined,
+                    input,
                 },
             });
         }
