@@ -674,13 +674,24 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
   const hasPendingQuestion = sessionQuestions.length > 0;
   const isStreaming = !hasPendingQuestion && (statusType === 'busy' || statusType === 'retry');
   const pendingPermissionCount = sessionPermissions.length;
+  const showQuestionStatus = !isMovingToWorktree && hasPendingQuestion;
   const showInterruptedStatus = !isMovingToWorktree && !hasPendingQuestion && !isStreaming && isInterrupted;
   const showUnreadStatus = !isMovingToWorktree
     && !isStreaming
+    && !showQuestionStatus
     && !showInterruptedStatus
-    && (hasPendingQuestion || (needsAttention && !isActive));
-  const showStatusMarker = isStreaming || showInterruptedStatus || showUnreadStatus;
-  const statusMarkerContent = isStreaming
+    && needsAttention
+    && !isActive;
+  const showStatusMarker = showQuestionStatus || isStreaming || showInterruptedStatus || showUnreadStatus;
+  const statusMarkerContent = showQuestionStatus
+    ? (
+        <Icon
+          name="question"
+          className="h-3 w-3 text-[var(--status-info)]"
+          aria-label={t('sessions.sidebar.session.status.inputNeeded')}
+        />
+      )
+    : isStreaming
     ? (
         <Icon
           name="loader-4"

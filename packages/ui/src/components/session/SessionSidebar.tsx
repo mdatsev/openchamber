@@ -290,10 +290,10 @@ const ProjectAggregateStatusIndicator: React.FC<{
 
   if (hasPendingQuestion) {
     return (
-      <span
-        className="h-1.5 w-1.5 rounded-full bg-[var(--status-info)]"
-        aria-label={t('sessions.sidebar.session.status.unread')}
-        title={t('sessions.sidebar.session.status.unread')}
+      <Icon
+        name="question"
+        className="h-3 w-3 text-[var(--status-info)]"
+        aria-label={t('sessions.sidebar.session.status.inputNeeded')}
       />
     );
   }

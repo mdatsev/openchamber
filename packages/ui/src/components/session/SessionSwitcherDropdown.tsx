@@ -203,7 +203,7 @@ function SwitcherRow({ session, depth, variant, secondaryMeta, hasChildren, isEx
   const statusType = sessionStatus?.type ?? 'idle';
   const hasPendingQuestion = sessionQuestions.length > 0;
   const isStreaming = !hasPendingQuestion && (statusType === 'busy' || statusType === 'retry');
-  const showUnreadDot = !isStreaming && (hasPendingQuestion || (needsAttention && !isActive));
+  const showUnreadDot = !isStreaming && !hasPendingQuestion && needsAttention && !isActive;
 
   const timestamp = session.time?.updated || session.time?.created || Date.now();
   const timeLabel = formatSessionCompactDateLabel(timestamp);
@@ -293,9 +293,15 @@ function SwitcherRow({ session, depth, variant, secondaryMeta, hasChildren, isEx
         ) : null}
       </div>
 
-      {isStreaming || showUnreadDot ? (
+      {hasPendingQuestion || isStreaming || showUnreadDot ? (
         <span className="flex h-3 w-3 flex-shrink-0 items-center justify-center self-center">
-          {isStreaming ? (
+          {hasPendingQuestion ? (
+            <Icon
+              name="question"
+              className="h-3 w-3 text-[var(--status-info)]"
+              aria-label={t('sessions.sidebar.session.status.inputNeeded')}
+            />
+          ) : isStreaming ? (
             <span
               className="h-1.5 w-1.5 rounded-full bg-primary animate-busy-pulse"
               aria-label={t('sessions.sidebar.session.status.active')}

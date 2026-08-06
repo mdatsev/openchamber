@@ -540,6 +540,7 @@ export const dict: Record<I18nKey, string> = {
   'sessions.sidebar.session.export.dialog.includeSubtasks': '包含子 Agent 任務',
   'sessions.sidebar.session.export.dialog.confirm': '匯出',
   'sessions.sidebar.session.status.active': '會話活躍中',
+  'sessions.sidebar.session.status.inputNeeded': '需要輸入',
   'sessions.sidebar.session.status.interruptedUnexpectedly': '會話意外中斷',
   'sessions.sidebar.session.status.unread': '有未讀更新',
   'sessions.sidebar.session.status.pinned': '已釘選會話',

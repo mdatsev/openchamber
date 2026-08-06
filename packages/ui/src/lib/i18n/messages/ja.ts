@@ -527,6 +527,7 @@ export const dict: Record<I18nKey, string> = {
   'sessions.sidebar.session.export.dialog.includeSubtasks': 'サブエージェントタスクを含める',
   'sessions.sidebar.session.export.dialog.confirm': 'エクスポート',
   'sessions.sidebar.session.status.active': 'セッションアクティブ',
+  'sessions.sidebar.session.status.inputNeeded': '入力が必要',
   'sessions.sidebar.session.status.interruptedUnexpectedly': 'セッションが予期せず中断されました',
   'sessions.sidebar.session.status.unread': '未読の更新',
   'sessions.sidebar.session.status.pinned': 'ピン留めされたセッション',

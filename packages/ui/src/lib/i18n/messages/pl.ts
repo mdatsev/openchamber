@@ -527,6 +527,7 @@ export const dict: Record<I18nKey, string> = {
   'sessions.sidebar.session.export.dialog.includeSubtasks': 'Dołącz pod-agentów',
   'sessions.sidebar.session.export.dialog.confirm': 'Eksportuj',
   'sessions.sidebar.session.status.active': 'Sesja aktywna',
+  'sessions.sidebar.session.status.inputNeeded': 'Wymagane wejście',
   'sessions.sidebar.session.status.interruptedUnexpectedly': 'Sesja została nieoczekiwanie przerwana',
   'sessions.sidebar.session.status.unread': 'Nieprzeczytane aktualizacje',
   'sessions.sidebar.session.status.pinned': 'Przypięta sesja',

@@ -362,6 +362,7 @@ export const dict = {
   'sessions.sidebar.session.export.dialog.includeSubtasks': 'Inclure les tâches des sous-agents',
   'sessions.sidebar.session.export.dialog.confirm': 'Exporter',
   'sessions.sidebar.session.status.active': 'Session active',
+  'sessions.sidebar.session.status.inputNeeded': 'Entrée nécessaire',
   'sessions.sidebar.session.status.interruptedUnexpectedly': 'Session interrompue de manière inattendue',
   'sessions.sidebar.session.status.unread': 'Mises à jour non lues',
   'sessions.sidebar.session.status.pinned': 'Session épinglée',

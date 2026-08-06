@@ -270,6 +270,7 @@ const SessionFolderItemBase = <TSessionNode,>({
                 <CollapsedActivityIndicator
                   state={collapsedActivityState}
                   activeLabel={t('sessions.sidebar.session.status.active')}
+                  questionLabel={t('sessions.sidebar.session.status.inputNeeded')}
                   unreadLabel={t('sessions.sidebar.session.status.unread')}
                 />
               ) : null}

@@ -761,6 +761,7 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
     <CollapsedActivityIndicator
       state={groupActivityState}
       activeLabel={t('sessions.sidebar.session.status.active')}
+      questionLabel={t('sessions.sidebar.session.status.inputNeeded')}
       unreadLabel={t('sessions.sidebar.session.status.unread')}
     />
   ) : null;

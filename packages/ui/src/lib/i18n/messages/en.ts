@@ -526,6 +526,7 @@ export const dict = {
   'sessions.sidebar.session.export.dialog.includeSubtasks': 'Include sub-agent tasks',
   'sessions.sidebar.session.export.dialog.confirm': 'Export',
   'sessions.sidebar.session.status.active': 'Session active',
+  'sessions.sidebar.session.status.inputNeeded': 'Input needed',
   'sessions.sidebar.session.status.interruptedUnexpectedly': 'Session interrupted unexpectedly',
   'sessions.sidebar.session.status.unread': 'Unread updates',
   'sessions.sidebar.session.status.pinned': 'Pinned session',
