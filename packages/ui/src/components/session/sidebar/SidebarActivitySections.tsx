@@ -1,6 +1,8 @@
 import React from 'react';
 import { cn } from '@/lib/utils';
 import type { SessionNode } from './types';
+import type { PrimeSessionSummary } from '@/lib/api/types';
+import { PrimeSessionRows } from '../PrimeSessionsSection';
 import { useI18n } from '@/lib/i18n';
 import { useSessionDisplayStore } from '@/stores/useSessionDisplayStore';
 import { Icon } from "@/components/icon/Icon";
@@ -46,6 +48,8 @@ type Props = {
   initialVisibleCount?: number;
   batchSize?: number;
   isDesktopShellRuntime: boolean;
+  primeSessions?: readonly PrimeSessionSummary[];
+  primeRootSessionIDs?: ReadonlySet<string>;
 };
 
 type RenderExtras = SessionNodeRenderExtras;
@@ -61,6 +65,8 @@ export function SidebarActivitySections(props: Props): React.ReactNode {
     variant = 'section',
     initialVisibleCount = MAX_VISIBLE_RECENT_SESSIONS,
     batchSize = MAX_VISIBLE_RECENT_SESSIONS,
+    primeSessions = [],
+    primeRootSessionIDs,
   } = props;
   const { t } = useI18n();
   const stickyZoneHeaders = useSessionDisplayStore((state) => state.stickyZoneHeaders);
@@ -129,7 +135,9 @@ export function SidebarActivitySections(props: Props): React.ReactNode {
     });
   }, [editingId, openSidebarMenuKey]);
 
-  const visibleSections = sections.filter((section) => section.items.length > 0);
+  const visibleSections = sections.filter((section) => (
+    section.items.length > 0 || (section.key === 'active-now' && (primeRootSessionIDs?.size ?? 0) > 0)
+  ));
   if (visibleSections.length === 0) {
     return null;
   }
@@ -158,20 +166,25 @@ export function SidebarActivitySections(props: Props): React.ReactNode {
           'recent',
           getRenderExtras(item.node),
         );
+        const primeRows = section.key === 'active-now' && primeRootSessionIDs
+          ? <PrimeSessionRows sessions={primeSessions} rootSessionIDs={primeRootSessionIDs} />
+          : null;
+        const showMoreButton = remainingCount > 0 ? (
+          <button
+            type="button"
+            onClick={() => showMoreSessions(section.key, visibleItems.length, section.items.length)}
+            className="mt-0.5 flex items-center justify-start rounded-md pl-[26px] pr-1.5 py-0.5 text-left text-xs text-muted-foreground/70 leading-tight hover:text-foreground hover:underline"
+          >
+            {t('sessions.sidebar.group.showMore')}
+          </button>
+        ) : null;
 
         if (flatVariant) {
           return (
             <div key={section.key} className="space-y-0.5">
+              {primeRows}
               {visibleItems.map(renderItem)}
-              {remainingCount > 0 ? (
-                <button
-                  type="button"
-                  onClick={() => showMoreSessions(section.key, visibleItems.length, section.items.length)}
-                  className="mt-0.5 flex items-center justify-start rounded-md pl-[26px] pr-1.5 py-0.5 text-left text-xs text-muted-foreground/70 leading-tight hover:text-foreground hover:underline"
-                >
-                  {t('sessions.sidebar.group.showMore')}
-                </button>
-              ) : null}
+              {showMoreButton}
             </div>
           );
         }
@@ -199,16 +212,9 @@ export function SidebarActivitySections(props: Props): React.ReactNode {
             </div>
             {!isCollapsed ? (
               <div className={cn('space-y-0.5')}>
+                {primeRows}
                 {visibleItems.map(renderItem)}
-                {remainingCount > 0 ? (
-                  <button
-                    type="button"
-                    onClick={() => showMoreSessions(section.key, visibleItems.length, section.items.length)}
-                    className="mt-0.5 flex items-center justify-start rounded-md pl-[26px] pr-1.5 py-0.5 text-left text-xs text-muted-foreground/70 leading-tight hover:text-foreground hover:underline"
-                  >
-                    {t('sessions.sidebar.group.showMore')}
-                  </button>
-                ) : null}
+                {showMoreButton}
                 {canShowFewer ? (
                   <button
                     type="button"

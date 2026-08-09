@@ -25,6 +25,7 @@ export interface MobilePillComposerProps {
     sessionId: string | null;
     directory?: string;
     newSessionDraftOpen: boolean;
+    textOnly: boolean;
     hasContent: boolean;
     isVSCode: boolean;
     canAbort: boolean;
@@ -50,6 +51,7 @@ export function MobilePillComposer(props: MobilePillComposerProps) {
         sessionId: currentSessionId,
         directory,
         newSessionDraftOpen,
+        textOnly,
         hasContent,
         isVSCode,
         canAbort,
@@ -70,32 +72,38 @@ export function MobilePillComposer(props: MobilePillComposerProps) {
 
     return (
         <div className="flex flex-col">
-        <SessionGoalRow
-            sessionId={currentSessionId}
-            directory={directory}
-            className="mb-1.5"
-        />
-        <SessionSuggestionChip
-            sessionId={currentSessionId}
-            directory={directory}
-            hidden={hasContent || newSessionDraftOpen}
-            onApply={onApplySuggestion}
-            className="mb-1.5"
-        />
+        {!textOnly && (
+            <>
+                <SessionGoalRow
+                    sessionId={currentSessionId}
+                    directory={directory}
+                    className="mb-1.5"
+                />
+                <SessionSuggestionChip
+                    sessionId={currentSessionId}
+                    directory={directory}
+                    hidden={hasContent || newSessionDraftOpen}
+                    onApply={onApplySuggestion}
+                    className="mb-1.5"
+                />
+            </>
+        )}
         <div className="flex items-center gap-2">
             <div
                 className="flex h-11 min-w-0 flex-1 items-center gap-x-0.5 rounded-full border border-border/80 pl-2 pr-1 shadow-[0_4px_16px_-4px_rgb(0_0_0_/_0.12)]"
                 style={{ backgroundColor: currentTheme?.colors?.surface?.subtle }}
             >
-                <ComposerAttachmentControls
-                    isVSCode={isVSCode}
-                    footerIconButtonClass={footerIconButtonClass}
-                    iconSizeClass={iconSizeClass}
-                    handlePickLocalFiles={onPickLocalFiles}
-                    openIssuePicker={onOpenIssuePicker}
-                    openPrPicker={onOpenPrPicker}
-                    onOpenMobileSheet={onOpenAttachSheet}
-                />
+                {!textOnly && (
+                    <ComposerAttachmentControls
+                        isVSCode={isVSCode}
+                        footerIconButtonClass={footerIconButtonClass}
+                        iconSizeClass={iconSizeClass}
+                        handlePickLocalFiles={onPickLocalFiles}
+                        openIssuePicker={onOpenIssuePicker}
+                        openPrPicker={onOpenPrPicker}
+                        onOpenMobileSheet={onOpenAttachSheet}
+                    />
+                )}
                 <button
                     type="button"
                     className="flex h-full min-w-0 flex-1 cursor-text items-center px-1.5 text-left"
@@ -110,7 +118,7 @@ export function MobilePillComposer(props: MobilePillComposerProps) {
                         {message.trim()
                             ? message
                             : currentSessionId || newSessionDraftOpen
-                                ? t('chat.chatInput.placeholder.chatCompact')
+                                ? t(textOnly ? 'prime.composer.placeholder' : 'chat.chatInput.placeholder.chatCompact')
                                 : t('chat.chatInput.placeholder.selectSession')}
                     </span>
                 </button>

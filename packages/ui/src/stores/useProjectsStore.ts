@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import { opencodeClient } from '@/lib/opencode/client';
 import { getRegisteredRuntimeAPIs } from '@/contexts/runtimeAPIRegistry';
-import type { ProjectEntry } from '@/lib/api/types';
+import type { HarnessID, ProjectEntry } from '@/lib/api/types';
 import type { DesktopSettings } from '@/lib/desktop';
 import { updateDesktopSettings } from '@/lib/persistence';
 import { createProjectIdFromPath } from '@/lib/projectId';
@@ -60,6 +60,7 @@ interface ProjectsStore {
     color?: string | null;
     iconBackground?: string | null;
     defaultModel?: string | null;
+    defaultHarness?: HarnessID;
   }) => void;
   uploadProjectIcon: (id: string, file: File) => Promise<{ ok: boolean; error?: string }>;
   removeProjectIcon: (id: string) => Promise<{ ok: boolean; error?: string }>;
@@ -280,6 +281,9 @@ const sanitizeProjects = (value: unknown): ProjectEntry[] => {
     const defaultModel = normalizeDefaultModel(candidate.defaultModel);
     if (defaultModel) {
       project.defaultModel = defaultModel;
+    }
+    if (candidate.defaultHarness === 'opencode' || candidate.defaultHarness === 'prime') {
+      project.defaultHarness = candidate.defaultHarness;
     }
     if (candidate.iconBackground === null) {
       project.iconBackground = null;
@@ -713,6 +717,7 @@ export const useProjectsStore = create<ProjectsStore>()(
       color?: string | null;
       iconBackground?: string | null;
       defaultModel?: string | null;
+      defaultHarness?: HarnessID;
     }) => {
       if (isVSCodeProjectsRuntime) {
         return;
@@ -738,6 +743,7 @@ export const useProjectsStore = create<ProjectsStore>()(
             delete updated.defaultModel;
           }
         }
+        if (meta.defaultHarness !== undefined) updated.defaultHarness = meta.defaultHarness;
         return updated;
       });
       set({ projects: nextProjects });

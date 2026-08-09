@@ -9,6 +9,7 @@ import { registerMagicPromptRoutes } from '../magic-prompts/routes.js';
 import { registerSessionFoldersRoutes } from '../session-folders/routes.js';
 import { registerSideChatRoutes } from '../side-chats/routes.js';
 import { registerPermissionAutoAcceptRoutes } from '../permission-auto-accept/runtime.js';
+import { registerPrimeAgentRoutes } from '../prime-agent/routes.js';
 import { registerConfigEntityRoutes } from './config-entity-routes.js';
 import { registerSettingsUtilityRoutes } from './core-routes.js';
 import { registerProjectIconRoutes } from './project-icon-routes.js';
@@ -124,6 +125,7 @@ export const createFeatureRoutesRuntime = (dependencies) => {
       permissionAutoAcceptRuntime,
       express,
       isRequestOriginAllowed,
+      primeAgentRuntime,
     } = routeDependencies;
 
     registerSettingsUtilityRoutes(app, {
@@ -133,6 +135,16 @@ export const createFeatureRoutesRuntime = (dependencies) => {
     });
 
     registerPermissionAutoAcceptRoutes(app, permissionAutoAcceptRuntime);
+
+    registerPrimeAgentRoutes(app, {
+      fsPromises,
+      os,
+      path,
+      express,
+      primeAgentRuntime,
+      validateDirectoryPath,
+      isRequestOriginAllowed,
+    });
 
     registerOpenCodeRoutes(app, {
       crypto,
@@ -152,6 +164,7 @@ export const createFeatureRoutesRuntime = (dependencies) => {
       refreshOpenCodeAfterConfigChange,
       buildOpenCodeUrl,
       getOpenCodeAuthHeaders,
+      reconcilePrimeAgent: () => primeAgentRuntime?.reconcile(),
     });
 
     registerProjectIconRoutes(app, {

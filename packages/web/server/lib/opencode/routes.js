@@ -22,6 +22,7 @@ export const registerOpenCodeRoutes = (app, dependencies) => {
     refreshOpenCodeAfterConfigChange,
     buildOpenCodeUrl,
     getOpenCodeAuthHeaders,
+    reconcilePrimeAgent,
   } = dependencies;
 
   let authLibrary = null;
@@ -329,8 +330,14 @@ export const registerOpenCodeRoutes = (app, dependencies) => {
 
   app.put('/api/config/settings', async (req, res) => {
     try {
-      const updated = await persistSettings(req.body ?? {});
+      const updates = req.body ?? {};
+      const updated = await persistSettings(updates);
       res.json(updated);
+      if (Object.prototype.hasOwnProperty.call(updates, 'primeAgentBinary')) {
+        void reconcilePrimeAgent?.().catch((error) => {
+          console.warn('[PrimeAgent] failed to apply updated runtime settings:', error?.message || error);
+        });
+      }
     } catch (error) {
       console.error('[API:PUT /api/config/settings] Failed to save settings:', error);
       console.error('[API:PUT /api/config/settings] Error stack:', error.stack);

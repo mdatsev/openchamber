@@ -47,6 +47,14 @@ Use this doc when you ask an agent to change tool/header/description behavior.
 - `ReasoningPart.tsx`
   - Thinking block UI (`ReasoningTimelineBlock`), summary + optional duration.
 
+- `PrimeToolPart.tsx`
+  - Prime-owned adapter to the shared compact tool visual language.
+  - Keeps structured input/output unmounted while collapsed and never reads
+    OpenCode session, editor, task, Git, or sync state.
+  - Also presents Prime `agent_message` custom records as compact disclosures.
+    Expanded IPython calls extract their authoritative `code` argument and use
+    the shared worker-backed Python highlighter for source and result text.
+
 - `JustificationBlock.tsx`
   - Justification block wrapper over `ReasoningTimelineBlock`.
 
@@ -62,6 +70,11 @@ Use this doc when you ask an agent to change tool/header/description behavior.
 - `ToolPart` defers expanded content after a user toggle, preventing large tool input/output payloads from mounting during the initial chat render.
 - Running bash output falls back to `state.metadata.output` until canonical `state.output` arrives. Its fixed-height output viewport follows new output until the user scrolls up, then resumes following when the user returns to the bottom. Live output appends or replaces rewritten snapshots as plain text without worker highlighting; finalized output normalizes ANSI terminal controls with a bounded synthetic-cell budget, bypasses the throttle, and receives the normal one-time highlighted rendering.
 - Thinking/Justification duration is hidden in `sorted` mode (handled in `ReasoningPart.tsx` + `JustificationBlock.tsx`).
+- Prime reasoning reuses `ReasoningTimelineBlock` directly. Prime tools reuse
+  the shared icon mapping, active shine, disclosure geometry, and bounded
+  expanded scrolling through `PrimeToolPart`. Prime agent messages use the same
+  disclosure surface, and IPython details use the shared syntax highlighter;
+  none are fabricated as SDK `Part` records or passed through `ToolPart`.
 
 ## "I want to change description for Perplexity" (example recipe)
 

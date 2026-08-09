@@ -89,6 +89,7 @@ import { createApnsRuntime } from './lib/notifications/apns-runtime.js';
 import { createNotificationTemplateRuntime } from './lib/notifications/template-runtime.js';
 import { createPermissionAutoAcceptRuntime } from './lib/permission-auto-accept/runtime.js';
 import { createGracefulShutdownRuntime } from './lib/opencode/shutdown-runtime.js';
+import { createPrimeAgentRuntime } from './lib/prime-agent/runtime.js';
 import { createProjectConfigRuntime } from './lib/projects/project-config.js';
 import { createRemoteClientAuthRuntime } from './lib/client-auth/remote-clients.js';
 import { createClientPairingRuntime } from './lib/client-auth/pairing.js';
@@ -1140,26 +1141,59 @@ const scheduledTasksRuntime = createScheduledTasksRuntime({
   },
   logger: console,
 });
-const emitSessionCreatedEvent = (event) => {
+const broadcastOpenChamberEvent = (payload) => {
   for (const client of uiOpenChamberEventClients) {
     try {
-      writeSseEvent(client, {
-        type: 'openchamber:session-created',
-        properties: {
-          sessionId: event.sessionID,
-          directory: event.directory,
-          createdAt: event.createdAt,
-          promptDispatched: event.promptDispatched === true,
-          dispatchedAsCommand: event.dispatchedAsCommand === true,
-          ...(event.projectID ? { projectId: event.projectID } : {}),
-          ...(event.title ? { title: event.title } : {}),
-        },
-      });
+      writeSseEvent(client, payload);
     } catch {
       uiOpenChamberEventClients.delete(client);
     }
   }
 };
+const emitSessionCreatedEvent = (event) => {
+  broadcastOpenChamberEvent({
+    type: 'openchamber:session-created',
+    properties: {
+      sessionId: event.sessionID,
+      directory: event.directory,
+      createdAt: event.createdAt,
+      promptDispatched: event.promptDispatched === true,
+      dispatchedAsCommand: event.dispatchedAsCommand === true,
+      ...(event.projectID ? { projectId: event.projectID } : {}),
+      ...(event.title ? { title: event.title } : {}),
+    },
+  });
+};
+const emitPrimeAgentEvent = (event) => {
+  const payload = event.type === 'runtime-changed'
+    ? {
+        type: 'openchamber:prime-runtime-changed',
+        properties: { schemaVersion: 1, status: event.status },
+      }
+    : {
+        type: 'openchamber:prime-session-changed',
+        properties: {
+          schemaVersion: 1,
+          sessionId: event.sessionID,
+          activity: event.activity,
+          catalogChanged: event.catalogChanged === true,
+        },
+      };
+  broadcastOpenChamberEvent(payload);
+};
+const primeAgentRuntime = createPrimeAgentRuntime({
+  crypto,
+  net,
+  os,
+  path,
+  process,
+  spawn,
+  readSettingsFromDiskMigrated,
+  buildAugmentedPath,
+  searchPathFor,
+  isExecutable,
+  onEvent: emitPrimeAgentEvent,
+});
 const scheduledTaskService = createScheduledTaskService({
   readSettingsFromDiskMigrated,
   sanitizeProjects,
@@ -1260,6 +1294,7 @@ const gracefulShutdownRuntime = createGracefulShutdownRuntime({
   },
   tunnelAuthController,
   scheduledTasksRuntime,
+  primeAgentRuntime,
 });
 
 const gracefulShutdown = (...args) => gracefulShutdownRuntime.gracefulShutdown(...args);
@@ -1659,6 +1694,7 @@ async function main(options = {}) {
     getOpenChamberEventClients: () => uiOpenChamberEventClients,
     writeSseEvent,
     permissionAutoAcceptRuntime,
+    primeAgentRuntime,
     express,
   });
 
@@ -1729,6 +1765,9 @@ async function main(options = {}) {
   terminalRuntime = startupPipelineResult.terminalRuntime;
   dictationRuntime = startupPipelineResult.dictationRuntime;
   messageStreamRuntime = startupPipelineResult.messageStreamRuntime;
+  void primeAgentRuntime.start().catch((error) => {
+    console.warn('[PrimeAgent] failed to start runtime:', error?.message || error);
+  });
 
   try {
     await scheduledTasksRuntime.start();

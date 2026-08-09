@@ -45,7 +45,7 @@ So:
 | `SessionMessageLoader` | Initial message loading, pagination, prefetch, retries, load state, and optimistic reconciliation | One runtime, directory, and session ID |
 | `global-session-status.ts` | Incremental non-idle session status index reconciled from events and authoritative directory snapshots | All known directories in the active runtime |
 | `session-ordering.ts` | Ephemeral lifecycle rank used by every user-visible session list | All known sessions in the active runtime |
-| `session-ui-store.ts` | Session selection, draft lifecycle, abort prompts, worktree metadata, SDK-facing action entrypoints | App UI state |
+| `session-ui-store.ts` | Session selection, harness-aware draft lifecycle, abort prompts, worktree metadata, SDK-facing action entrypoints | App UI state |
 | `useGlobalSessionsStore.ts` | Global active sessions, global archived sessions, `sessionsByDirectory` | All opened project/worktree session lists |
 | `useDisposableSideChatsStore.ts` | Bounded runtime/directory/parent/side lifecycle ownership and crash recovery | Persisted across runtimes; active mutations remain runtime-scoped |
 | `viewport-store.ts` | Scroll anchors, session memory, loading indicators | App UI state |

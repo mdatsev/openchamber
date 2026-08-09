@@ -59,6 +59,8 @@ export type DesktopSettings = {
   homeDirectory?: string;
   // Optional absolute path to `opencode` binary.
   opencodeBinary?: string;
+  // Optional absolute path to the Prime Agent executable or launcher.
+  primeAgentBinary?: string;
   desktopLanAccessEnabled?: boolean;
   desktopKeepAwakeEnabled?: boolean;
   desktopMinimizeToTrayEnabled?: boolean;

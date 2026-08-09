@@ -40,6 +40,17 @@ Examples:
 
 These stores coordinate visible app state, navigation, selected tabs, dialogs, and lightweight feature flags.
 
+`useUIStore.primeTranscriptTarget` is ephemeral full-page navigation state. It
+holds only a Prime session summary with its composite
+`{ runtimeKey, harness, sessionID }` identity, is excluded from persistence, is
+cleared on runtime switches and ordinary session/draft navigation, and never
+changes the active OpenCode session identity. Transcript reads and mutation
+completions compare that full identity rather than a collision-prone session ID.
+The transcript body and interactive runtime state stay local to the Prime
+surface rather than entering a broad UI store.
+When its adapter is unavailable, the last successful transcript remains visible
+as read-only content.
+
 ### Session / project coordination stores
 
 Examples:

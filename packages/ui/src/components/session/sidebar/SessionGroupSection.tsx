@@ -38,6 +38,8 @@ import {
   mergeCollapsedActivityStates,
   type CollapsedActivityState,
 } from './collapsedActivityState';
+import type { PrimeSessionSummary } from '@/lib/api/types';
+import { PrimeSessionRows } from '../PrimeSessionsSection';
 
 type DeleteFolderConfirm = {
   scopeKey: string;
@@ -109,7 +111,25 @@ type Props = {
    * render of an expanded archived bucket.
    */
   scrollContainerRef?: React.RefObject<HTMLElement | null>;
+  primeSessions?: readonly PrimeSessionSummary[];
 };
+
+const EMPTY_PRIME_SESSIONS: readonly PrimeSessionSummary[] = [];
+
+const arePrimeSessionsEqual = (
+  previous: readonly PrimeSessionSummary[],
+  next: readonly PrimeSessionSummary[],
+): boolean => previous.length === next.length && previous.every((session, index) => {
+  const candidate = next[index];
+  return candidate
+    && session.identity.runtimeKey === candidate.identity.runtimeKey
+    && session.identity.sessionID === candidate.identity.sessionID
+    && session.title === candidate.title
+    && session.directory === candidate.directory
+    && session.updatedAt === candidate.updatedAt
+    && session.activity === candidate.activity
+    && session.interactive === candidate.interactive;
+});
 
 const groupContainsSessionId = (group: SessionGroup, sessionId: string | null): boolean => {
   if (!sessionId) return false;
@@ -189,6 +209,7 @@ const areGroupPropsEqual = (prev: Props, next: Props): boolean => {
   if (prev.compactBodyPadding !== next.compactBodyPadding) return false;
   if (prev.groupSearchDataByGroup !== next.groupSearchDataByGroup) return false;
   if (prev.visibleSessionCount !== next.visibleSessionCount) return false;
+  if (!arePrimeSessionsEqual(prev.primeSessions ?? EMPTY_PRIME_SESSIONS, next.primeSessions ?? EMPTY_PRIME_SESSIONS)) return false;
 
   if (prev.collapsedGroups !== next.collapsedGroups
     && prev.collapsedGroups.has(prev.groupKey) !== next.collapsedGroups.has(next.groupKey)) {
@@ -329,6 +350,7 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
     dragHandleProps,
     compactBodyPadding = false,
     scrollContainerRef,
+    primeSessions = EMPTY_PRIME_SESSIONS,
   } = props;
 
   const compareSessionNodes = React.useCallback((a: SessionNode, b: SessionNode) => {
@@ -754,9 +776,12 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
   const statusLine = group.branch && isBranchDifferentFromLabel(group.branch, group.label)
     ? { label: group.branch, color: null as string | null }
     : null;
-  const groupActivityState = isCollapsed
+  const openCodeGroupActivityState = isCollapsed
     ? getSessionNodesActivityState(sourceGroupNodes, activeActivitySessionIds, unreadActivitySessionIds, notifyOnSubtasks, pendingQuestionSessionIds)
     : null;
+  const groupActivityState = isCollapsed && primeSessions.some((session) => session.activity === 'working')
+    ? mergeCollapsedActivityStates(openCodeGroupActivityState, 'active')
+    : openCodeGroupActivityState;
   const groupActivityIndicator = groupActivityState ? (
     <CollapsedActivityIndicator
       state={groupActivityState}
@@ -887,7 +912,7 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
         ? 'pr-2 group-hover/gh:pr-14 group-focus-within/gh:pr-14'
         : 'pr-2 group-hover/gh:pr-7 group-focus-within/gh:pr-7');
 
-  const body = (
+  const openCodeBody = (
     <SessionFolderDndScope
       scopeKey={folderScopes[0]?.scopeKey ?? folderScopeKey}
       hasFolders={allFoldersForGroup.length > 0}
@@ -973,7 +998,7 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
           childRenderExtrasFor,
         }))
       )}
-      {totalSessions === 0 && allFoldersForGroup.length === 0 ? (
+      {totalSessions === 0 && allFoldersForGroup.length === 0 && primeSessions.length === 0 ? (
         // pl-[26px] lines the text up with the worktree sub-header label
         // (gutter + icon + gap).
         <div className="py-1 pl-[26px] text-left typography-micro text-muted-foreground">
@@ -1026,6 +1051,18 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
         </button>
       ) : null}
     </SessionFolderDndScope>
+  );
+  const body = (
+    <>
+      <PrimeSessionRows
+        sessions={primeSessions}
+        onSessionSelected={() => {
+          if (projectId && projectId !== activeProjectId) setActiveProjectIdOnly(projectId);
+          if (mobileVariant) setSessionSwitcherOpen(false);
+        }}
+      />
+      {openCodeBody}
+    </>
   );
 
   // Rows own their left gutter (aligned with the zone-header text), so the

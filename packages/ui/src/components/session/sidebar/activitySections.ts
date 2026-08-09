@@ -1,4 +1,5 @@
 import type { Session } from '@opencode-ai/sdk/v2';
+import type { PrimeSessionSummary } from '@/lib/api/types';
 
 const RECENT_SESSION_MAX_AGE_MS = 48 * 60 * 60 * 1000;
 
@@ -37,5 +38,17 @@ export const deriveRecentSessions = (
       return false;
     }
     return activeSessionIds.has(session.id) || getSessionUpdatedAt(session) >= minUpdatedAt;
+  });
+};
+
+export const deriveRecentPrimeSessions = (
+  sessions: readonly PrimeSessionSummary[],
+  now = Date.now(),
+) => {
+  const minUpdatedAt = now - RECENT_SESSION_MAX_AGE_MS;
+  return sessions.filter((session) => {
+    if (session.parentID) return false;
+    const updatedAt = Date.parse(session.updatedAt);
+    return session.activity === 'working' || (Number.isFinite(updatedAt) && updatedAt >= minUpdatedAt);
   });
 };

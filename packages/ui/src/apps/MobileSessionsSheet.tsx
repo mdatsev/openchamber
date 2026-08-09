@@ -36,6 +36,9 @@ import { DirectoryExplorerDialog } from '@/components/session/DirectoryExplorerD
 import { Icon } from '@/components/icon/Icon';
 import { NewWorktreeDialog } from '@/components/session/NewWorktreeDialog';
 import { Button } from '@/components/ui/button';
+import { PrimeSessionRows } from '@/components/session/PrimeSessionsSection';
+import { createDirectoryOwnershipResolver } from '@/components/session/sidebar/sessionOwnership';
+import { usePrimeSessionsCatalog } from '@/components/session/usePrimeSessionsCatalog';
 import { Input } from '@/components/ui/input';
 import { ScrollShadow } from '@/components/ui/ScrollShadow';
 import { toast } from '@/components/ui';
@@ -43,6 +46,8 @@ import { useThemeSystem } from '@/contexts/useThemeSystem';
 import { getProjectLabel, normalizePath } from './mobilePaths';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
 import { useI18n } from '@/lib/i18n';
+import { getRuntimeKey } from '@/lib/runtime-switch';
+import { useUIStore } from '@/stores/useUIStore';
 import { PROJECT_COLOR_MAP, PROJECT_ICON_MAP, ProjectIconImage } from '@/lib/projectMeta';
 import { cn } from '@/lib/utils';
 import {
@@ -65,6 +70,7 @@ import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useAllLiveSessions, useGlobalSessionStatus } from '@/sync/sync-context';
 import { useSessionUnseenCount } from '@/sync/notification-store';
 import type { WorktreeMetadata } from '@/types/worktree';
+import type { PrimeSessionSummary } from '@/lib/api/types';
 
 import { MobileDeleteWorktreeDialog } from './MobileDeleteWorktreeDialog';
 import { MobileProjectEditSurface } from './MobileProjectEditSurface';
@@ -88,6 +94,8 @@ type MobileSessionsSheetProps = {
 };
 
 const EMPTY_PINNED_SESSION_IDS = new Set<string>();
+const EMPTY_WORKTREES_BY_PROJECT = new Map<string, WorktreeMetadata[]>();
+const EMPTY_GIT_PROJECT_PATHS = new Set<string>();
 
 // Pseudo-project key for the collapsible "recent" group's persisted expansion.
 
@@ -114,6 +122,8 @@ type WorktreeBucket = {
   worktree: WorktreeMetadata | null;
   /** Sessions matched into this bucket, sorted by recency desc. */
   sessions: Session[];
+  /** Prime sessions share this location but remain outside OpenCode actions. */
+  primeSessions: PrimeSessionSummary[];
 };
 
 type ProjectNode = {
@@ -837,6 +847,7 @@ const SortableProjectRow: React.FC<{
 export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, onOpenChange, variant = 'drawer', footer }) => {
   const { t } = useI18n();
   const { git } = useRuntimeAPIs();
+  const runtimeKey = getRuntimeKey();
   const liveSessions = useAllLiveSessions();
   const globalActiveSessions = useGlobalSessionsStore((state) => state.activeSessions);
   const pinnedSessionIds = useSessionPinnedStore(React.useCallback(
@@ -869,6 +880,7 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
   const expandedParents = useMobileSessionExpansionStore((state) => state.expandedParents);
   const toggleParent = useMobileSessionExpansionStore((state) => state.toggleParent);
   const [query, setQuery] = React.useState('');
+  const normalizedQuery = query.trim().toLowerCase();
   const [editingProjectId, setEditingProjectId] = React.useState<string | null>(null);
   // Swipe-left actions: which row has its actions revealed, and whether its
   // delete button is armed (two-step). One row at a time.
@@ -892,16 +904,20 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
   // availableWorktreesByProject on connect) so the FIRST open already shows
   // worktrees; the per-open refresh below keeps them fresh without ever
   // blanking the list.
-  const [worktreesByProject, setWorktreesByProject] = React.useState<Map<string, WorktreeMetadata[]>>(
-    () => new Map(useSessionUIStore.getState().availableWorktreesByProject),
-  );
-  const [gitProjectPaths, setGitProjectPaths] = React.useState<Set<string>>(() => {
+  const [worktreeTopology, setWorktreeTopology] = React.useState(() => {
+    const worktreesByProject = new Map(useSessionUIStore.getState().availableWorktreesByProject);
     const seeded = new Set<string>();
-    for (const [path, worktrees] of useSessionUIStore.getState().availableWorktreesByProject) {
+    for (const [path, worktrees] of worktreesByProject) {
       if (worktrees.length > 0) seeded.add(path);
     }
-    return seeded;
+    return { runtimeKey, worktreesByProject, gitProjectPaths: seeded };
   });
+  const worktreesByProject = worktreeTopology.runtimeKey === runtimeKey
+    ? worktreeTopology.worktreesByProject
+    : EMPTY_WORKTREES_BY_PROJECT;
+  const gitProjectPaths = worktreeTopology.runtimeKey === runtimeKey
+    ? worktreeTopology.gitProjectPaths
+    : EMPTY_GIT_PROJECT_PATHS;
   const [editingOrder, setEditingOrder] = React.useState(false);
   // Reorder mode collapses projects by default (dragging past 40 worktrees is
   // painful); tap outside the drag handle to expand one.
@@ -943,30 +959,47 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
         projects.map(async (project) => {
           const path = normalizePath(project.path);
           if (!path) return null;
-          const isGitRepo = await git.checkIsGitRepository(path).catch(() => false);
-          const worktrees = isGitRepo
-            ? await listProjectWorktrees({ id: project.id, path }).catch(() => [])
-            : [];
-          return [path, worktrees, isGitRepo] as const;
+          try {
+            const isGitRepo = await git.checkIsGitRepository(path);
+            const worktrees = isGitRepo ? await listProjectWorktrees({ id: project.id, path }) : [];
+            return { path, worktrees, isGitRepo };
+          } catch {
+            return { path, failed: true as const };
+          }
         }),
       );
       if (cancelled) return;
-      const discoveredWorktreesByProject = new Map<string, WorktreeMetadata[]>();
-      const nextGitProjectPaths = new Set<string>();
-      for (const entry of entries) {
-        if (entry) {
-          discoveredWorktreesByProject.set(entry[0], entry[1]);
-          if (entry[2]) nextGitProjectPaths.add(entry[0]);
+      setWorktreeTopology((current) => {
+        const discoveredWorktreesByProject = new Map(
+          current.runtimeKey === runtimeKey ? current.worktreesByProject : EMPTY_WORKTREES_BY_PROJECT,
+        );
+        const currentGitProjectPaths = current.runtimeKey === runtimeKey
+          ? current.gitProjectPaths
+          : EMPTY_GIT_PROJECT_PATHS;
+        for (const entry of entries) {
+          if (entry && !('failed' in entry)) {
+            discoveredWorktreesByProject.set(entry.path, entry.worktrees);
+          }
         }
-      }
-      setWorktreesByProject(partitionWorktreesByRegisteredProject(projects, discoveredWorktreesByProject));
-      setGitProjectPaths(nextGitProjectPaths);
+        const registeredProjectPaths = new Set(projects.map((project) => normalizePath(project.path)).filter(Boolean));
+        const nextGitProjectPaths = new Set([...currentGitProjectPaths].filter((path) => registeredProjectPaths.has(path)));
+        for (const entry of entries) {
+          if (!entry || 'failed' in entry) continue;
+          if (entry.isGitRepo) nextGitProjectPaths.add(entry.path);
+          else nextGitProjectPaths.delete(entry.path);
+        }
+        return {
+          runtimeKey,
+          worktreesByProject: partitionWorktreesByRegisteredProject(projects, discoveredWorktreesByProject),
+          gitProjectPaths: nextGitProjectPaths,
+        };
+      });
     };
     void run();
     return () => {
       cancelled = true;
     };
-  }, [git, open, projects, worktreeRefreshKey]);
+  }, [git, open, projects, runtimeKey, worktreeRefreshKey]);
 
   const projectsMeta = React.useMemo<ProjectMeta[]>(
     () =>
@@ -986,6 +1019,7 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
       })),
     [gitProjectPaths, projects, worktreeOrderByProject, worktreesByProject],
   );
+  const primeCatalog = usePrimeSessionsCatalog((open || variant === 'sidebar') && !normalizedQuery);
 
   /**
    * Global sessions cover all directories — even unbootstrapped ones — so the tree shows
@@ -1008,8 +1042,6 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
     return merged.filter((session) => !session.time?.archived);
   }, [globalActiveSessions, liveSessions]);
 
-  const normalizedQuery = query.trim().toLowerCase();
-
   // On open, bring the current session (or at least its project) into view —
   // the list keeps its scroll position between opens, so a long project list
   // otherwise lands wherever it was left. Rows carry data-active-* markers.
@@ -1026,7 +1058,7 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
     return () => window.cancelAnimationFrame(frame);
   }, [open]);
 
-  const projectNodes = React.useMemo<ProjectNode[]>(() => {
+  const { projectNodes, unownedPrimeSessions } = React.useMemo(() => {
     const nodes: ProjectNode[] = projectsMeta.map((project) => ({
       project,
       buckets: [] as WorktreeBucket[],
@@ -1045,6 +1077,7 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
           path: normalizedBucketPath,
           worktree,
           sessions: [],
+          primeSessions: [],
         };
         node.buckets.push(bucket);
       }
@@ -1069,17 +1102,37 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
       bucket.sessions.push(session);
     }
 
+    const primeDirectoryOwnership = createDirectoryOwnershipResolver(
+      projectsMeta.map((project) => ({ id: project.id, normalizedPath: project.path })),
+      new Map(projectsMeta.map((project) => [project.path, project.worktrees])),
+      false,
+    );
+    const unowned: PrimeSessionSummary[] = [];
+    for (const session of primeCatalog.sessions) {
+      const owner = primeDirectoryOwnership.resolveDirectoryOwner(session.directory);
+      const node = owner ? nodes.find((candidate) => candidate.project.id === owner.projectId) : null;
+      if (!owner || !node) {
+        unowned.push(session);
+        continue;
+      }
+      const worktree = owner.kind === 'worktree'
+        ? node.project.worktrees.find((candidate) => normalizePath(candidate.path) === owner.scopeDirectory) ?? null
+        : null;
+      ensureBucket(node, owner.scopeDirectory, worktree).primeSessions.push(session);
+    }
+
     for (const node of nodes) {
       for (const bucket of node.buckets) {
         bucket.sessions = orderSessionsByLifecycleScopes(bucket.sessions, pinnedSessionIds, sessionOrderRanks);
         for (const session of bucket.sessions) {
           if (!getParentId(session)) node.totalSessions += 1;
         }
+        node.totalSessions += bucket.primeSessions.length;
       }
     }
 
-    return nodes;
-  }, [activeProjectId, pinnedSessionIds, projectsMeta, sessionOrderRanks, sessions]);
+    return { projectNodes: nodes, unownedPrimeSessions: unowned };
+  }, [activeProjectId, pinnedSessionIds, primeCatalog.sessions, projectsMeta, sessionOrderRanks, sessions]);
 
   const normalizedDirectory = normalizePath(currentDirectory);
 
@@ -1194,6 +1247,15 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
 
     return (
       <div>
+        <PrimeSessionRows
+          sessions={bucket.primeSessions}
+          indent={indent}
+          mobileVariant
+          onSessionSelected={() => {
+            if (node.project.id !== activeProjectId) setActiveProjectIdOnly(node.project.id);
+            onOpenChange(false);
+          }}
+        />
         {visibleRoots.map((session) => renderNode(session, indent))}
         {remaining > 0 ? (
           <ShowMoreRow indent={indent} onClick={() => showMoreBucketSessions(bucketKey, visibleRoots.length)} />
@@ -1232,6 +1294,7 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
       const worktree = findExactWorktreeMatch(project, normalizePath(directory ?? ''));
       if (worktree) setWorktreeExpanded(`${project.id}::${normalizePath(worktree.path)}`, true);
     }
+    useUIStore.getState().closeMainSurfaces();
     void setCurrentSession(session.id, directory);
     onOpenChange(false);
   };
@@ -1468,6 +1531,18 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
               ) : null}
             </div>
           </div>
+          {!normalizedQuery && !editingOrder && (unownedPrimeSessions.length > 0 || primeCatalog.loadFailed) ? (
+            <div className="px-3 pt-2">
+              <PrimeSessionRows
+                sessions={unownedPrimeSessions}
+                loadFailed={primeCatalog.loadFailed}
+                onRetry={primeCatalog.retry}
+                indent={40}
+                mobileVariant
+                onSessionSelected={() => onOpenChange(false)}
+              />
+            </div>
+          ) : null}
           {projectsMeta.length === 0 ? (
             <MobileSessionsEmpty
               title={t('mobile.sessions.empty.noProjectsTitle')}

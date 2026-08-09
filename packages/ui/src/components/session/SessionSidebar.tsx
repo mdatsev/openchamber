@@ -33,7 +33,7 @@ import { useSidebarPersistence } from './sidebar/hooks/useSidebarPersistence';
 import { useProjectRepoStatus } from './sidebar/hooks/useProjectRepoStatus';
 import { useProjectSessionLists } from './sidebar/hooks/useProjectSessionLists';
 import { useAuthoritativeSessionCleanup } from './sidebar/hooks/useAuthoritativeSessionCleanup';
-import { createSessionOwnershipIndex } from './sidebar/sessionOwnership';
+import { createDirectoryOwnershipResolver, createSessionOwnershipIndex } from './sidebar/sessionOwnership';
 import { useStickyProjectHeaders } from './sidebar/hooks/useStickyProjectHeaders';
 import { ProjectEditDialog } from '@/components/layout/ProjectEditDialog';
 import { UpdateDialog } from '@/components/ui/UpdateDialog';
@@ -41,6 +41,8 @@ import { SessionGroupSection } from './sidebar/SessionGroupSection';
 import { SidebarHeader } from './sidebar/SidebarHeader';
 import { SidebarNav } from './sidebar/SidebarNav';
 import { SidebarActivitySections } from './sidebar/SidebarActivitySections';
+import { PrimeSessionRows } from './PrimeSessionsSection';
+import { usePrimeSessionsCatalog } from './usePrimeSessionsCatalog';
 import { SidebarFooter } from './sidebar/SidebarFooter';
 import { SidebarProjectsList } from './sidebar/SidebarProjectsList';
 import { SessionNodeItem } from './sidebar/SessionNodeItem';
@@ -68,6 +70,7 @@ import { useSidebarBulkActions } from './sidebar/hooks/useSidebarBulkActions';
 import { useSessionDisplayStore } from '@/stores/useSessionDisplayStore';
 import { type SessionGroup, type SessionNode } from './sidebar/types';
 import {
+  deriveRecentPrimeSessions,
   deriveRecentSessions,
 } from './sidebar/activitySections';
 import { useSessionPinnedStore } from '@/stores/useSessionPinnedStore';
@@ -102,6 +105,7 @@ import { recordWorktreesSeen } from './sidebar/worktreeFirstSeen';
 import { getRuntimeKey } from '@/lib/runtime-switch';
 import { streamPerfCount, streamPerfMark } from '@/stores/utils/streamDebug';
 import { runBackgroundNetworkTask } from '@/lib/background-network';
+import type { PrimeSessionSummary } from '@/lib/api/types';
 
 const PROJECT_COLLAPSE_STORAGE_KEY = 'oc.sessions.projectCollapse';
 const GROUP_ORDER_STORAGE_KEY = 'oc.sessions.groupOrder';
@@ -151,6 +155,7 @@ const SIDEBAR_PR_NO_PR_RETRY_MS = 5 * 60_000;
 
 const EMPTY_SUBTREE_SET: Set<string> = new Set();
 const EMPTY_STRING_ARRAY: string[] = [];
+const EMPTY_PRIME_SESSIONS: readonly PrimeSessionSummary[] = [];
 const EMPTY_PENDING_QUESTION_INDEX = {
   sessionIds: new Set<string>(),
   directories: new Set<string>(),
@@ -262,7 +267,8 @@ const SidebarBootstrapDemandEffect: React.FC<{
 const ProjectAggregateStatusIndicator: React.FC<{
   directories: Array<string | null>;
   hasPendingQuestion: boolean;
-}> = ({ directories, hasPendingQuestion }) => {
+  hasPrimeActivity: boolean;
+}> = ({ directories, hasPendingQuestion, hasPrimeActivity }) => {
   const { t } = useI18n();
   const directorySet = React.useMemo(() => {
     const set = new Set<string>();
@@ -298,7 +304,7 @@ const ProjectAggregateStatusIndicator: React.FC<{
       />
     );
   }
-  if (hasBusySession) {
+  if (hasBusySession || hasPrimeActivity) {
     return (
       <Icon
         name="loader-4"
@@ -347,6 +353,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
   const [visibleSessionCountByGroup, setVisibleSessionCountByGroup] = React.useState<Map<string, number>>(new Map());
   const newWorktreeDialogOpen = useUIStore((state) => state.isNewWorktreeDialogOpen);
   const setNewWorktreeDialogOpen = useUIStore((state) => state.setNewWorktreeDialogOpen);
+  const primeTranscriptDirectory = useUIStore((state) => state.primeTranscriptTarget?.directory ?? null);
   const [updateDialogOpen, setUpdateDialogOpen] = React.useState(false);
   const [openSidebarMenuKey, setOpenSidebarMenuKey] = React.useState<string | null>(null);
   const [renamingFolderId, setRenamingFolderId] = React.useState<string | null>(null);
@@ -711,9 +718,11 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
     const unsubscribe = subscribeOpenchamberEvents((event) => {
       if (event.type === 'scheduled-task-ran') {
         needsGlobalRefresh = true;
-      } else {
+      } else if (event.type === 'session-created') {
         sessionDirectories.add(event.directory);
         requestWorktreeDiscovery();
+      } else {
+        return;
       }
       if (refreshTimeout) {
         clearTimeout(refreshTimeout);
@@ -1157,10 +1166,40 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
   });
 
   const isSessionsLoading = useSessionUIStore((state) => state.isLoading);
-  const sessionOwnership = React.useMemo(
-    () => createSessionOwnershipIndex(sessions, normalizedProjects, availableWorktreesByProject, isVSCode, archivedSessions),
-    [archivedSessions, availableWorktreesByProject, isVSCode, normalizedProjects, sessions],
+  const directoryOwnership = React.useMemo(
+    () => createDirectoryOwnershipResolver(normalizedProjects, availableWorktreesByProject, isVSCode),
+    [availableWorktreesByProject, isVSCode, normalizedProjects],
   );
+  const sessionOwnership = React.useMemo(
+    () => createSessionOwnershipIndex(
+      sessions, normalizedProjects, availableWorktreesByProject, isVSCode, archivedSessions, directoryOwnership,
+    ),
+    [archivedSessions, availableWorktreesByProject, directoryOwnership, isVSCode, normalizedProjects, sessions],
+  );
+  const primeCatalog = usePrimeSessionsCatalog(isVisible && !hasSessionSearchQuery && !isVSCode);
+  const selectedPrimeProjectId = React.useMemo(
+    () => directoryOwnership.resolveDirectoryOwner(primeTranscriptDirectory)?.projectId ?? null,
+    [directoryOwnership, primeTranscriptDirectory],
+  );
+  const primeOwnership = React.useMemo(() => {
+    const byProject = new Map<string, PrimeSessionSummary[]>();
+    const byScope = new Map<string, PrimeSessionSummary[]>();
+    const unowned: PrimeSessionSummary[] = [];
+    for (const session of primeCatalog.sessions) {
+      const owner = directoryOwnership.resolveDirectoryOwner(session.directory);
+      if (!owner) {
+        unowned.push(session);
+        continue;
+      }
+      const projectSessions = byProject.get(owner.projectId);
+      if (projectSessions) projectSessions.push(session);
+      else byProject.set(owner.projectId, [session]);
+      const scopeSessions = byScope.get(owner.scopeDirectory);
+      if (scopeSessions) scopeSessions.push(session);
+      else byScope.set(owner.scopeDirectory, [session]);
+    }
+    return { byProject, byScope, unowned };
+  }, [directoryOwnership, primeCatalog.sessions]);
   useAuthoritativeSessionCleanup({
     enabled: isVisible,
     hasAuthoritativeGlobalSessions,
@@ -1426,6 +1465,9 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
     return deriveRecentSessions(sessions, activeSessionIdSet)
       .sort((a, b) => compareSessionsByLifecycleOrder(a, b, pinnedSessionIds, sessionOrderRanks));
   }, [activeSessionIdSet, isVSCode, pinnedSessionIds, sessionOrderRanks, sessions, showRecentSection]);
+  const recentPrimeRootIDs = React.useMemo(() => new Set(
+    deriveRecentPrimeSessions(primeCatalog.sessions).map((session) => session.id),
+  ), [primeCatalog.sessions]);
 
   // Prefetch is wired below, after recentSessions is computed.
 
@@ -1472,8 +1514,8 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
   }, [filterSessionNodesForSearch, hasSessionSearchQuery, isVSCode, normalizedSessionSearchQuery, recentSessions, sessionSidebarMetaById, showRecentSection, t]);
 
   const hasActivitySectionItems = React.useMemo(
-    () => activitySections.some((section) => section.items.length > 0),
-    [activitySections],
+    () => recentPrimeRootIDs.size > 0 || activitySections.some((section) => section.items.length > 0),
+    [activitySections, recentPrimeRootIDs],
   );
 
 
@@ -1669,7 +1711,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
     return map;
   }, [flatSectionsForRender]);
 
-  const renderProjectStatusIndicator = React.useCallback((_projectId: string, groups: SessionGroup[]) => {
+  const renderProjectStatusIndicator = React.useCallback((projectId: string, groups: SessionGroup[]) => {
     const directories: Array<string | null> = [];
     groups.forEach((group) => {
       if (group.isArchivedBucket) return;
@@ -1680,8 +1722,9 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
       const normalized = normalizePath(directory)?.toLowerCase();
       return normalized ? pendingQuestionIndex.directories.has(normalized) : false;
     });
-    return <ProjectAggregateStatusIndicator directories={directories} hasPendingQuestion={hasPendingQuestion} />;
-  }, [pendingQuestionIndex.directories]);
+    const hasPrimeActivity = primeOwnership.byProject.get(projectId)?.some((session) => session.activity === 'working') === true;
+    return <ProjectAggregateStatusIndicator directories={directories} hasPendingQuestion={hasPendingQuestion} hasPrimeActivity={hasPrimeActivity} />;
+  }, [pendingQuestionIndex.directories, primeOwnership.byProject]);
 
   const toggleCollapsedGroup = React.useCallback((key: string) => {
     resetGroupSessionLimit(key);
@@ -1702,56 +1745,69 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
       dragHandleProps?: SortableDragHandleProps | null,
       compactBodyPadding?: boolean,
       scrollContainerRef?: React.RefObject<HTMLElement | null>,
-    ) => (
-      <SessionGroupSection
-        group={group}
-        groupKey={groupKey}
-        projectId={projectId}
-        hideGroupLabel={hideGroupLabel}
-        dragHandleProps={dragHandleProps}
-        compactBodyPadding={compactBodyPadding}
-        hasSessionSearchQuery={hasSessionSearchQuery}
-        normalizedSessionSearchQuery={normalizedSessionSearchQuery}
-        groupSearchDataByGroup={groupSearchDataByGroup}
-        visibleSessionCount={visibleSessionCountByGroup.get(groupKey)}
-        collapsedGroups={collapsedGroups}
-        hideDirectoryControls={hideDirectoryControls}
-        collapsedFolderIds={collapsedFolderIds}
-        toggleFolderCollapse={toggleFolderCollapse}
-        renameFolder={renameFolder}
-        deleteFolder={deleteFolder}
-        showDeletionDialog={showDeletionDialog}
-        setDeleteFolderConfirm={setDeleteFolderConfirm}
-        renderSessionNode={renderSessionNode}
-        showMoreGroupSessions={showMoreGroupSessions}
-        resetGroupSessionLimit={resetGroupSessionLimit}
-        mobileVariant={mobileVariant}
-        alwaysShowActions={alwaysShowSidebarActions}
-        activeProjectId={activeProjectId}
-        setActiveProjectIdOnly={setActiveProjectIdOnly}
-        setActiveMainTab={setActiveMainTab}
-        setSessionSwitcherOpen={setSessionSwitcherOpen}
-        openNewSessionDraft={openNewSessionDraftFromTree}
-        addSessionToFolder={addSessionToFolder}
-        createFolderAndStartRename={stableCreateFolderAndStartRename}
-        renamingFolderId={renamingFolderId}
-        renameFolderDraft={renameFolderDraft}
-        setRenameFolderDraft={setRenameFolderDraft}
-        setRenamingFolderId={setRenamingFolderId}
-        pinnedSessionIds={pinnedSessionIds}
-        expandedParents={projectExpandedParents}
-        sessionOrderIndex={sessionOrderIndex}
-        editingId={editingId}
-        editTitle={editTitle}
-        openSidebarMenuKey={openSidebarMenuKey}
-        activeActivitySessionIds={activeSessionIdSet}
-        unreadActivitySessionIds={unreadSessionIdSet}
-        pendingQuestionSessionIds={pendingQuestionIndex.sessionIds}
-        notifyOnSubtasks={notifyOnSubtasks}
-        onToggleCollapsedGroup={toggleCollapsedGroup}
-        scrollContainerRef={scrollContainerRef}
-      />
-    ),
+    ) => {
+      let primeSessions = EMPTY_PRIME_SESSIONS;
+      if (!group.isArchivedBucket) {
+        if (group.id === 'flat' && projectId) {
+          primeSessions = primeOwnership.byProject.get(projectId) ?? EMPTY_PRIME_SESSIONS;
+        } else {
+          const scopeDirectory = normalizePath(group.directory ?? null) ?? '';
+          primeSessions = primeOwnership.byScope.get(scopeDirectory) ?? EMPTY_PRIME_SESSIONS;
+        }
+      }
+
+      return (
+        <SessionGroupSection
+          group={group}
+          groupKey={groupKey}
+          projectId={projectId}
+          hideGroupLabel={hideGroupLabel}
+          dragHandleProps={dragHandleProps}
+          compactBodyPadding={compactBodyPadding}
+          hasSessionSearchQuery={hasSessionSearchQuery}
+          normalizedSessionSearchQuery={normalizedSessionSearchQuery}
+          groupSearchDataByGroup={groupSearchDataByGroup}
+          visibleSessionCount={visibleSessionCountByGroup.get(groupKey)}
+          collapsedGroups={collapsedGroups}
+          hideDirectoryControls={hideDirectoryControls}
+          collapsedFolderIds={collapsedFolderIds}
+          toggleFolderCollapse={toggleFolderCollapse}
+          renameFolder={renameFolder}
+          deleteFolder={deleteFolder}
+          showDeletionDialog={showDeletionDialog}
+          setDeleteFolderConfirm={setDeleteFolderConfirm}
+          renderSessionNode={renderSessionNode}
+          showMoreGroupSessions={showMoreGroupSessions}
+          resetGroupSessionLimit={resetGroupSessionLimit}
+          mobileVariant={mobileVariant}
+          alwaysShowActions={alwaysShowSidebarActions}
+          activeProjectId={activeProjectId}
+          setActiveProjectIdOnly={setActiveProjectIdOnly}
+          setActiveMainTab={setActiveMainTab}
+          setSessionSwitcherOpen={setSessionSwitcherOpen}
+          openNewSessionDraft={openNewSessionDraftFromTree}
+          addSessionToFolder={addSessionToFolder}
+          createFolderAndStartRename={stableCreateFolderAndStartRename}
+          renamingFolderId={renamingFolderId}
+          renameFolderDraft={renameFolderDraft}
+          setRenameFolderDraft={setRenameFolderDraft}
+          setRenamingFolderId={setRenamingFolderId}
+          pinnedSessionIds={pinnedSessionIds}
+          expandedParents={projectExpandedParents}
+          sessionOrderIndex={sessionOrderIndex}
+          editingId={editingId}
+          editTitle={editTitle}
+          openSidebarMenuKey={openSidebarMenuKey}
+          activeActivitySessionIds={activeSessionIdSet}
+          unreadActivitySessionIds={unreadSessionIdSet}
+          pendingQuestionSessionIds={pendingQuestionIndex.sessionIds}
+          notifyOnSubtasks={notifyOnSubtasks}
+          onToggleCollapsedGroup={toggleCollapsedGroup}
+          scrollContainerRef={scrollContainerRef}
+          primeSessions={primeSessions}
+        />
+      );
+    },
     [
       hasSessionSearchQuery,
       normalizedSessionSearchQuery,
@@ -1789,22 +1845,35 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
       pendingQuestionIndex.sessionIds,
       notifyOnSubtasks,
       toggleCollapsedGroup,
+      primeOwnership.byProject,
+      primeOwnership.byScope,
     ],
   );
 
   const topContent = React.useMemo(
-    () => (!isVSCode && showRecentSection && !hasSessionSearchQuery) ? (
-      <SidebarActivitySections
-        sections={activitySections}
-        renderSessionNode={renderSessionNode}
-        editingId={editingId}
-        openSidebarMenuKey={openSidebarMenuKey}
-        expansionState={recentExpandedParents}
-        variant="section"
-        isDesktopShellRuntime={isDesktopShellRuntime}
-      />
-    ) : null,
-    [activitySections, editingId, hasSessionSearchQuery, isDesktopShellRuntime, isVSCode, openSidebarMenuKey, recentExpandedParents, renderSessionNode, showRecentSection],
+    () => (
+      <>
+        <PrimeSessionRows
+          sessions={primeOwnership.unowned}
+          loadFailed={primeCatalog.loadFailed}
+          onRetry={primeCatalog.retry}
+        />
+        {!isVSCode && showRecentSection && !hasSessionSearchQuery ? (
+          <SidebarActivitySections
+            sections={activitySections}
+            renderSessionNode={renderSessionNode}
+            editingId={editingId}
+            openSidebarMenuKey={openSidebarMenuKey}
+            expansionState={recentExpandedParents}
+            variant="section"
+            isDesktopShellRuntime={isDesktopShellRuntime}
+            primeSessions={primeCatalog.sessions}
+            primeRootSessionIDs={recentPrimeRootIDs}
+          />
+        ) : null}
+      </>
+    ),
+    [activitySections, editingId, hasSessionSearchQuery, isDesktopShellRuntime, isVSCode, openSidebarMenuKey, primeCatalog.loadFailed, primeCatalog.retry, primeCatalog.sessions, primeOwnership.unowned, recentExpandedParents, recentPrimeRootIDs, renderSessionNode, showRecentSection],
   );
   const isInlineEditing = Boolean(renamingFolderId || editingId || editingProjectDialogId);
 
@@ -1881,6 +1950,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
       <ProjectSessionSelectionEffect
         projectSections={projectSections}
         activeProjectId={activeProjectId}
+        selectedPrimeProjectId={selectedPrimeProjectId}
         initialActiveSessionByProject={initialActiveSessionByProject}
         persistActiveSessionByProject={persistActiveSessionByProject}
         handleSessionSelect={stableHandleSessionSelect}

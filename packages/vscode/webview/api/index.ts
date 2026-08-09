@@ -25,6 +25,24 @@ const createStubTerminalAPI = (): TerminalAPI => ({
   close: terminalUnsupported,
 });
 
+const unsupportedPrimeStatus = async () => ({
+  schemaVersion: 1,
+  state: 'unsupported',
+  interactive: false,
+  authentication: 'unknown',
+  binarySource: null,
+  version: null,
+  message: 'Prime Agent is not supported in the VS Code runtime',
+} as const);
+
+const primeUnsupported = async (): Promise<never> => {
+  throw new Error('Prime Agent is not supported in the VS Code runtime');
+};
+
+const primeControlsUnsupported = async (): Promise<never> => {
+  throw new Error('Prime Agent controls are not supported in the VS Code runtime');
+};
+
 export const createVSCodeAPIs = (): RuntimeAPIs => ({
   runtime: { platform: 'vscode', isDesktop: false, isVSCode: true, label: 'VS Code Extension' },
   terminal: createStubTerminalAPI(),
@@ -34,6 +52,23 @@ export const createVSCodeAPIs = (): RuntimeAPIs => ({
   permissions: createVSCodePermissionsAPI(),
   notifications: createVSCodeNotificationsAPI(),
   github: createVSCodeGitHubAPI(),
+  prime: {
+    getStatus: unsupportedPrimeStatus,
+    reconnect: unsupportedPrimeStatus,
+    listSessions: async () => ({ status: 'unsupported', sessions: [], skippedFileCount: 0, failedSessionIDs: [] }),
+    getTranscript: async () => {
+      throw new Error('Prime Agent transcripts are not supported in the VS Code runtime');
+    },
+    attachSession: primeUnsupported,
+    getDraftControls: primeControlsUnsupported,
+    getSessionControls: primeControlsUnsupported,
+    setSessionModel: primeControlsUnsupported,
+    setSessionThinkingLevel: primeControlsUnsupported,
+    createSession: primeUnsupported,
+    sendPrompt: primeUnsupported,
+    abortSession: primeUnsupported,
+    subscribe: () => ({ close: () => {} }),
+  },
   tools: createVSCodeToolsAPI(),
   editor: createVSCodeEditorAPI(),
   vscode: createVSCodeActionsAPI(),

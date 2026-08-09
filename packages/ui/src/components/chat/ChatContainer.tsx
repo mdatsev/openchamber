@@ -770,12 +770,12 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({ active = true, aut
     }, []);
 
     React.useEffect(() => {
-        if (autoOpenDraft && !currentSessionId && !draftOpen) {
+        if (active && autoOpenDraft && !currentSessionId && !draftOpen) {
             // Programmatic fallback, not user navigation — must not clear the
             // persisted last-session pointer the cold-launch restore reads.
             openNewSessionDraft({ automatic: true });
         }
-    }, [autoOpenDraft, currentSessionId, draftOpen, openNewSessionDraft]);
+    }, [active, autoOpenDraft, currentSessionId, draftOpen, openNewSessionDraft]);
 
     const activeTurnChangeRef = React.useRef<(turnId: string | null) => void>(() => {});
     const handleActiveTurnChange = React.useCallback((turnId: string | null) => {

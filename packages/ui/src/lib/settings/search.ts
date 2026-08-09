@@ -482,6 +482,14 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     isAvailable: (ctx) => !ctx.isVSCode && !ctx.isWindowsArm64,
   },
   {
+    id: 'sessions.prime-agent-binary',
+    page: 'general',
+    titleKey: 'settings.openchamber.primeAgent.field.binaryPath',
+    descriptionKey: 'settings.openchamber.primeAgent.field.binaryPathInfo',
+    keywords: ['prime agent', 'binary', 'executable', 'launcher', 'path'],
+    isAvailable: (ctx) => !ctx.isVSCode,
+  },
+  {
     id: 'sessions.agent-control-tool',
     page: 'general',
     titleKey: 'settings.openchamber.opencodeCli.field.agentControlTool',

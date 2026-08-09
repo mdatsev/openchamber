@@ -8,7 +8,7 @@ import type { DraftStarterRef } from '@/lib/draftStarters';
 import { DEFAULT_MONO_FONT, DEFAULT_UI_FONT, type MonoFontOption, type UiFontOption } from '@/lib/fontOptions';
 import { getStoredMobileKeyboardMode, type MobileKeyboardMode } from '@/lib/mobileKeyboardMode';
 import { getRuntimeKey } from '@/lib/runtime-switch';
-import type { TerminalShell } from '@/lib/api/types';
+import type { PrimeSessionSummary, TerminalShell } from '@/lib/api/types';
 import { useFilesViewTabsStore } from './useFilesViewTabsStore';
 import { isWindowsArm64 } from '@/lib/platform';
 import type { DisposableSideChatIdentity } from '@/lib/sideChats/types';
@@ -126,6 +126,13 @@ const CONTEXT_PANEL_MAX_TABS = 12;
 const CONTEXT_PANEL_MAX_LABEL_LENGTH = 120;
 const LEFT_SIDEBAR_MIN_WIDTH = 280;
 const activeMainTabByRuntime = new Map<string, MainTab>();
+const CLOSED_MAIN_SURFACES = {
+  isScheduledTasksDialogOpen: false,
+  isArchivePageOpen: false,
+  worktreesPageProjectId: null,
+  primeTranscriptTarget: null,
+  isMultiRunLauncherOpen: false,
+} as const;
 
 const runtimeMemoryKey = (value?: string | null): string => {
   const key = (value ?? getRuntimeKey()).trim();
@@ -644,6 +651,7 @@ interface UIStore {
   isScheduledTasksDialogOpen: boolean;
   isArchivePageOpen: boolean;
   worktreesPageProjectId: string | null;
+  primeTranscriptTarget: PrimeSessionSummary | null;
   isSettingsDialogOpen: boolean;
   isNewWorktreeDialogOpen: boolean;
   isModelSelectorOpen: boolean;
@@ -809,7 +817,8 @@ interface UIStore {
   setScheduledTasksDialogOpen: (open: boolean) => void;
   setArchivePageOpen: (open: boolean) => void;
   setWorktreesPageProjectId: (projectId: string | null) => void;
-  /** Close every full-page surface (Scheduled, Archive, Worktrees, Multi-run). */
+  setPrimeTranscriptTarget: (session: PrimeSessionSummary | null) => void;
+  /** Close every full-page surface (Scheduled, Archive, Worktrees, Multi-run, Prime transcript). */
   closeMainSurfaces: () => void;
   setSettingsDialogOpen: (open: boolean) => void;
   setNewWorktreeDialogOpen: (open: boolean) => void;
@@ -966,6 +975,7 @@ export const useUIStore = create<UIStore>()(
         isScheduledTasksDialogOpen: false,
         isArchivePageOpen: false,
         worktreesPageProjectId: null,
+        primeTranscriptTarget: null,
         isSettingsDialogOpen: false,
         isNewWorktreeDialogOpen: false,
         isModelSelectorOpen: false,
@@ -1512,7 +1522,10 @@ export const useUIStore = create<UIStore>()(
         },
 
         prepareForRuntimeSwitch: (runtimeKey?: string | null) => {
-          activeMainTabByRuntime.set(runtimeMemoryKey(runtimeKey), get().activeMainTab);
+          const memoryKey = runtimeMemoryKey(runtimeKey);
+          const state = get();
+          activeMainTabByRuntime.set(memoryKey, state.activeMainTab);
+          if (state.primeTranscriptTarget) set({ primeTranscriptTarget: null });
         },
 
         restoreForRuntimeSwitch: (runtimeKey?: string | null) => {
@@ -1610,32 +1623,41 @@ export const useUIStore = create<UIStore>()(
 
         setScheduledTasksDialogOpen: (open) => {
           set(open
-            ? { isScheduledTasksDialogOpen: true, isArchivePageOpen: false, worktreesPageProjectId: null, isMultiRunLauncherOpen: false }
+            ? { ...CLOSED_MAIN_SURFACES, isScheduledTasksDialogOpen: true }
             : { isScheduledTasksDialogOpen: false });
         },
 
         setArchivePageOpen: (open) => {
           set(open
-            ? { isArchivePageOpen: true, isScheduledTasksDialogOpen: false, worktreesPageProjectId: null, isMultiRunLauncherOpen: false }
+            ? { ...CLOSED_MAIN_SURFACES, isArchivePageOpen: true }
             : { isArchivePageOpen: false });
         },
 
         setWorktreesPageProjectId: (projectId) => {
           set(projectId
-            ? { worktreesPageProjectId: projectId, isScheduledTasksDialogOpen: false, isArchivePageOpen: false, isMultiRunLauncherOpen: false }
+            ? { ...CLOSED_MAIN_SURFACES, worktreesPageProjectId: projectId }
             : { worktreesPageProjectId: null });
+        },
+
+        setPrimeTranscriptTarget: (session) => {
+          if (!session) {
+            set({ primeTranscriptTarget: null });
+            return;
+          }
+          set({
+            ...CLOSED_MAIN_SURFACES,
+            primeTranscriptTarget: session,
+            isSessionSwitcherOpen: false,
+          });
         },
 
         closeMainSurfaces: () => {
           const state = get();
-          if (!state.isScheduledTasksDialogOpen && !state.isArchivePageOpen && !state.worktreesPageProjectId && !state.isMultiRunLauncherOpen) {
+          if (!state.isScheduledTasksDialogOpen && !state.isArchivePageOpen && !state.worktreesPageProjectId && !state.isMultiRunLauncherOpen && !state.primeTranscriptTarget) {
             return;
           }
           set({
-            isScheduledTasksDialogOpen: false,
-            isArchivePageOpen: false,
-            worktreesPageProjectId: null,
-            isMultiRunLauncherOpen: false,
+            ...CLOSED_MAIN_SURFACES,
             multiRunLauncherPrefillPrompt: '',
           });
         },
@@ -2113,31 +2135,27 @@ export const useUIStore = create<UIStore>()(
         // opening it closes the other surfaces and vice versa.
         setMultiRunLauncherOpen: (open) => {
           set((state) => ({
+            ...(open ? CLOSED_MAIN_SURFACES : {}),
             isMultiRunLauncherOpen: open,
             multiRunLauncherPrefillPrompt: open ? state.multiRunLauncherPrefillPrompt : '',
-            ...(open ? { isScheduledTasksDialogOpen: false, isArchivePageOpen: false, worktreesPageProjectId: null } : {}),
           }));
         },
 
         openMultiRunLauncher: () => {
           set({
+            ...CLOSED_MAIN_SURFACES,
             isMultiRunLauncherOpen: true,
             multiRunLauncherPrefillPrompt: '',
             isSessionSwitcherOpen: false,
-            isScheduledTasksDialogOpen: false,
-            isArchivePageOpen: false,
-            worktreesPageProjectId: null,
           });
         },
 
         openMultiRunLauncherWithPrompt: (prompt) => {
           set({
+            ...CLOSED_MAIN_SURFACES,
             isMultiRunLauncherOpen: true,
             multiRunLauncherPrefillPrompt: prompt,
             isSessionSwitcherOpen: false,
-            isScheduledTasksDialogOpen: false,
-            isArchivePageOpen: false,
-            worktreesPageProjectId: null,
           });
         },
 

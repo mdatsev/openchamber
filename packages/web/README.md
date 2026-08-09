@@ -56,6 +56,17 @@ Behavior settings can optionally inject a managed system-prompt optimizer on
 the next OpenCode restart. It is disabled by default and is not available for
 external OpenCode servers.
 
+OpenChamber can run OpenCode and Prime Agent sessions concurrently. New chats
+offer a per-project harness choice, and Prime sessions support create, prompt,
+abort, preflight model/thinking controls, live structured reasoning and tools,
+recursive child-agent navigation, and active-branch transcripts through the
+connected OpenChamber server. Saved Prime transcripts remain readable when the Prime
+adapter is unavailable. Configure a launcher in General settings or with
+`PRIME_AGENT_BINARY`; otherwise OpenChamber checks `prime-agent` on `PATH`.
+Prime session discovery follows `PRIME_AGENT_SESSION_DIR`, the legacy
+`PRIME_AGENT_CODING_AGENT_SESSION_DIR`, `PRIME_AGENT_CODING_AGENT_DIR`, then
+`~/.prime/agent/sessions`.
+
 ### Tunnel behavior notes
 
 - One active tunnel per running OpenChamber instance (port).

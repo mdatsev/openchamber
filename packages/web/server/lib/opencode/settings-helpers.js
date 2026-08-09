@@ -172,9 +172,10 @@ export const createSettingsHelpers = (dependencies) => {
     // Absolute path to the opencode CLI binary (optional override).
     // Accept empty-string to clear (we persist an empty string sentinel so the running
     // process can reliably drop a previously applied OPENCODE_BINARY override).
-    if (typeof candidate.opencodeBinary === 'string') {
-      const normalized = normalizeDirectoryPath(candidate.opencodeBinary).trim();
-      result.opencodeBinary = normalized;
+    for (const key of ['opencodeBinary', 'primeAgentBinary']) {
+      if (typeof candidate[key] === 'string') {
+        result[key] = normalizeDirectoryPath(candidate[key]).trim();
+      }
     }
     if (typeof candidate.desktopLanAccessEnabled === 'boolean') {
       result.desktopLanAccessEnabled = candidate.desktopLanAccessEnabled;

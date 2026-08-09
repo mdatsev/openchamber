@@ -26,6 +26,11 @@ export type SessionOwnershipIndex = {
   directoryResolutions: number;
 };
 
+type DirectoryOwnershipResolver = {
+  resolveDirectoryOwner: (directory: string | null) => DirectoryOwner | null;
+  getDirectoryResolutionCount: () => number;
+};
+
 const shouldReplaceOwner = (existing: DirectoryOwner | undefined, candidate: DirectoryOwner): boolean => {
   if (!existing) return true;
   if (candidate.kind !== existing.kind) {
@@ -62,13 +67,11 @@ const getParentDirectory = (directory: string): string | null => {
   return directory.slice(0, separator);
 };
 
-export const createSessionOwnershipIndex = (
-  sessions: Session[],
+export const createDirectoryOwnershipResolver = (
   projects: Project[],
   availableWorktreesByProject: Map<string, Worktree[]>,
   isVSCode: boolean,
-  archivedSessions: Session[] = [],
-): SessionOwnershipIndex => {
+): DirectoryOwnershipResolver => {
   const ownerByDirectory = new Map<string, DirectoryOwner>();
   const projectByRoot = new Map<string, Project>();
 
@@ -106,25 +109,21 @@ export const createSessionOwnershipIndex = (
   }
 
   const resolvedOwners = new Map<string, DirectoryOwner | null>();
-  const bySessionId = new Map<string, DirectoryOwner>();
-  const sessionsByProject = new Map<string, Session[]>();
-  const archivedSessionsByProject = new Map<string, Session[]>();
-  const sessionsByScope = new Map<string, Set<string>>();
-
-  const resolveOwner = (directory: string | null): DirectoryOwner | null => {
-    if (!directory) return null;
-    if (resolvedOwners.has(directory)) {
-      return resolvedOwners.get(directory) ?? null;
+  const resolveDirectoryOwner = (directory: string | null): DirectoryOwner | null => {
+    const normalizedDirectory = normalizePath(directory);
+    if (!normalizedDirectory) return null;
+    if (resolvedOwners.has(normalizedDirectory)) {
+      return resolvedOwners.get(normalizedDirectory) ?? null;
     }
 
     if (isVSCode) {
-      const owner = ownerByDirectory.get(directory) ?? null;
-      resolvedOwners.set(directory, owner);
+      const owner = ownerByDirectory.get(normalizedDirectory) ?? null;
+      resolvedOwners.set(normalizedDirectory, owner);
       return owner;
     }
 
     const visited: string[] = [];
-    let current: string | null = directory;
+    let current: string | null = normalizedDirectory;
     let owner: DirectoryOwner | null = null;
     while (current) {
       if (resolvedOwners.has(current)) {
@@ -142,6 +141,25 @@ export const createSessionOwnershipIndex = (
     return owner;
   };
 
+  return {
+    resolveDirectoryOwner,
+    getDirectoryResolutionCount: () => resolvedOwners.size,
+  };
+};
+
+export const createSessionOwnershipIndex = (
+  sessions: Session[],
+  projects: Project[],
+  availableWorktreesByProject: Map<string, Worktree[]>,
+  isVSCode: boolean,
+  archivedSessions: Session[] = [],
+  resolver = createDirectoryOwnershipResolver(projects, availableWorktreesByProject, isVSCode),
+): SessionOwnershipIndex => {
+  const bySessionId = new Map<string, DirectoryOwner>();
+  const sessionsByProject = new Map<string, Session[]>();
+  const archivedSessionsByProject = new Map<string, Session[]>();
+  const sessionsByScope = new Map<string, Set<string>>();
+
   const bucket = (
     input: Session[],
     target: Map<string, Session[]>,
@@ -149,7 +167,7 @@ export const createSessionOwnershipIndex = (
   ): void => {
     for (const session of input) {
       if (!isDiscoverableSession(session)) continue;
-      const owner = resolveOwner(resolveSessionDirectory(session));
+      const owner = resolver.resolveDirectoryOwner(resolveSessionDirectory(session));
       if (!owner) continue;
       bySessionId.set(session.id, owner);
       const projectSessions = target.get(owner.projectId);
@@ -176,6 +194,6 @@ export const createSessionOwnershipIndex = (
     sessionsByProject,
     archivedSessionsByProject,
     sessionsByScope,
-    directoryResolutions: resolvedOwners.size,
+    directoryResolutions: resolver.getDirectoryResolutionCount(),
   };
 };

@@ -1,3 +1,5 @@
+import type { PrimeRuntimeStatus } from './api/types';
+import { runtimeFetch } from './runtime-fetch';
 import { getRuntimeUrlResolver } from './runtime-url';
 import { subscribeRuntimeEndpointChanged } from './runtime-switch';
 
@@ -20,15 +22,36 @@ type SessionCreatedEvent = {
   dispatchedAsCommand: boolean;
 };
 
-type OpenChamberEvent = ScheduledTaskRanEvent | SessionCreatedEvent;
+type PrimeRuntimeChangedEvent = {
+  type: 'prime-runtime-changed';
+  status: PrimeRuntimeStatus;
+};
+
+type PrimeSessionChangedEvent = {
+  type: 'prime-session-changed';
+  sessionID: string;
+  activity: 'working' | 'idle';
+  catalogChanged: boolean;
+};
+
+type EventStreamReadyEvent = {
+  type: 'event-stream-ready';
+};
+
+export type OpenChamberEvent = ScheduledTaskRanEvent | SessionCreatedEvent | PrimeRuntimeChangedEvent | PrimeSessionChangedEvent | EventStreamReadyEvent;
 type Listener = (event: OpenChamberEvent) => void;
 
+let streamController: AbortController | null = null;
 let eventSource: EventSource | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectAttempt = 0;
 let runtimeChangeUnsubscribe: (() => void) | null = null;
 const listeners = new Set<Listener>();
+
+const emitOpenChamberEvent = (event: OpenChamberEvent) => {
+  for (const listener of listeners) listener(event);
+};
 
 const MAX_RECONNECT_DELAY_MS = 30_000;
 const HEARTBEAT_TIMEOUT_MS = 45_000;
@@ -55,9 +78,9 @@ const scheduleReconnect = () => {
 
 const cleanupSource = () => {
   clearHeartbeatTimer();
-  if (eventSource) {
-    eventSource.close();
-  }
+  streamController?.abort();
+  streamController = null;
+  eventSource?.close();
   eventSource = null;
 };
 
@@ -100,10 +123,55 @@ const getEventProperties = (properties: unknown): Record<string, unknown> | null
 const dispatchFromEnvelope = (envelope: { type: string; properties: unknown }) => {
   if (envelope.type === 'openchamber:event-stream-ready') {
     reconnectAttempt = 0;
+    for (const listener of listeners) listener({ type: 'event-stream-ready' });
     return;
   }
 
   if (envelope.type === 'openchamber:heartbeat') {
+    return;
+  }
+
+  if (envelope.type === 'openchamber:prime-runtime-changed') {
+    const properties = getEventProperties(envelope.properties);
+    const status = properties?.status;
+    if (!status || typeof status !== 'object') return;
+    const candidate = status as Record<string, unknown>;
+    const state = candidate.state;
+    if (
+      candidate.schemaVersion !== 1
+      || (state !== 'starting' && state !== 'ready' && state !== 'not-configured' && state !== 'unavailable' && state !== 'incompatible' && state !== 'unsupported')
+    ) return;
+    const nextEvent: PrimeRuntimeChangedEvent = {
+      type: 'prime-runtime-changed',
+      status: {
+        schemaVersion: 1,
+        state,
+        interactive: candidate.interactive === true,
+        authentication: candidate.authentication === 'authenticated' || candidate.authentication === 'unauthenticated'
+          ? candidate.authentication
+          : 'unknown',
+        binarySource: candidate.binarySource === 'settings' || candidate.binarySource === 'environment' || candidate.binarySource === 'path'
+          ? candidate.binarySource
+          : null,
+        version: typeof candidate.version === 'string' ? candidate.version : null,
+        message: typeof candidate.message === 'string' ? candidate.message : null,
+      },
+    };
+    emitOpenChamberEvent(nextEvent);
+    return;
+  }
+
+  if (envelope.type === 'openchamber:prime-session-changed') {
+    const properties = getEventProperties(envelope.properties);
+    const sessionID = typeof properties?.sessionId === 'string' ? properties.sessionId : '';
+    if (!sessionID) return;
+    const nextEvent: PrimeSessionChangedEvent = {
+      type: 'prime-session-changed',
+      sessionID,
+      activity: properties?.activity === 'working' ? 'working' : 'idle',
+      catalogChanged: properties?.catalogChanged === true,
+    };
+    emitOpenChamberEvent(nextEvent);
     return;
   }
 
@@ -126,9 +194,7 @@ const dispatchFromEnvelope = (envelope: { type: string; properties: unknown }) =
         ? { projectId: properties.projectId }
         : {}),
     };
-    for (const listener of listeners) {
-      listener(nextEvent);
-    }
+    emitOpenChamberEvent(nextEvent);
     return;
   }
 
@@ -156,44 +222,75 @@ const dispatchFromEnvelope = (envelope: { type: string; properties: unknown }) =
       ? { sessionId: properties.sessionId }
       : {}),
   };
-  for (const listener of listeners) {
-    listener(nextEvent);
-  }
+  emitOpenChamberEvent(nextEvent);
 };
 
 const connect = () => {
   if (typeof window === 'undefined' || listeners.size === 0) {
     return;
   }
-  if (typeof EventSource !== 'function') {
-    return;
-  }
-
-  if (eventSource && eventSource.readyState !== EventSource.CLOSED) {
-    return;
-  }
+  if (streamController || (eventSource && eventSource.readyState !== EventSource.CLOSED)) return;
 
   cleanupSource();
+  const eventUrl = getRuntimeUrlResolver().sse('/api/openchamber/events');
+  if (typeof EventSource === 'function' && /^https?:\/\//i.test(eventUrl)) {
+    const source = new EventSource(eventUrl);
+    source.onopen = () => resetHeartbeatTimer();
+    source.onmessage = (event) => {
+      resetHeartbeatTimer();
+      const envelope = parseEnvelope(event.data);
+      if (envelope) dispatchFromEnvelope(envelope);
+    };
+    source.onerror = () => {
+      cleanupSource();
+      scheduleReconnect();
+    };
+    eventSource = source;
+    return;
+  }
 
-  const source = new EventSource(getRuntimeUrlResolver().sse('/api/openchamber/events'));
-  source.onopen = () => {
-    resetHeartbeatTimer();
-  };
-  source.onmessage = (event) => {
-    resetHeartbeatTimer();
-    const envelope = parseEnvelope(event.data);
-    if (!envelope) {
-      return;
+  const controller = new AbortController();
+  streamController = controller;
+  void (async () => {
+    try {
+      const response = await runtimeFetch('/api/openchamber/events', {
+        headers: { Accept: 'text/event-stream' },
+        signal: controller.signal,
+      });
+      if (!response.ok || !response.body) throw new Error(`OpenChamber event stream returned ${response.status}`);
+      resetHeartbeatTimer();
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (!controller.signal.aborted) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+        if (buffer.length > 1_000_000) throw new Error('OpenChamber event stream buffer exceeded its limit');
+        while (true) {
+          const boundary = buffer.indexOf('\n\n');
+          if (boundary < 0) break;
+          const block = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          const raw = block.split('\n')
+            .filter((line) => line.startsWith('data:'))
+            .map((line) => line.slice(5).trimStart())
+            .join('\n');
+          resetHeartbeatTimer();
+          const envelope = parseEnvelope(raw);
+          if (envelope) dispatchFromEnvelope(envelope);
+        }
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) console.warn('[openchamber-events] stream disconnected', error);
+    } finally {
+      if (streamController === controller) {
+        streamController = null;
+        clearHeartbeatTimer();
+        scheduleReconnect();
+      }
     }
-    dispatchFromEnvelope(envelope);
-  };
-
-  source.onerror = () => {
-    cleanupSource();
-    scheduleReconnect();
-  };
-
-  eventSource = source;
+  })();
 };
 
 const ensureRuntimeChangeSubscription = () => {

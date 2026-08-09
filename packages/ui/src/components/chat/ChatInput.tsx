@@ -3,9 +3,10 @@ import { ComposerDictation } from '@/components/dictation/ComposerDictation';
 // sessionStore removed — currentSessionId comes from useSessionUIStore
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useUIStore } from '@/stores/useUIStore';
+import { useMobileAppActions } from '@/apps/mobileAppContext';
 import { createMessageQueueTarget, getMessageQueueKey, useMessageQueueStore, type QueuedMessage } from '@/stores/messageQueueStore';
 import { useAutoReviewStore } from '@/stores/useAutoReviewStore';
-import { useSessionUIStore } from '@/sync/session-ui-store';
+import { resolveOpenDraftTarget, supportsHarnessChoice, useSessionUIStore } from '@/sync/session-ui-store';
 import { useSelectionStore } from '@/sync/selection-store';
 import { useInputStore } from '@/sync/input-store';
 import {
@@ -15,6 +16,13 @@ import {
     type AttachmentInputModality,
 } from '@/sync/attachment-files';
 import type { AttachedFile } from '@/stores/types/sessionTypes';
+import type {
+    HarnessID,
+    PrimeModel,
+    PrimeSessionControls,
+    PrimeSessionSummary,
+    PrimeThinkingLevel,
+} from '@/lib/api/types';
 import * as sessionActions from '@/sync/session-actions';
 import { useUserMessageHistory } from "@/sync/sync-context";
 import { getInlineCommentDraftKey, useInlineCommentDraftStore, type InlineCommentDraft, type InlineCommentDraftTarget } from '@/stores/useInlineCommentDraftStore';
@@ -42,6 +50,7 @@ import type { SkillAutocompleteHandle } from './SkillAutocomplete';
 import type { SnippetAutocompleteHandle } from './SnippetAutocomplete';
 import { cn } from "@/lib/utils";
 import { ModelControls } from './ModelControls';
+import { PrimeControlSelectors } from './PrimeControlSelectors';
 import { parseAgentMentions } from '@/lib/messages/agentMentions';
 import { StatusRow } from './StatusRow';
 import { PendingChangesBar } from './PendingChangesBar';
@@ -61,6 +70,7 @@ import { useThemeSystem } from '@/contexts/useThemeSystem';
 import { GitHubIssuePickerDialog } from '@/components/session/GitHubIssuePickerDialog';
 import { GitHubPrPickerDialog } from '@/components/session/GitHubPrPickerDialog';
 import { Icon } from "@/components/icon/Icon";
+import { Button } from '@/components/ui/button';
 import { DraftPresetChips } from './DraftPresetChips';
 import { useChatSearchDirectory } from '@/hooks/useChatSearchDirectory';
 import { opencodeClient } from '@/lib/opencode/client';
@@ -144,6 +154,7 @@ import { SessionGoalRow } from '@/components/chat/SessionGoalRow';
 import { getOpenChamberCommands, parseSideChatCommand } from './openChamberCommands';
 import { installEmbeddedSessionChatComposerFocusListener, isEmbeddedSessionChat } from '@/components/layout/contextPanelEmbeddedChat';
 import { openDisposableSideChat } from '@/lib/sideChats/controller';
+import { usePrimeRuntimeStatus } from '@/hooks/usePrimeRuntimeStatus';
 
 const MAX_VISIBLE_COMPOSER_LINES = 8;
 /**
@@ -261,6 +272,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
     const [mobileAttachMenuOpen, setMobileAttachMenuOpen] = React.useState(false);
     const [mobileDraftPicker, setMobileDraftPicker] = React.useState<'project' | 'branch' | null>(null);
     const [mobileDraftPickerQuery, setMobileDraftPickerQuery] = React.useState('');
+    const [isPrimeCreating, setIsPrimeCreating] = React.useState(false);
     // Message history navigation state (up/down arrow to recall previous messages)
     const composerRef = React.useRef<ComposerEditorHandle>(null);
     // The mobile composer swaps between the collapsed pill and the full
@@ -314,11 +326,15 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
     );
     const newSessionDraft = useSessionUIStore((s) => s.newSessionDraft);
     const newSessionDraftOpen = Boolean(newSessionDraft?.open);
+    const isPrimeDraft = newSessionDraftOpen && newSessionDraft.harness === 'prime';
+    const canSelectDraftHarness = newSessionDraftOpen && supportsHarnessChoice(newSessionDraft);
     const draftPermissionAutoAcceptEnabled = useSessionUIStore((s) => (
         s.newSessionDraft?.open ? s.newSessionDraft.permissionAutoAcceptEnabled === true : false
     ));
     const setNewSessionDraftTarget = useSessionUIStore((s) => s.setNewSessionDraftTarget);
     const setDraftPermissionAutoAcceptEnabled = useSessionUIStore((s) => s.setDraftPermissionAutoAcceptEnabled);
+    const setDraftHarness = useSessionUIStore((s) => s.setDraftHarness);
+    const closeNewSessionDraft = useSessionUIStore((s) => s.closeNewSessionDraft);
     const openNewSessionDraft = useSessionUIStore((s) => s.openNewSessionDraft);
     const abortPromptSessionId = useSessionUIStore((s) => s.abortPromptSessionId);
     const clearAbortPrompt = useSessionUIStore((s) => s.clearAbortPrompt);
@@ -363,13 +379,26 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         isVSCode: isVSCodeRuntime(),
     }), [currentSessionId, isMobile]);
     const setImagePreviewOpen = useUIStore((state) => state.setImagePreviewOpen);
+    const setPrimeTranscriptTarget = useUIStore((state) => state.setPrimeTranscriptTarget);
+    const setSettingsDialogOpen = useUIStore((state) => state.setSettingsDialogOpen);
+    const setSettingsPage = useUIStore((state) => state.setSettingsPage);
+    const mobileAppActions = useMobileAppActions();
     const inputBarOffset = useUIStore((state) => state.inputBarOffset);
     const persistChatDraft = useUIStore((state) => state.persistChatDraft);
     const inputSpellcheckEnabled = useUIStore((state) => state.inputSpellcheckEnabled);
     const isExpandedInput = useUIStore((state) => state.isExpandedInput);
     const setExpandedInput = useUIStore((state) => state.setExpandedInput);
     const setTimelineDialogOpen = useUIStore((state) => state.setTimelineDialogOpen);
-    const { git: runtimeGit, vscode: vscodeApi } = useRuntimeAPIs();
+    const { git: runtimeGit, prime: primeAPI, vscode: vscodeApi } = useRuntimeAPIs();
+    const {
+        status: primeRuntimeStatus,
+        isLoading: primeStatusLoading,
+        loadFailed: primeStatusLoadFailed,
+        retry: retryPrimeStatus,
+    } = usePrimeRuntimeStatus(primeAPI, isPrimeDraft);
+    const primeRuntimeReady = !primeStatusLoadFailed
+        && primeRuntimeStatus?.state === 'ready'
+        && primeRuntimeStatus.interactive;
     const cycleAgentShortcutOverride = useUIStore((state) => state.shortcutOverrides.cycle_agent);
     const cycleAgentShortcut = React.useMemo(() => (
         getEffectiveShortcutCombo('cycle_agent', cycleAgentShortcutOverride ? { cycle_agent: cycleAgentShortcutOverride } : undefined)
@@ -853,11 +882,39 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         }
     }, [pendingInputText, consumePendingInputText]);
 
-    const hasContent = message.trim().length > 0 || attachedFiles.length > 0 || hasDrafts;
+    const hasPromptText = message.trim().length > 0;
+    const hasContent = hasPromptText || attachedFiles.length > 0 || hasDrafts;
     const hasQueuedMessages = queuedMessages.length > 0;
-    const canSend = hasContent || hasQueuedMessages;
+    const canSend = isPrimeDraft
+        ? hasPromptText && primeRuntimeReady && !isPrimeCreating
+        : hasContent || hasQueuedMessages;
 
-    const canAbort = sessionPhase !== 'idle';
+    const canAbort = !isPrimeDraft && sessionPhase !== 'idle';
+
+    const handleDraftHarnessChange = React.useCallback((harness: HarnessID) => {
+        if (harness === newSessionDraft.harness) return;
+        if (
+            harness === 'prime'
+            && (attachedFiles.length > 0 || hasDrafts || linkedIssue !== null || linkedPr !== null || inputMode !== 'normal')
+        ) {
+            toast.error(t('prime.composer.textOnly'));
+            return;
+        }
+        setMobileControlsPanel(null);
+        setMobileAttachMenuOpen(false);
+        closeAutocomplete();
+        setInputMode('normal');
+        setDraftHarness(harness);
+    }, [attachedFiles.length, closeAutocomplete, hasDrafts, inputMode, linkedIssue, linkedPr, newSessionDraft.harness, setDraftHarness, t]);
+
+    const openPrimeSettings = React.useCallback(() => {
+        if (mobileAppActions) {
+            mobileAppActions.openSettings('general');
+            return;
+        }
+        setSettingsPage('general');
+        setSettingsDialogOpen(true);
+    }, [mobileAppActions, setSettingsDialogOpen, setSettingsPage]);
 
     const getCurrentInputSnapshot = React.useCallback(() => {
         const currentMessage = composerRef.current?.getValue() ?? message;
@@ -984,6 +1041,69 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         if (queuedOnly) {
             if (queuedMessagesToSend.length === 0 || !currentSessionId) return;
         } else if ((!inputSnapshot.hasContent && !hasQueuedMessages) || (!currentSessionId && !newSessionDraftOpen)) {
+            return;
+        }
+
+        if (!queuedOnly && isPrimeDraft) {
+            const prompt = inputSnapshot.message.trim();
+            if (!prompt) {
+                toast.error(t('prime.composer.textOnly'));
+                return;
+            }
+            if (!primeAPI || !primeRuntimeReady) {
+                toast.error(t('prime.unavailable.description'));
+                return;
+            }
+
+            const createRuntimeKey = activeRuntimeKey;
+            const ownsPrimeDraft = () => {
+                const currentDraft = useSessionUIStore.getState().newSessionDraft;
+                return getRuntimeKey() === createRuntimeKey
+                    && currentDraft.open
+                    && currentDraft.harness === 'prime';
+            };
+            const openPrimeSession = (session: PrimeSessionSummary) => {
+                if (!ownsPrimeDraft() || session.identity.runtimeKey !== createRuntimeKey) return;
+                messageRef.current = '';
+                setMessage('');
+                confirmedMentionsRef.current.clear();
+                persistDraftImmediately(chatDraftIdentity, '');
+                messageHistory.reset();
+                setExpandedInput(false);
+                closeNewSessionDraft();
+                setPrimeTranscriptTarget(session);
+                if (isMobile) composerRef.current?.blur();
+            };
+
+            setIsPrimeCreating(true);
+            try {
+                const target = await resolveOpenDraftTarget();
+                if (!target) throw new Error('Prime Agent session directory is unavailable');
+                const targetControlKey = `${createRuntimeKey}\0${target.directory}`;
+                const selectedControls = primeDraftControls?.key === targetControlKey ? primeDraftControls : null;
+                const session = await primeAPI.createSession({
+                    runtimeKey: createRuntimeKey,
+                    directory: target.directory,
+                    prompt,
+                    provider: selectedControls?.model?.provider,
+                    modelID: selectedControls?.model?.id,
+                    thinkingLevel: selectedControls?.thinkingLevel,
+                });
+                openPrimeSession(session);
+            } catch (error) {
+                if (!ownsPrimeDraft()) return;
+                const mutationError = error instanceof Error
+                    ? error as Error & { ambiguous?: boolean; session?: PrimeSessionSummary }
+                    : null;
+                if (mutationError?.session) openPrimeSession(mutationError.session);
+                if (mutationError?.ambiguous) {
+                    toast.warning(t('prime.composer.ambiguous'));
+                } else {
+                    toast.error(t('prime.composer.createFailed'));
+                }
+            } finally {
+                setIsPrimeCreating(false);
+            }
             return;
         }
 
@@ -1387,6 +1507,14 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         // Uses keyCode === 229 fallback for WebKit where compositionend fires before keydown.
         if (isIMECompositionEvent(e)) return;
 
+        if (isPrimeDraft) {
+            if (e.key === 'Enter' && !e.shiftKey && (!isMobile || e.ctrlKey || e.metaKey)) {
+                e.preventDefault();
+                void handleSubmitRef.current();
+            }
+            return;
+        }
+
         if (inputMode === 'shell' && e.key === 'Escape') {
             e.preventDefault();
             setInputMode('normal');
@@ -1698,6 +1826,12 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
     }, []);
 
     const handleComposerChange = ({ value, selection, fromPaste, insertedText }: ComposerChange) => {
+        if (isPrimeDraft) {
+            setMessage(value);
+            closeAutocomplete();
+            return;
+        }
+
         // VS Code drops the dragged path as text as well as firing the drop
         // handler; swallow that duplicate insertion.
         if (isVSCodeRuntime() && suppressNextFileDropTextInsertRef.current) {
@@ -1792,6 +1926,11 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
             return;
         }
 
+        if (isPrimeDraft) {
+            toast.error(t('prime.composer.textOnly'));
+            return;
+        }
+
         if (!currentSessionId && !newSessionDraftOpen) {
             if (pastedText.includes('@')) {
                 markFileMentionPasteSuppression();
@@ -1833,7 +1972,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                 pendingPastedAttachmentFilenamesRef.current.delete(filename);
             }
         }
-    }, [addAttachedFile, attachedFiles, currentSessionId, inputMode, markFileMentionPasteSuppression, message, newSessionDraftOpen, insertTextAtSelection, setMessage, t, updateAutocompleteState]);
+    }, [addAttachedFile, attachedFiles, currentSessionId, inputMode, isPrimeDraft, markFileMentionPasteSuppression, message, newSessionDraftOpen, insertTextAtSelection, setMessage, t, updateAutocompleteState]);
 
     const handleFileSelect = (file: { name: string; path: string; relativePath?: string }) => {
 
@@ -2011,8 +2150,8 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
     }, [abortPromptSessionId, currentSessionId, clearAbortPrompt]);
 
     React.useEffect(() => {
-        canAcceptDropRef.current = Boolean(currentSessionId || newSessionDraftOpen);
-    }, [currentSessionId, newSessionDraftOpen]);
+        canAcceptDropRef.current = !isPrimeDraft && Boolean(currentSessionId || newSessionDraftOpen);
+    }, [currentSessionId, isPrimeDraft, newSessionDraftOpen]);
 
     // Mention paths are shown relative to the project the chat searches.
     const toMentionPath = React.useCallback(
@@ -2100,6 +2239,12 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         e.preventDefault();
         e.stopPropagation();
         setIsDragging(false);
+
+        if (isPrimeDraft) {
+            toast.error(t('prime.composer.textOnly'));
+            clearDropTextSuppression();
+            return;
+        }
 
         if (!currentSessionId && !newSessionDraftOpen) return;
 
@@ -2271,6 +2416,44 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         handleDraftProjectChange,
         handleDraftDirectoryChange,
     } = useDraftTarget(showDraftTargetSelectors);
+    const primeDraftControlKey = isPrimeDraft && selectedDraftDirectory
+        ? `${activeRuntimeKey}\0${selectedDraftDirectory}`
+        : null;
+    const [primeDraftControlState, setPrimeDraftControlState] = React.useState<{
+        key: string;
+        controls: PrimeSessionControls;
+        model: PrimeModel | null;
+        thinkingLevel: PrimeThinkingLevel;
+    } | null>(null);
+    const [failedPrimeDraftControlKey, setFailedPrimeDraftControlKey] = React.useState<string | null>(null);
+    const [primeDraftControlsRevision, setPrimeDraftControlsRevision] = React.useState(0);
+    const primeDraftControls = primeDraftControlState?.key === primeDraftControlKey ? primeDraftControlState : null;
+
+    React.useEffect(() => {
+        if (!primeDraftControlKey || !selectedDraftDirectory || !primeAPI || !primeRuntimeReady) return;
+        const abortController = new AbortController();
+        let cancelled = false;
+        setFailedPrimeDraftControlKey(null);
+        void primeAPI.getDraftControls({
+            runtimeKey: activeRuntimeKey,
+            directory: selectedDraftDirectory,
+        }, abortController.signal).then((controls) => {
+            if (cancelled || getRuntimeKey() !== activeRuntimeKey) return;
+            setPrimeDraftControlState({
+                key: primeDraftControlKey,
+                controls,
+                model: controls.model,
+                thinkingLevel: controls.thinkingLevel,
+            });
+        }).catch((error: unknown) => {
+            if (cancelled || (error instanceof Error && error.name === 'AbortError')) return;
+            setFailedPrimeDraftControlKey(primeDraftControlKey);
+        });
+        return () => {
+            cancelled = true;
+            abortController.abort();
+        };
+    }, [activeRuntimeKey, primeAPI, primeDraftControlKey, primeDraftControlsRevision, primeRuntimeReady, selectedDraftDirectory]);
 
     const chatSurfaceMode = useChatSurfaceMode();
     const isMiniChatSurface = chatSurfaceMode === 'mini-chat';
@@ -2382,6 +2565,48 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
 
     const iconButtonBaseClass = 'flex cursor-pointer items-center justify-center text-foreground transition-none outline-none focus:outline-none flex-shrink-0 disabled:cursor-not-allowed';
     const footerIconButtonClass = cn(iconButtonBaseClass, buttonSizeClass);
+    const primeStatusPending = !primeStatusLoadFailed
+        && (primeStatusLoading || primeRuntimeStatus === null || primeRuntimeStatus.state === 'starting');
+    let primeDraftControlContent: React.ReactNode;
+    if (!isPrimeDraft) {
+        primeDraftControlContent = undefined;
+    } else if (primeDraftControls) {
+        primeDraftControlContent = (
+            <PrimeControlSelectors
+                controls={primeDraftControls.controls}
+                model={primeDraftControls.model}
+                thinkingLevel={primeDraftControls.thinkingLevel}
+                disabled={isPrimeCreating}
+                onModelChange={(model) => setPrimeDraftControlState((current) => (
+                    current?.key === primeDraftControlKey
+                        ? {
+                            ...current,
+                            model,
+                            thinkingLevel: model.reasoning ? current.thinkingLevel : 'off',
+                        }
+                        : current
+                ))}
+                onThinkingLevelChange={(thinkingLevel) => setPrimeDraftControlState((current) => (
+                    current?.key === primeDraftControlKey ? { ...current, thinkingLevel } : current
+                ))}
+            />
+        );
+    } else if (failedPrimeDraftControlKey === primeDraftControlKey) {
+        primeDraftControlContent = (
+            <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="size-7"
+                onClick={() => setPrimeDraftControlsRevision((revision) => revision + 1)}
+                aria-label={t('sessions.sidebar.group.empty.retry')}
+            >
+                <Icon name="refresh" className="size-3.5" />
+            </Button>
+        );
+    } else {
+        primeDraftControlContent = <Icon name="loader-4" className="size-3.5 animate-spin text-muted-foreground" />;
+    }
     const permissionScopeSessionId = currentSessionId ?? currentManagementSessionId;
     const permissionAutoAcceptEnabled = usePermissionStore((state) => {
         if (!permissionScopeSessionId) {
@@ -2464,13 +2689,15 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                 </div>
             ) : null}
             <div className={cn('chat-input-column relative overflow-visible', isComposerExpanded && 'flex flex-1 min-h-0 flex-col')}>
-                <AttachedFilesList onShowPopup={handleShowAttachmentPreview} />
-                <QueuedMessageChips
-                    onEditMessage={handleQueuedMessageEdit}
-                    onSendMessage={handleQueuedMessageSend}
-                />
-                <AutoReviewBanner />
-                {hasDrafts ? (
+                {!isPrimeDraft && <AttachedFilesList onShowPopup={handleShowAttachmentPreview} />}
+                {!isPrimeDraft && (
+                    <QueuedMessageChips
+                        onEditMessage={handleQueuedMessageEdit}
+                        onSendMessage={handleQueuedMessageSend}
+                    />
+                )}
+                {!isPrimeDraft && <AutoReviewBanner />}
+                {!isPrimeDraft && hasDrafts ? (
                     <ComposerContextChips
                         terminalDrafts={terminalContextDrafts}
                         reviewCount={reviewCount}
@@ -2486,7 +2713,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                     />
                 ) : null}
 
-                {linkedIssue && !isVSCode ? (
+                {!isPrimeDraft && linkedIssue && !isVSCode ? (
                     <LinkedReferenceRow
                         numberLabel={`#${linkedIssue.number}`}
                         title={linkedIssue.title}
@@ -2498,7 +2725,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                         onRemove={() => setLinkedIssue(null)}
                     />
                 ) : null}
-                {linkedPr && !isVSCode ? (
+                {!isPrimeDraft && linkedPr && !isVSCode ? (
                     <LinkedReferenceRow
                         numberLabel={t('chat.chatInput.linked.pr.number', { number: linkedPr.number })}
                         title={linkedPr.title}
@@ -2511,16 +2738,67 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                         onRemove={() => setLinkedPr(null)}
                     />
                 ) : null}
-                <RevertedMessageDock
-                    sessionId={currentSessionId}
-                    directory={currentSessionDirectoryForSync ?? currentDirectory}
-                />
-                <MemoStatusRow
-                    showAbortStatus={showAbortStatus}
-                    showAssistantStatus={false}
-                    showTodos
-                    leftAccessory={newSessionDraftOpen || !hasPendingChanges ? null : <PendingChangesBar />}
-                />
+                {!isPrimeDraft && (
+                    <>
+                        <RevertedMessageDock
+                            sessionId={currentSessionId}
+                            directory={currentSessionDirectoryForSync ?? currentDirectory}
+                        />
+                        <MemoStatusRow
+                            showAbortStatus={showAbortStatus}
+                            showAssistantStatus={false}
+                            showTodos
+                            leftAccessory={newSessionDraftOpen || !hasPendingChanges ? null : <PendingChangesBar />}
+                        />
+                    </>
+                )}
+                {canSelectDraftHarness && !isVSCode ? (
+                    <div
+                        role="group"
+                        aria-label={t('harness.selector.label')}
+                        className="flex items-center gap-1 px-3 pb-1.5 pt-2"
+                    >
+                        <Button
+                            type="button"
+                            variant="chip"
+                            size="xs"
+                            aria-pressed={newSessionDraft.harness === 'opencode'}
+                            disabled={isPrimeCreating}
+                            className="normal-case"
+                            onClick={() => handleDraftHarnessChange('opencode')}
+                        >
+                            OpenCode
+                        </Button>
+                        <Button
+                            type="button"
+                            variant="chip"
+                            size="xs"
+                            aria-pressed={newSessionDraft.harness === 'prime'}
+                            disabled={isPrimeCreating}
+                            className="normal-case"
+                            onClick={() => handleDraftHarnessChange('prime')}
+                        >
+                            Prime Agent
+                        </Button>
+                    </div>
+                ) : null}
+                {isPrimeDraft && !primeRuntimeReady ? (
+                    <div className="mx-3 mb-1.5 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border/60 bg-[var(--surface-muted)] px-3 py-2 text-xs text-muted-foreground">
+                        <span>{primeStatusPending
+                            ? t('common.loading')
+                            : primeRuntimeStatus?.message ?? t('prime.unavailable.description')}</span>
+                        {!primeStatusPending && (
+                            <div className="flex items-center gap-1.5">
+                                <Button type="button" variant="ghost" size="xs" onClick={retryPrimeStatus}>
+                                    {t('sessions.sidebar.group.empty.retry')}
+                                </Button>
+                                <Button type="button" variant="outline" size="xs" onClick={openPrimeSettings}>
+                                    {t('helpDialog.item.openSettings')}
+                                </Button>
+                            </div>
+                        )}
+                    </div>
+                ) : null}
                 {!isMobile && showDraftTargetSelectors && selectedDraftProject ? (
                     <DraftTargetSelectors
                         projects={draftProjects}
@@ -2561,6 +2839,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                         sessionId={currentSessionId}
                         directory={currentSessionDirectoryForSync ?? currentDirectory}
                         newSessionDraftOpen={newSessionDraftOpen}
+                        textOnly={isPrimeDraft}
                         hasContent={Boolean(hasContent)}
                         isVSCode={isVSCode}
                         canAbort={canAbort}
@@ -2580,18 +2859,22 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                     />
                 ) : (
                 <>
-                <SessionGoalRow
-                    sessionId={currentSessionId}
-                    directory={currentSessionDirectoryForSync ?? currentDirectory}
-                    className="mb-1.5"
-                />
-                <SessionSuggestionChip
-                    sessionId={currentSessionId}
-                    directory={currentSessionDirectoryForSync ?? currentDirectory}
-                    hidden={hasContent || newSessionDraftOpen}
-                    onApply={applyAssistSuggestion}
-                    className="mb-1.5"
-                />
+                {!isPrimeDraft && (
+                    <>
+                        <SessionGoalRow
+                            sessionId={currentSessionId}
+                            directory={currentSessionDirectoryForSync ?? currentDirectory}
+                            className="mb-1.5"
+                        />
+                        <SessionSuggestionChip
+                            sessionId={currentSessionId}
+                            directory={currentSessionDirectoryForSync ?? currentDirectory}
+                            hidden={hasContent || newSessionDraftOpen}
+                            onApply={applyAssistSuggestion}
+                            className="mb-1.5"
+                        />
+                    </>
+                )}
                 <div
                     className={cn(
                         "flex flex-col relative overflow-visible",
@@ -2637,7 +2920,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                         </div>
                     )}
 
-                    <ComposerAutocompletePopups
+                    {!isPrimeDraft && <ComposerAutocompletePopups
                         open={openAutocomplete}
                         query={autocompleteQuery}
                         overlayPosition={isDesktopExpanded ? autocompleteOverlayPosition : null}
@@ -2651,12 +2934,12 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                         onFileSelect={handleFileSelect}
                         onAgentSelect={handleAgentSelect}
                         onClose={closeAutocomplete}
-                    />
+                    />}
                     {/* Positioning context for the dictation overlay: covers the
                         text area + footer exactly. */}
                     <div className={cn('relative flex flex-col', isComposerExpanded && 'flex-1 min-h-0')}>
                     <div className={cn("overflow-hidden", isComposerExpanded && 'flex flex-1 min-h-0 flex-col')}>
-                        {isMobile ? (
+                        {isMobile && !isPrimeDraft ? (
                             <div className="scrollbar-none relative z-10 flex items-center gap-x-2 overflow-x-auto px-3 pb-0.5 pt-1.5">
                                 <MemoMobileModelButton onOpenModel={() => handleOpenMobilePanel('model')} className="flex-shrink-0" />
                                 <MemoMobileAgentButton
@@ -2666,10 +2949,12 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                                 />
                             </div>
                         ) : null}
-                        <div className="flex items-center gap-1 px-3 pt-1 flex-wrap relative z-10">
-                            <AttachedVSCodeFileChips onShowPopup={handleShowAttachmentPreview} />
-                            <ActiveEditorFileSuggestion />
-                        </div>
+                        {!isPrimeDraft && (
+                            <div className="flex items-center gap-1 px-3 pt-1 flex-wrap relative z-10">
+                                <AttachedVSCodeFileChips onShowPopup={handleShowAttachmentPreview} />
+                                <ActiveEditorFileSuggestion />
+                            </div>
+                        )}
                         <div
                             className={cn("relative overflow-hidden", isComposerExpanded && 'flex flex-1 min-h-0 flex-col')}
                             onDragEnter={handleDragEnter}
@@ -2702,7 +2987,9 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                                 }}
                                 onFocus={mobileShell.onEditorFocus}
                                 onBlur={mobileShell.onEditorBlur}
-                                placeholder={currentSessionId || newSessionDraftOpen
+                                placeholder={isPrimeDraft
+                                    ? t('prime.composer.placeholder')
+                                    : currentSessionId || newSessionDraftOpen
                                     ? inputMode === 'shell'
                                         ? t('chat.chatInput.placeholder.shell')
                                         : t(useCompactChatPlaceholder ? 'chat.chatInput.placeholder.chatCompact' : 'chat.chatInput.placeholder.chat')
@@ -2733,6 +3020,8 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                         sessionId={currentSessionId}
                         directory={currentSessionDirectoryForSync ?? currentDirectory}
                         newSessionDraftOpen={newSessionDraftOpen}
+                        textOnly={isPrimeDraft}
+                        textOnlyControls={primeDraftControlContent}
                         messageLength={message.length}
                         radius={chatInputRadius}
                         footerPaddingClass={footerPaddingClass}
@@ -2743,7 +3032,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                         stopIconSizeClass={stopIconSizeClass}
                         canSend={canSend}
                         canAbort={canAbort}
-                        hasContent={Boolean(hasContent)}
+                        hasContent={isPrimeDraft ? hasPromptText : Boolean(hasContent)}
                         isExpandedInput={isExpandedInput}
                         permissionAutoAcceptEnabled={permissionAutoAcceptEnabled}
                         isPermissionAutoAcceptInteractive={isPermissionAutoAcceptInteractive}
@@ -2791,7 +3080,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                 {/* Hidden host for the model/agent/variant bottom sheets. Kept
                     outside the pill conditional so an open panel survives (and
                     stays visible over) the collapsed composer. */}
-                {isMobile ? (
+                {isMobile && !isPrimeDraft ? (
                     <MemoModelControls
                         className="hidden"
                         mobilePanel={mobileControlsPanel}
@@ -2799,7 +3088,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                     />
                 ) : null}
             </div>
-            {newSessionDraftOpen && !isDesktopExpanded && !isMobile && !isVSCode && !isMiniChatSurface ? (
+            {newSessionDraftOpen && !isPrimeDraft && !isDesktopExpanded && !isMobile && !isVSCode && !isMiniChatSurface ? (
                 <DraftPresetChips
                     onSubmit={(starter) => submitPresetPrompt(starter.submitText, starter.ref.type)}
                     className="chat-input-column mt-4"
@@ -2855,7 +3144,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
 
         {/* Mobile attachment sheet: replaces the dropdown (which stole focus and
             dismissed the keyboard) and leaves room for more actions later. */}
-        {isMobile ? (
+        {isMobile && !isPrimeDraft ? (
             <MobileOverlayPanel
                 open={mobileAttachMenuOpen}
                 title={t('chat.chatInput.actions.addAttachment')}

@@ -738,6 +738,7 @@ export const Header: React.FC<HeaderProps> = ({
   const setActiveMainTab = useUIStore((state) => state.setActiveMainTab);
   const shortcutOverrides = useUIStore((state) => state.shortcutOverrides);
   const timeFormatPreference = useUIStore((state) => state.timeFormatPreference);
+  const primeTranscriptTarget = useUIStore((state) => state.primeTranscriptTarget);
 
   const getCurrentModel = useConfigStore((state) => state.getCurrentModel);
   const runtimeApis = useRuntimeAPIs();
@@ -745,6 +746,7 @@ export const Header: React.FC<HeaderProps> = ({
 
   const getContextUsage = useSessionUIStore((state) => state.getContextUsage);
   const isNewSessionDraftOpen = useSessionUIStore((state) => Boolean(state.newSessionDraft?.open));
+  const newSessionDraftHarness = useSessionUIStore((state) => state.newSessionDraft?.harness ?? 'opencode');
   const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
   const currentSessionMessagesResolved = useSessionMessagesResolved(currentSessionId ?? '');
   const currentSessionStatus = useGlobalSessionStatus(currentSessionId ?? '');
@@ -906,7 +908,11 @@ export const Header: React.FC<HeaderProps> = ({
   }, [desktopServicesTab, isDesktopApp]);
 
   const isVSCode = React.useMemo(() => isVSCodeRuntime(), []);
-  const showDesktopHeaderContextUsage = !isVSCode && activeMainTab === 'chat' && !!stableDesktopContextUsage && stableDesktopContextUsage.totalTokens > 0;
+  const showDesktopHeaderContextUsage = !isVSCode
+    && activeMainTab === 'chat'
+    && !primeTranscriptTarget
+    && !!stableDesktopContextUsage
+    && stableDesktopContextUsage.totalTokens > 0;
   const desktopHeaderDisplayPercentage = stableDesktopContextUsage && stableDesktopContextUsage.contextLimit > 0
     ? Math.min(999, (stableDesktopContextUsage.totalTokens / stableDesktopContextUsage.contextLimit) * 100)
     : 0;
@@ -1510,8 +1516,20 @@ export const Header: React.FC<HeaderProps> = ({
     if (isMultiRunSurfaceOpen) {
       return { title: t('sessions.sidebar.header.actions.newMultiRun'), subtitle: null };
     }
+    if (primeTranscriptTarget) {
+      let subtitle = 'Prime Agent';
+      if (primeTranscriptTarget.activity === 'working') {
+        subtitle = `Prime Agent · ${t('prime.status.working')}`;
+      } else if (!primeTranscriptTarget.interactive) {
+        subtitle = `Prime Agent · ${t('prime.transcript.readOnly')}`;
+      }
+      return {
+        title: primeTranscriptTarget.title || 'Prime Agent',
+        subtitle,
+      };
+    }
     return null;
-  }, [isArchiveSurfaceOpen, isMultiRunSurfaceOpen, isScheduledSurfaceOpen, t, worktreesSurfaceProjectId, worktreesSurfaceProjectLabel]);
+  }, [isArchiveSurfaceOpen, isMultiRunSurfaceOpen, isScheduledSurfaceOpen, primeTranscriptTarget, t, worktreesSurfaceProjectId, worktreesSurfaceProjectLabel]);
 
 
   const actionDirectory = React.useMemo(() => {
@@ -2219,7 +2237,9 @@ export const Header: React.FC<HeaderProps> = ({
     </>
   );
 
-  const showMiniChatHeaderAction = hasElectronDesktopIPC && (isNewSessionDraftOpen || Boolean(currentSessionId));
+  const showMiniChatHeaderAction = hasElectronDesktopIPC
+    && !primeTranscriptTarget
+    && (isNewSessionDraftOpen || Boolean(currentSessionId));
 
   const renderDesktop = () => (
     <div
@@ -2252,15 +2272,18 @@ export const Header: React.FC<HeaderProps> = ({
           while the sidebar is closed. */}
       <div className="flex min-w-0 flex-1 items-center">
         {activeSurfaceHeader ? (
-          <div className="mr-3 flex min-w-0 flex-col items-start px-1 py-0.5 -my-0.5 text-left">
-            <span className="truncate typography-ui-label text-[14px] font-normal leading-tight text-foreground max-w-full">
-              {activeSurfaceHeader.title}
-            </span>
-            {activeSurfaceHeader.subtitle ? (
-              <span className="truncate typography-micro text-[10.5px] font-normal leading-tight text-muted-foreground/75 max-w-full">
-                {activeSurfaceHeader.subtitle}
+          <div className="mr-3 flex min-w-0 items-center gap-2 px-1 py-0.5 -my-0.5 text-left">
+            {primeTranscriptTarget ? <Icon name="chat-ai-3" className="size-4 shrink-0 text-muted-foreground/80" /> : null}
+            <div className="flex min-w-0 flex-col items-start">
+              <span className="max-w-full truncate typography-ui-label text-[14px] font-normal leading-tight text-foreground">
+                {activeSurfaceHeader.title}
               </span>
-            ) : null}
+              {activeSurfaceHeader.subtitle ? (
+                <span className="max-w-full truncate typography-micro text-[10.5px] font-normal leading-tight text-muted-foreground/75">
+                  {activeSurfaceHeader.subtitle}
+                </span>
+              ) : null}
+            </div>
           </div>
         ) : (
           <div className="app-region-no-drag mr-3 flex min-w-0 max-w-full items-center gap-0.5 py-0.5 -my-0.5 text-left">
@@ -2321,8 +2344,17 @@ export const Header: React.FC<HeaderProps> = ({
                   {isNewSessionDraftOpen ? t('sessions.switcher.draftTitle') : currentSessionTitle}
                 </span>
               )}
-              {(activeProjectLabel || currentBranchLabel || (!isNewSessionDraftOpen && worktreeBadgeKind)) ? (
+              {(activeMainTab === 'chat' || activeProjectLabel || currentBranchLabel || (!isNewSessionDraftOpen && worktreeBadgeKind)) ? (
                 <span className="flex min-w-0 max-w-full items-center gap-1.5 truncate typography-micro text-[10.5px] font-normal leading-tight text-muted-foreground/75">
+                  {activeMainTab === 'chat' ? (
+                    <span className="inline-flex shrink-0 items-center gap-0.5">
+                      <Icon
+                        name={isNewSessionDraftOpen && newSessionDraftHarness === 'prime' ? 'chat-ai-3' : 'code-sslash'}
+                        className="size-3"
+                      />
+                      {isNewSessionDraftOpen && newSessionDraftHarness === 'prime' ? 'Prime Agent' : 'OpenCode'}
+                    </span>
+                  ) : null}
                   {activeProjectLabel ? <span className="truncate">{activeProjectLabel}</span> : null}
                   {currentBranchLabel ? (
                     <span className="inline-flex min-w-0 items-center gap-0.5">

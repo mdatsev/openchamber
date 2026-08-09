@@ -14,6 +14,7 @@ type ProjectSection = {
 type Args = {
   projectSections: ProjectSection[];
   activeProjectId: string | null;
+  selectedPrimeProjectId: string | null;
   activeSessionByProject: Map<string, string>;
   setActiveSessionByProject: React.Dispatch<React.SetStateAction<Map<string, string>>>;
   currentSessionId: string | null;
@@ -29,6 +30,7 @@ export const useProjectSessionSelection = (args: Args): void => {
   const {
     projectSections,
     activeProjectId,
+    selectedPrimeProjectId,
     activeSessionByProject,
     setActiveSessionByProject,
     currentSessionId,
@@ -84,6 +86,11 @@ export const useProjectSessionSelection = (args: Args): void => {
 
   React.useLayoutEffect(() => {
     if (!activeProjectId) {
+      return;
+    }
+
+    if (selectedPrimeProjectId === activeProjectId) {
+      previousActiveProjectRef.current = activeProjectId;
       return;
     }
 
@@ -152,6 +159,7 @@ export const useProjectSessionSelection = (args: Args): void => {
     handleSessionSelect(targetSessionId, targetDirectory);
   }, [
     activeProjectId,
+    selectedPrimeProjectId,
     activeSessionByProject,
     currentSessionId,
     handleSessionSelect,

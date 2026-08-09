@@ -18,6 +18,18 @@ interface Subscription {
   close: () => void;
 }
 
+export type HarnessID = 'opencode' | 'prime';
+
+export interface HarnessSessionIdentity {
+  runtimeKey: string;
+  harness: HarnessID;
+  sessionID: string;
+}
+
+export interface PrimeSessionIdentity extends HarnessSessionIdentity {
+  harness: 'prime';
+}
+
 export interface TerminalSession {
   sessionId: string;
   cols: number;
@@ -625,6 +637,7 @@ export interface ProjectEntry {
   iconBackground?: string | null;
   color?: string | null;
   defaultModel?: string;
+  defaultHarness?: HarnessID;
   addedAt?: number;
   lastOpenedAt?: number;
   sidebarCollapsed?: boolean;
@@ -639,6 +652,7 @@ export interface SettingsPayload {
   lastDirectory?: string;
   homeDirectory?: string;
   opencodeBinary?: string;
+  primeAgentBinary?: string;
   projects?: ProjectEntry[];
   activeProjectId?: string;
   securityScopedBookmarks?: string[];
@@ -1221,6 +1235,129 @@ export interface ClientAuthAPI {
   getPairingTransports(): Promise<{ local: string | null; lan: string | null; relayAvailable: boolean }>;
 }
 
+export interface PrimeSessionSummary {
+  id: string;
+  identity: PrimeSessionIdentity;
+  title: string | null;
+  directory: string;
+  createdAt: string;
+  updatedAt: string;
+  activity: 'working' | 'idle';
+  interactive: boolean;
+  parentID: string | null;
+  depth: number;
+}
+
+export type PrimeSessionsResult =
+  | { status: 'ready'; sessions: PrimeSessionSummary[]; skippedFileCount: number; failedSessionIDs: [] }
+  | { status: 'partial'; sessions: PrimeSessionSummary[]; skippedFileCount: number; failedSessionIDs: string[] }
+  | { status: 'not-configured' | 'unsupported'; sessions: []; skippedFileCount: number; failedSessionIDs: [] };
+
+export interface PrimeTranscriptItem {
+  id: string;
+  role: 'user' | 'assistant' | 'reasoning' | 'tool' | 'system';
+  text: string;
+  timestamp: string | null;
+  label: string | null;
+  isError: boolean;
+  providerID: string | null;
+  modelID: string | null;
+  reasoningEffort: string | null;
+  usage: PrimeTranscriptUsage | null;
+  stopReason: string | null;
+  streaming: boolean;
+  toolCallID: string | null;
+  toolInput: string | null;
+  toolOutput: string | null;
+  toolStatus: 'pending' | 'running' | 'completed' | 'error' | null;
+}
+
+interface PrimeTranscriptUsage {
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
+  totalTokens: number;
+  cost: number | null;
+}
+
+export interface PrimeTranscript {
+  session: PrimeSessionSummary;
+  sourceVersion: number;
+  totalEntryCount: number;
+  branchEntryCount: number;
+  items: PrimeTranscriptItem[];
+}
+
+export type PrimeThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+export interface PrimeModel {
+  id: string;
+  name: string;
+  provider: string;
+  reasoning: boolean;
+  contextWindow: number | null;
+  maxTokens: number | null;
+}
+
+export interface PrimeSlashCommand {
+  name: string;
+  description: string | null;
+  argumentHint: string | null;
+  source: 'extension' | 'prompt' | 'skill';
+}
+
+export interface PrimeSessionControls {
+  model: PrimeModel | null;
+  thinkingLevel: PrimeThinkingLevel;
+  availableThinkingLevels: PrimeThinkingLevel[];
+  models: PrimeModel[];
+  commands: PrimeSlashCommand[];
+}
+
+export interface PrimeRuntimeStatus {
+  schemaVersion: 1;
+  state: 'starting' | 'ready' | 'not-configured' | 'unavailable' | 'incompatible' | 'unsupported';
+  interactive: boolean;
+  authentication: 'authenticated' | 'unauthenticated' | 'unknown';
+  binarySource: 'settings' | 'environment' | 'path' | null;
+  version: string | null;
+  message: string | null;
+}
+
+export type PrimeEvent =
+  | { type: 'stream-ready' }
+  | { type: 'runtime-changed'; status: PrimeRuntimeStatus }
+  | {
+      type: 'session-changed';
+      sessionID: string;
+      activity: 'working' | 'idle';
+      catalogChanged: boolean;
+    };
+
+export interface PrimeAPI {
+  getStatus(signal?: AbortSignal): Promise<PrimeRuntimeStatus>;
+  reconnect(signal?: AbortSignal): Promise<PrimeRuntimeStatus>;
+  listSessions(signal?: AbortSignal): Promise<PrimeSessionsResult>;
+  getTranscript(identity: PrimeSessionIdentity, signal?: AbortSignal): Promise<PrimeTranscript>;
+  attachSession(identity: PrimeSessionIdentity, signal?: AbortSignal): Promise<PrimeSessionSummary>;
+  getDraftControls(input: { runtimeKey: string; directory: string }, signal?: AbortSignal): Promise<PrimeSessionControls>;
+  getSessionControls(identity: PrimeSessionIdentity, signal?: AbortSignal): Promise<PrimeSessionControls>;
+  setSessionModel(input: { identity: PrimeSessionIdentity; provider: string; modelID: string }, signal?: AbortSignal): Promise<void>;
+  setSessionThinkingLevel(input: { identity: PrimeSessionIdentity; level: PrimeThinkingLevel }, signal?: AbortSignal): Promise<void>;
+  createSession(input: {
+    runtimeKey: string;
+    directory: string;
+    prompt: string;
+    provider?: string;
+    modelID?: string;
+    thinkingLevel?: PrimeThinkingLevel;
+  }, signal?: AbortSignal): Promise<PrimeSessionSummary>;
+  sendPrompt(input: { identity: PrimeSessionIdentity; prompt: string }, signal?: AbortSignal): Promise<void>;
+  abortSession(identity: PrimeSessionIdentity, signal?: AbortSignal): Promise<void>;
+  subscribe(listener: (event: PrimeEvent) => void): Subscription;
+}
+
 export interface RuntimeAPIs {
   runtime: RuntimeDescriptor;
   terminal: TerminalAPI;
@@ -1233,6 +1370,7 @@ export interface RuntimeAPIs {
   push?: PushAPI;
   diagnostics?: DiagnosticsAPI;
   clientAuth?: ClientAuthAPI;
+  prime?: PrimeAPI;
   tools: ToolsAPI;
   editor?: EditorAPI;
   vscode?: VSCodeAPI;

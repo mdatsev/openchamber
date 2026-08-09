@@ -7,6 +7,7 @@ import { ConfigUpdateOverlay } from '@/components/ui/ConfigUpdateOverlay';
 import { Button } from '@/components/ui/button';
 import { OpenChamberLogo } from '@/components/ui/OpenChamberLogo';
 import { ChatView } from '@/components/views/ChatView';
+import { PrimeTranscriptView } from '@/components/views/PrimeTranscriptView';
 import { PlanView } from '@/components/views/PlanView';
 import { SettingsView } from '@/components/views/SettingsView';
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
@@ -114,6 +115,9 @@ const MobileShell: React.FC<{ onActiveConnectionDeleted: () => void }> = ({ onAc
   const [pendingChangesDiff, setPendingChangesDiff] = React.useState<{ path: string; staged: boolean } | null>(null);
   const setSettingsPage = useUIStore((state) => state.setSettingsPage);
   const wideChatLayoutEnabled = useUIStore((state) => state.wideChatLayoutEnabled);
+  const primeTranscriptTarget = useUIStore((state) => state.primeTranscriptTarget);
+  const setPrimeTranscriptTarget = useUIStore((state) => state.setPrimeTranscriptTarget);
+  const primeTranscriptTitle = primeTranscriptTarget?.title || 'Prime Agent';
   const updateAvailable = useUpdateStore((state) => state.available);
   const updateRuntimeType = useUpdateStore((state) => state.runtimeType);
   const showCapacitorOnlyFeatures = React.useMemo(() => isCapacitorMobileApp(), []);
@@ -236,9 +240,12 @@ const MobileShell: React.FC<{ onActiveConnectionDeleted: () => void }> = ({ onAc
         openChangesSurface(diffPath ? { path: diffPath, staged: staged === true } : null);
       },
       openFiles: () => openFilesSurface(),
-      openSettings: () => openSettingsSurface('nav'),
+      openSettings: (section) => {
+        if (section) setSettingsPage(section as Parameters<typeof setSettingsPage>[0]);
+        openSettingsSurface(section ? 'page-content' : 'nav');
+      },
     }),
-    [openChangesSurface, openFilesSurface, openSettingsSurface],
+    [openChangesSurface, openFilesSurface, openSettingsSurface, setSettingsPage],
   );
 
   // Expose the shell's panel-opening actions to the deep-link layer so openchamber:// URLs
@@ -289,6 +296,10 @@ const MobileShell: React.FC<{ onActiveConnectionDeleted: () => void }> = ({ onAc
   // (opened from the drawer footer / workspace tabs), so they close before the
   // drawers underneath.
   const handleNativeBack = React.useCallback(() => {
+    if (primeTranscriptTarget) {
+      setPrimeTranscriptTarget(null);
+      return true;
+    }
     if (openPlan) {
       setOpenPlan(null);
       return true;
@@ -306,7 +317,7 @@ const MobileShell: React.FC<{ onActiveConnectionDeleted: () => void }> = ({ onAc
       return true;
     }
     return false;
-  }, [activeSurface, closeSurface, closeWorkspace, openPlan, sessionsSheetOpen, workspaceOpen]);
+  }, [activeSurface, closeSurface, closeWorkspace, openPlan, primeTranscriptTarget, sessionsSheetOpen, setPrimeTranscriptTarget, workspaceOpen]);
 
   useNativeAndroidBackButton(handleNativeBack);
 
@@ -443,7 +454,7 @@ const MobileShell: React.FC<{ onActiveConnectionDeleted: () => void }> = ({ onAc
           <main ref={chatMainRef} className="relative min-h-0 flex-1 overflow-hidden" data-page-scroll-lock="true">
             <div className="h-full w-full">
               <ErrorBoundary>
-                <ChatView />
+                <ChatView active={!primeTranscriptTarget} />
               </ErrorBoundary>
             </div>
           </main>
@@ -529,6 +540,27 @@ const MobileShell: React.FC<{ onActiveConnectionDeleted: () => void }> = ({ onAc
         )}
 
         {/* Layered above the workspace drawer's Notes tab, which opened it. */}
+        {primeTranscriptTarget && (
+          <MobileFullscreenSurface
+            open
+            variant={surfaceVariant}
+            onClose={() => setPrimeTranscriptTarget(null)}
+            ariaLabel={primeTranscriptTitle}
+            title={primeTranscriptTitle}
+            subtitle={primeTranscriptTarget.activity === 'working'
+              ? t('prime.status.working')
+              : primeTranscriptTarget.interactive
+                ? undefined
+                : t('prime.transcript.readOnly')}
+          >
+            <ErrorBoundary>
+              <div className="relative h-full">
+                <PrimeTranscriptView />
+              </div>
+            </ErrorBoundary>
+          </MobileFullscreenSurface>
+        )}
+
         {openPlan ? (
           <MobileFullscreenSurface
             open

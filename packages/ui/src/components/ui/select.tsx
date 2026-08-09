@@ -80,12 +80,7 @@ function SelectValue({ placeholder, children, ...props }: SelectValueProps) {
   return (
     <BaseSelect.Value data-slot="select-value" {...props}>
       {(value: unknown) => {
-        const resolvedValue =
-          typeof value === "string" || value === undefined
-            ? value
-            : value === null
-              ? undefined
-              : String(value);
+        const resolvedValue = value === null || value === undefined ? undefined : String(value);
 
         if (typeof children === "function") {
           return children(resolvedValue);
@@ -163,6 +158,7 @@ type SelectContentExtra = {
   sideOffset?: number;
   side?: "top" | "right" | "bottom" | "left";
   align?: "start" | "center" | "end";
+  scrollClassName?: string;
 };
 
 function SelectContent({
@@ -174,6 +170,7 @@ function SelectContent({
   sideOffset,
   side,
   align,
+  scrollClassName,
   ...props
 }: React.ComponentProps<typeof BaseSelect.Popup> & SelectContentExtra) {
   const portalContext = React.useContext(SelectPortalContext);
@@ -207,7 +204,8 @@ function SelectContent({
           <ScrollableOverlay
             outerClassName={cn(
               "max-h-[var(--available-height)]",
-              fitContent ? "w-max" : "w-full"
+              fitContent ? "w-max" : "w-full",
+              scrollClassName,
             )}
             className={cn(
               "p-1",

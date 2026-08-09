@@ -409,6 +409,9 @@ const sanitizeProjects = (value: unknown): DesktopSettings['projects'] | undefin
     if (typeof candidate.color === 'string' && candidate.color.trim().length > 0) {
       project.color = candidate.color.trim();
     }
+    if (candidate.defaultHarness === 'opencode' || candidate.defaultHarness === 'prime') {
+      project.defaultHarness = candidate.defaultHarness;
+    }
     if (candidate.iconBackground === null) {
       (project as unknown as Record<string, unknown>).iconBackground = null;
     } else {
@@ -1026,9 +1029,12 @@ const sanitizeWebSettings = (payload: unknown): DesktopSettings | null => {
     result.homeDirectory = candidate.homeDirectory;
   }
 
-  if (typeof candidate.opencodeBinary === 'string') {
-    const trimmed = candidate.opencodeBinary.trim();
-    result.opencodeBinary = trimmed.length > 0 ? trimmed : undefined;
+  for (const key of ['opencodeBinary', 'primeAgentBinary'] as const) {
+    const value = candidate[key];
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      result[key] = trimmed.length > 0 ? trimmed : undefined;
+    }
   }
   if (typeof candidate.desktopLanAccessEnabled === 'boolean') {
     result.desktopLanAccessEnabled = candidate.desktopLanAccessEnabled;

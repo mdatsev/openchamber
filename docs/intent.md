@@ -59,6 +59,14 @@ If instructions materially conflict and their ownership does not resolve the con
 - Treat browser-only state as intentionally local to each profile and origin. See `docs/fork-runtime-state.md` for the storage boundary.
 - The packaged and source applications may run simultaneously, but avoid concurrent edits to the same shared setting or metadata because cross-process writes can be last-writer-wins.
 
+## Harness Integration
+
+- OpenChamber may supervise multiple harnesses concurrently. Every session has a stable harness identity, and prompts, live events, tools, cancellation, permissions, and mutations route only through the adapter that owns that session.
+- OpenCode and Prime Agent sessions may run simultaneously. Opening one session must not cancel, suspend, or retarget work owned by another session or harness, and different connected clients may interact with different harness-owned sessions independently.
+- New chats expose an explicit harness choice and remember it per project. Existing sessions derive their harness from persisted identity rather than mutable project or client selection.
+- Sessions from every configured harness remain visible and readable. When an owning adapter is unavailable or unauthenticated, cached transcripts remain read-only and expose an actionable configuration or reconnect path instead of disappearing or masquerading as authoritative empty state.
+- Harness adapters use supported harness APIs for live behavior. Harness-native records remain in their owning stores and are normalized only at explicit presentation boundaries; Prime records must not be injected into OpenCode sync reducers or SDK types.
+
 ## Skills
 
 - Load every applicable repository-local skill under `.agents/skills` as required by OpenChamber's `AGENTS.md`.

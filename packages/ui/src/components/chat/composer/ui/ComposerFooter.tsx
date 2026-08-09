@@ -33,6 +33,8 @@ export interface ComposerFooterProps {
     sessionId: string | null;
     directory?: string;
     newSessionDraftOpen: boolean;
+    textOnly: boolean;
+    textOnlyControls?: React.ReactNode;
     messageLength: number;
 
     radius: string;
@@ -75,6 +77,8 @@ export function ComposerFooter(props: ComposerFooterProps) {
         sessionId: currentSessionId,
         directory,
         newSessionDraftOpen,
+        textOnly,
+        textOnlyControls,
         messageLength,
         radius: chatInputRadius,
         footerPaddingClass,
@@ -120,113 +124,121 @@ export function ComposerFooter(props: ComposerFooterProps) {
             data-chat-input-footer="true"
         >
             {isMobile ? (
-                <>
-                    <div className="flex w-full items-center justify-between gap-x-1.5">
-                        <div className="composer-mobile-actions flex items-center gap-x-2 pl-1">
-                            <ComposerAttachmentControls
-                                isVSCode={isVSCode}
-                                footerIconButtonClass={footerIconButtonClass}
-                                iconSizeClass={iconSizeClass}
-                                handlePickLocalFiles={onPickLocalFiles}
-                                openIssuePicker={onOpenIssuePicker}
-                                openPrPicker={onOpenPrPicker}
-                                onOpenSettings={onOpenSettings}
-                                onOpenMobileSheet={onOpenAttachSheet}
-                            />
-                            <PermissionAutoAcceptButton
-                                footerIconButtonClass={footerIconButtonClass}
-                                iconSizeClass={iconSizeClass}
-                                isInteractive={isPermissionAutoAcceptInteractive}
-                                permissionAutoAcceptEnabled={permissionAutoAcceptEnabled}
-                                handlePermissionAutoAcceptToggle={onTogglePermissionAutoAccept}
-                            />
-                            <SessionGoalButton
-                                sessionId={currentSessionId}
-                                directory={directory}
-                                draftOpen={newSessionDraftOpen}
-                                footerIconButtonClass={footerIconButtonClass}
-                                iconSizeClass={iconSizeClass}
-                            />
-                            <SessionGoalObjectiveCounter length={messageLength} />
-                        </div>
-                        <div className="flex items-center min-w-0 gap-x-1 justify-end">
-                            <div className="flex items-center gap-x-1 flex-shrink-0">
-                                <button
-                                    type="button"
-                                    className={footerIconButtonClass}
-                                    // Keep the soft keyboard open (same guard as
-                                    // PermissionAutoAcceptButton); the recording
-                                    // engine lives in the wrapper-level
-                                    // ComposerDictation instance.
-                                    onMouseDown={(event) => event.preventDefault()}
-                                    onPointerDownCapture={(event) => {
-                                        if (event.pointerType === 'touch') {
-                                            event.preventDefault();
-                                        }
-                                    }}
-                                    onClick={onStartDictation}
-                                    disabled={dictationActive}
-                                    title={t('chat.dictation.start')}
-                                    aria-label={t('chat.dictation.start')}
-                                >
-                                    <Icon name="mic" className={cn(iconSizeClass, 'text-current')} />
-                                </button>
-                                <ComposerActionButtons
-                                    isMobile={isMobile}
+                <div className="flex w-full items-center justify-between gap-x-1.5">
+                    <div className="composer-mobile-actions flex min-w-0 items-center gap-x-2 pl-1">
+                        {textOnly && textOnlyControls}
+                        {!textOnly && (
+                            <>
+                                <ComposerAttachmentControls
+                                    isVSCode={isVSCode}
                                     footerIconButtonClass={footerIconButtonClass}
-                                    sendIconSizeClass={sendIconSizeClass}
-                                    stopIconSizeClass={stopIconSizeClass}
-                                    canSend={canSend}
-                                    canAbort={canAbort}
-                                    hasContent={hasContent}
-                                    currentSessionId={currentSessionId}
-                                    newSessionDraftOpen={newSessionDraftOpen}
-                                    onPrimaryAction={onPrimaryAction}
-                                    onQueueMessage={onQueueMessage}
-                                    onAbort={onAbort}
+                                    iconSizeClass={iconSizeClass}
+                                    handlePickLocalFiles={onPickLocalFiles}
+                                    openIssuePicker={onOpenIssuePicker}
+                                    openPrPicker={onOpenPrPicker}
+                                    onOpenSettings={onOpenSettings}
+                                    onOpenMobileSheet={onOpenAttachSheet}
                                 />
-                            </div>
+                                <PermissionAutoAcceptButton
+                                    footerIconButtonClass={footerIconButtonClass}
+                                    iconSizeClass={iconSizeClass}
+                                    isInteractive={isPermissionAutoAcceptInteractive}
+                                    permissionAutoAcceptEnabled={permissionAutoAcceptEnabled}
+                                    handlePermissionAutoAcceptToggle={onTogglePermissionAutoAccept}
+                                />
+                                <SessionGoalButton
+                                    sessionId={currentSessionId}
+                                    directory={directory}
+                                    draftOpen={newSessionDraftOpen}
+                                    footerIconButtonClass={footerIconButtonClass}
+                                    iconSizeClass={iconSizeClass}
+                                />
+                                <SessionGoalObjectiveCounter length={messageLength} />
+                            </>
+                        )}
+                    </div>
+                    <div className="flex items-center min-w-0 gap-x-1 justify-end">
+                        <div className="flex items-center gap-x-1 flex-shrink-0">
+                            <button
+                                type="button"
+                                className={footerIconButtonClass}
+                                // Keep the soft keyboard open (same guard as
+                                // PermissionAutoAcceptButton); the recording
+                                // engine lives in the wrapper-level
+                                // ComposerDictation instance.
+                                onMouseDown={(event) => event.preventDefault()}
+                                onPointerDownCapture={(event) => {
+                                    if (event.pointerType === 'touch') {
+                                        event.preventDefault();
+                                    }
+                                }}
+                                onClick={onStartDictation}
+                                disabled={dictationActive}
+                                title={t('chat.dictation.start')}
+                                aria-label={t('chat.dictation.start')}
+                            >
+                                <Icon name="mic" className={cn(iconSizeClass, 'text-current')} />
+                            </button>
+                            <ComposerActionButtons
+                                isMobile={isMobile}
+                                footerIconButtonClass={footerIconButtonClass}
+                                sendIconSizeClass={sendIconSizeClass}
+                                stopIconSizeClass={stopIconSizeClass}
+                                canSend={canSend}
+                                canAbort={canAbort}
+                                hasContent={hasContent}
+                                currentSessionId={currentSessionId}
+                                newSessionDraftOpen={newSessionDraftOpen}
+                                onPrimaryAction={onPrimaryAction}
+                                onQueueMessage={onQueueMessage}
+                                onAbort={onAbort}
+                            />
                         </div>
                     </div>
-                </>
+                </div>
             ) : (
                 <>
                     <div className={cn("flex items-center flex-shrink-0", footerGapClass)}>
-                        <ComposerAttachmentControls
-                            isVSCode={isVSCode}
-                            footerIconButtonClass={footerIconButtonClass}
-                            iconSizeClass={iconSizeClass}
-                            handlePickLocalFiles={onPickLocalFiles}
-                            openIssuePicker={onOpenIssuePicker}
-                            openPrPicker={onOpenPrPicker}
-                            onOpenSettings={onOpenSettings}
-                        />
-                        <FocusModeButton
-                            footerIconButtonClass={footerIconButtonClass}
-                            iconSizeClass={iconSizeClass}
-                            isExpandedInput={isExpandedInput}
-                            onToggle={onToggleExpandedInput}
-                        />
-                        <PermissionAutoAcceptButton
-                            footerIconButtonClass={footerIconButtonClass}
-                            iconSizeClass={iconSizeClass}
-                            isInteractive={isPermissionAutoAcceptInteractive}
-                            permissionAutoAcceptEnabled={permissionAutoAcceptEnabled}
-                            handlePermissionAutoAcceptToggle={onTogglePermissionAutoAccept}
-                            withTooltip
-                        />
-                        <SessionGoalButton
-                            sessionId={currentSessionId}
-                            directory={directory}
-                            draftOpen={newSessionDraftOpen}
-                            footerIconButtonClass={footerIconButtonClass}
-                            iconSizeClass={iconSizeClass}
-                            withTooltip
-                        />
-                        <SessionGoalObjectiveCounter length={messageLength} />
+                        {!textOnly && (
+                            <>
+                                <ComposerAttachmentControls
+                                    isVSCode={isVSCode}
+                                    footerIconButtonClass={footerIconButtonClass}
+                                    iconSizeClass={iconSizeClass}
+                                    handlePickLocalFiles={onPickLocalFiles}
+                                    openIssuePicker={onOpenIssuePicker}
+                                    openPrPicker={onOpenPrPicker}
+                                    onOpenSettings={onOpenSettings}
+                                />
+                                <FocusModeButton
+                                    footerIconButtonClass={footerIconButtonClass}
+                                    iconSizeClass={iconSizeClass}
+                                    isExpandedInput={isExpandedInput}
+                                    onToggle={onToggleExpandedInput}
+                                />
+                                <PermissionAutoAcceptButton
+                                    footerIconButtonClass={footerIconButtonClass}
+                                    iconSizeClass={iconSizeClass}
+                                    isInteractive={isPermissionAutoAcceptInteractive}
+                                    permissionAutoAcceptEnabled={permissionAutoAcceptEnabled}
+                                    handlePermissionAutoAcceptToggle={onTogglePermissionAutoAccept}
+                                    withTooltip
+                                />
+                                <SessionGoalButton
+                                    sessionId={currentSessionId}
+                                    directory={directory}
+                                    draftOpen={newSessionDraftOpen}
+                                    footerIconButtonClass={footerIconButtonClass}
+                                    iconSizeClass={iconSizeClass}
+                                    withTooltip
+                                />
+                                <SessionGoalObjectiveCounter length={messageLength} />
+                            </>
+                        )}
                     </div>
                     <div className={cn('flex items-center flex-1 justify-end', footerGapClass, 'md:gap-x-3')}>
-                        <MemoModelControls className={cn('flex-1 min-w-0 justify-end')} />
+                        {textOnly && textOnlyControls}
+                        {!textOnly && <MemoModelControls className={cn('flex-1 min-w-0 justify-end')} />}
                         <MemoComposerDictation
                             radius={chatInputRadius}
                             isMobile={isMobile}

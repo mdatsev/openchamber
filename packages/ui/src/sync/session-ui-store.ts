@@ -16,6 +16,7 @@ import { create } from "zustand"
 import type { Session, Part, Message, TextPart } from "@opencode-ai/sdk/v2/client"
 import type { AttachedFile, SessionContextUsage, SessionWorktreeAttachment } from "@/stores/types/sessionTypes"
 import type { WorktreeMetadata } from "@/types/worktree"
+import type { HarnessID } from "@/lib/api/types"
 import { opencodeClient } from "@/lib/opencode/client"
 import { runtimeFetch } from "@/lib/runtime-fetch"
 import { useConfigStore } from "@/stores/useConfigStore"
@@ -245,6 +246,7 @@ export type { SessionMemoryState } from "./viewport-store"
 
 export type NewSessionDraftState = {
   open: boolean
+  harness?: HarnessID
   selectedProjectId?: string | null
   directoryOverride: string | null
   permissionAutoAcceptEnabled?: boolean
@@ -305,6 +307,7 @@ export type SessionUIState = {
   setNewSessionDraftTarget: (target: { projectId?: string | null; selectedProjectId?: string | null; directoryOverride?: string | null }, options?: { force?: boolean }) => void
   setDraftPreserveDirectoryOverride: (value: boolean) => void
   setDraftPermissionAutoAcceptEnabled: (enabled: boolean) => void
+  setDraftHarness: (harness: HarnessID) => void
   acknowledgeSessionAbort: (sessionId: string) => void
   clearAbortPrompt: () => void
   armAbortPrompt: (durationMs?: number) => number | null
@@ -533,9 +536,23 @@ const activateConfigForDirectory = async (directory: string | null | undefined):
 
 const DEFAULT_DRAFT: NewSessionDraftState = {
   open: false,
+  harness: 'opencode',
   directoryOverride: null,
   parentID: null,
 }
+
+type HarnessChoiceDraft = Partial<Pick<
+  NewSessionDraftState,
+  'parentID' | 'title' | 'targetFolderId' | 'permissionAutoAcceptEnabled' | 'syntheticParts'
+>>
+
+export const supportsHarnessChoice = (draft?: HarnessChoiceDraft): boolean => (
+  !draft?.parentID
+  && !draft?.title
+  && !draft?.targetFolderId
+  && !draft?.permissionAutoAcceptEnabled
+  && !draft?.syntheticParts?.length
+)
 
 const activeSessionByRuntime = new Map<string, string | null>()
 type RuntimeSessionMemory = {
@@ -591,6 +608,32 @@ const waitForWorktreeBootstrapIfConfigured = async (directory: string | null, pr
   }
 }
 
+export async function resolveOpenDraftTarget(): Promise<{ directory: string; projectId: string | null } | null> {
+  const store = useSessionUIStore.getState()
+  const draft = store.newSessionDraft
+  if (!draft.open) return null
+
+  const runtimeKey = getRuntimeKey()
+  const harness = draft.harness ?? 'opencode'
+  let directory = draft.bootstrapPendingDirectory ?? draft.directoryOverride ?? null
+  const projectId = draft.selectedProjectId ?? null
+  if (draft.pendingWorktreeRequestId) {
+    directory = await waitForPendingDraftWorktreeRequest(draft.pendingWorktreeRequestId)
+    store.resolvePendingDraftWorktreeTarget(draft.pendingWorktreeRequestId, directory)
+  }
+  await waitForWorktreeBootstrapIfConfigured(directory, projectId)
+  const currentDraft = useSessionUIStore.getState().newSessionDraft
+  const currentDirectory = normalizePath(currentDraft.bootstrapPendingDirectory ?? currentDraft.directoryOverride ?? null)
+  if (
+    getRuntimeKey() !== runtimeKey
+    || !currentDraft.open
+    || (currentDraft.harness ?? 'opencode') !== harness
+    || (currentDraft.selectedProjectId ?? null) !== projectId
+    || currentDirectory !== normalizePath(directory)
+  ) return null
+  return currentDirectory ? { directory: currentDirectory, projectId } : null
+}
+
 export async function materializeOpenDraftSession(selection: {
   providerID: string
   modelID: string
@@ -599,21 +642,16 @@ export async function materializeOpenDraftSession(selection: {
 }): Promise<MaterializedDraftSession | null> {
   const store = useSessionUIStore.getState()
   const draft = store.newSessionDraft
-  if (!draft?.open) return null
+  if (!draft?.open || draft.harness === 'prime') return null
   const draftPermissionAutoAcceptEnabled = draft.permissionAutoAcceptEnabled === true
 
   const trimmedAgent = typeof selection.agent === "string" && selection.agent.trim().length > 0
     ? selection.agent.trim()
     : undefined
-  let draftDirectoryOverride = draft.bootstrapPendingDirectory ?? draft.directoryOverride ?? null
-  const draftProjectId = draft.selectedProjectId ?? null
-
-  if (draft.pendingWorktreeRequestId) {
-    draftDirectoryOverride = await waitForPendingDraftWorktreeRequest(draft.pendingWorktreeRequestId)
-    store.resolvePendingDraftWorktreeTarget(draft.pendingWorktreeRequestId, draftDirectoryOverride)
-  }
-
-  await waitForWorktreeBootstrapIfConfigured(draftDirectoryOverride, draftProjectId)
+  const target = await resolveOpenDraftTarget()
+  if (!target) return null
+  const draftDirectoryOverride = target.directory
+  const draftProjectId = target.projectId
 
   const created = await store.createSession(draft.title, draftDirectoryOverride, draft.parentID ?? null)
   if (!created?.id) throw new Error("Failed to create session")
@@ -902,8 +940,10 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
 
     persistDraftTarget({ projectId: selectedProject?.id ?? null, directory })
 
+    const canChooseHarness = supportsHarnessChoice(options)
     const nextDraft: NewSessionDraftState = {
       open: true,
+      harness: canChooseHarness ? options?.harness ?? selectedProject?.defaultHarness ?? 'opencode' : 'opencode',
       selectedProjectId: selectedProject?.id ?? null,
       directoryOverride: directory,
       permissionAutoAcceptEnabled: options?.permissionAutoAcceptEnabled === true,
@@ -977,6 +1017,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     }
     const nextDraft: NewSessionDraftState = {
         open: false,
+        harness: 'opencode',
         selectedProjectId: null,
         directoryOverride: null,
         pendingWorktreeRequestId: null,
@@ -998,10 +1039,19 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     let nextDirectory: string | null = null
     set((s) => {
       nextDirectory = normalizePath(target.directoryOverride ?? s.newSessionDraft.directoryOverride)
+      const selectedProjectId = target.projectId ?? target.selectedProjectId ?? s.newSessionDraft.selectedProjectId
+      const projectChanged = selectedProjectId !== s.newSessionDraft.selectedProjectId
+      const selectedProject = projectChanged
+        ? useProjectsStore.getState().projects.find((project) => project.id === selectedProjectId)
+        : null
+      const canChooseHarness = supportsHarnessChoice(s.newSessionDraft)
       return {
         newSessionDraft: {
           ...s.newSessionDraft,
-          selectedProjectId: target.projectId ?? target.selectedProjectId ?? s.newSessionDraft.selectedProjectId,
+          harness: projectChanged && canChooseHarness
+            ? selectedProject?.defaultHarness ?? 'opencode'
+            : s.newSessionDraft.harness,
+          selectedProjectId,
           directoryOverride: target.directoryOverride ?? s.newSessionDraft.directoryOverride,
         },
       }
@@ -1024,6 +1074,17 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       if (!s.newSessionDraft?.open) return s
       return { newSessionDraft: { ...s.newSessionDraft, permissionAutoAcceptEnabled: enabled } }
     }),
+
+  setDraftHarness: (harness) => {
+    const currentDraft = get().newSessionDraft
+    if (!currentDraft.open || currentDraft.harness === harness) return
+    const nextDraft = { ...currentDraft, harness }
+    set({ newSessionDraft: nextDraft })
+    writeRuntimeSessionMemory(runtimeMemoryKey(), { draft: nextDraft })
+    if (currentDraft.selectedProjectId) {
+      useProjectsStore.getState().updateProjectMeta(currentDraft.selectedProjectId, { defaultHarness: harness })
+    }
+  },
 
   acknowledgeSessionAbort: (sessionId) =>
     set((s) => {

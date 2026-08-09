@@ -16,6 +16,7 @@ import { SessionDialogs } from '@/components/session/SessionDialogs';
 import { ScheduledTasksDialog } from '@/components/session/ScheduledTasksDialog';
 import { ArchiveView } from '@/components/views/ArchiveView';
 import { WorktreesView } from '@/components/views/WorktreesView';
+import { PrimeTranscriptView } from '@/components/views/PrimeTranscriptView';
 import { DiffWorkerProvider } from '@/contexts/DiffWorkerProvider';
 import { MultiRunLauncher } from '@/components/multirun';
 import { TerminalView } from '@/components/views/TerminalView';
@@ -54,11 +55,12 @@ export const MainLayout: React.FC = () => {
     const isScheduledTasksPageOpen = useUIStore((state) => state.isScheduledTasksDialogOpen);
     const isArchivePageOpen = useUIStore((state) => state.isArchivePageOpen);
     const worktreesPageProjectId = useUIStore((state) => state.worktreesPageProjectId);
+    const isPrimeTranscriptOpen = useUIStore((state) => state.primeTranscriptTarget !== null);
     // Any full-page surface replacing the chat area. While open, the chat and
     // secondary views are fully hidden (not just covered) so none of their
     // floating chrome bleeds through, and selecting a session / draft / main
     // tab anywhere closes the surface.
-    const isSurfacePageOpen = isScheduledTasksPageOpen || isArchivePageOpen || Boolean(worktreesPageProjectId) || isMultiRunLauncherOpen;
+    const isSurfacePageOpen = isScheduledTasksPageOpen || isArchivePageOpen || Boolean(worktreesPageProjectId) || isMultiRunLauncherOpen || isPrimeTranscriptOpen;
 
     React.useEffect(() => {
         const closeSurfacePages = () => useUIStore.getState().closeMainSurfaces();
@@ -356,6 +358,7 @@ export const MainLayout: React.FC = () => {
                             <ErrorBoundary><ScheduledTasksDialog /></ErrorBoundary>
                             <ErrorBoundary><ArchiveView /></ErrorBoundary>
                             <ErrorBoundary><WorktreesView /></ErrorBoundary>
+                            <ErrorBoundary><PrimeTranscriptView /></ErrorBoundary>
                             {/* Always mount SessionSidebar on mobile to match desktop behavior.
                                 Conditional mount (mobileLeftDrawerVisible && ...) caused a
                                 data-loading cascade on every drawer open: paginated sessions
@@ -451,6 +454,7 @@ export const MainLayout: React.FC = () => {
                                                 <ErrorBoundary><ScheduledTasksDialog /></ErrorBoundary>
                                                 <ErrorBoundary><ArchiveView /></ErrorBoundary>
                                                 <ErrorBoundary><WorktreesView /></ErrorBoundary>
+                                                <ErrorBoundary><PrimeTranscriptView /></ErrorBoundary>
                                             </main>
                                             <ContextPanel />
                                         </div>

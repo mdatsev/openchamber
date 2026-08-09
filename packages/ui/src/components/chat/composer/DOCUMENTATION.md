@@ -7,6 +7,20 @@ everything between typing and sending.
 own state and wires these modules together; it should not grow logic that
 belongs to one of them.
 
+Root new-session drafts also carry a harness identity. The composer exposes an
+explicit OpenCode/Prime Agent selector and persists explicit choices on the
+selected project. Changing projects adopts that project's remembered default.
+Contextual drafts with OpenCode-only state (parent sessions, synthetic context,
+folder ownership, title overrides, or permission auto-accept) remain OpenCode
+drafts and do not expose the selector.
+
+Prime draft submission branches before OpenCode provider/model resolution and
+calls only `prime.createSession({ runtimeKey, directory, prompt })`; that
+operation already creates the resident root and sends the first prompt. Prime
+currently accepts plain text only, so OpenCode attachments, queues, commands,
+goals, permissions, models, and agents are hidden and never silently discarded.
+Ambiguous mutation failures are not replayed automatically.
+
 ## Layers
 
 | Directory | Owns |
@@ -97,7 +111,10 @@ and the send path reading the same grammar.
   where the page may stop running, because a pending timer is not a saved
   draft. Two orderings are load-bearing: the debounced write is skipped once
   while a draft is being restored, and a deleted draft's empty signature is
-  recorded before a queued write could resurrect it.
+  recorded before a queued write could resurrect it. A successful submission
+  that closes or retargets the draft must also clear `messageRef` synchronously
+  before changing identity; clearing only React state lets the identity-switch
+  flush persist the just-submitted prompt into the next harness or session.
 - `state/useDraftTarget.ts` — the draft can target a directory that does not
   exist yet (a worktree being created). It must survive not appearing in the
   branch list, or the selector snaps back to the project root mid-creation.

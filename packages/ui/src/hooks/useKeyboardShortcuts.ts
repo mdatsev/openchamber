@@ -140,6 +140,7 @@ export const useKeyboardShortcuts = () => {
         isAboutDialogOpen,
         isMultiRunLauncherOpen,
         isImagePreviewOpen,
+        primeTranscriptTarget,
         activeMainTab,
         isPromptNavigatorPanelOpen,
       } = useUIStore.getState();
@@ -168,7 +169,7 @@ export const useKeyboardShortcuts = () => {
         return;
       }
 
-      const hasOverlay = isCommandPaletteOpen || isHelpDialogOpen || isSessionSwitcherOpen || isAboutDialogOpen || isMultiRunLauncherOpen || isImagePreviewOpen;
+      const hasOverlay = isCommandPaletteOpen || isHelpDialogOpen || isSessionSwitcherOpen || isAboutDialogOpen || isMultiRunLauncherOpen || isImagePreviewOpen || primeTranscriptTarget !== null;
       const isChatActive = activeMainTab === 'chat';
 
       if (hasOverlay || !isChatActive) {
