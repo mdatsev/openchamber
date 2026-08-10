@@ -22,7 +22,14 @@ import { isSessionPinned, type SessionPinnedTarget } from '@/stores/useSessionPi
 import { Icon } from "@/components/icon/Icon";
 import { buildExportFilename, downloadAsMarkdown, formatSessionAsMarkdown, getExportRevealLabelKey, revealExportedMarkdown, saveAsMarkdownDesktop } from '@/lib/exportSession';
 import type { ChildSessionExport } from '@/lib/exportSession';
-import { buildSessionMessageRecordsSnapshot, useDirectoryStore, useGlobalSessionInterrupted, useGlobalSessionStatus, useSessionPermissions, useSessionQuestions } from '@/sync/sync-context';
+import {
+  buildSessionMessageRecordsSnapshot,
+  useDirectoryStore,
+  useGlobalSessionInterrupted,
+  useGlobalSessionStatus,
+  useScopedBlockingPermissions,
+  useScopedBlockingQuestions,
+} from '@/sync/sync-context';
 import { useSync } from '@/sync/use-sync';
 import { useViewportStore, viewportSessionKey } from '@/sync/viewport-store';
 import { DraggableSessionRow } from './sessionFolderDnd';
@@ -445,8 +452,8 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
   const sessionStatus = useGlobalSessionStatus(session.id);
   const isInterrupted = useGlobalSessionInterrupted(session.id);
   const isMovingToWorktree = useIsSessionWorktreeMovePending(session.id);
-  const sessionPermissions = useSessionPermissions(session.id, sessionDirectory ?? undefined, { bootstrap: false });
-  const sessionQuestions = useSessionQuestions(session.id, sessionDirectory ?? undefined, { bootstrap: false });
+  const sessionPermissions = useScopedBlockingPermissions(session.id, sessionDirectory ?? undefined, { bootstrap: false });
+  const sessionQuestions = useScopedBlockingQuestions(session.id, sessionDirectory ?? undefined, { bootstrap: false });
   const sessionGoal = getSessionGoal(resolvedSession);
   const sessionGoalGlyph = sessionGoal ? (
     <span

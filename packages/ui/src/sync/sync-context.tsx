@@ -13,7 +13,6 @@ import { useGlobalSyncStore } from "./global-sync-store"
 import {
   ChildStoreManager,
   markDirectorySessionPartChanged,
-  subscribeDirectoryPermission,
   subscribeDirectorySessionMessages,
   type DirectoryBootstrapContext,
   type DirectoryBootstrapReason,
@@ -2423,36 +2422,6 @@ export function useSessionStatus(sessionID: string, directory?: string) {
   return React.useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 }
 
-/** Get permissions for a specific session */
-export function useSessionPermissions(sessionID: string, directory?: string, options?: { bootstrap?: boolean }) {
-  const store = useDirectoryStore(directory, options)
-  const getSnapshot = useCallback(() => {
-    if (!sessionID) return EMPTY_PERMISSION_REQUESTS
-    return store.getState().permission[sessionID] ?? EMPTY_PERMISSION_REQUESTS
-  }, [sessionID, store])
-  const subscribe = useCallback((notify: () => void) => {
-    if (!sessionID) return () => undefined
-    return subscribeDirectoryPermission(store, sessionID, notify)
-  }, [sessionID, store])
-  return React.useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
-}
-
-/** Get questions for a specific session */
-export function useSessionQuestions(sessionID: string, directory?: string, options?: { bootstrap?: boolean }) {
-  const store = useDirectoryStore(directory, options)
-  const getSnapshot = useCallback(() => {
-    if (!sessionID) return EMPTY_QUESTION_REQUESTS
-    return store.getState().question[sessionID] ?? EMPTY_QUESTION_REQUESTS
-  }, [sessionID, store])
-  const subscribe = useCallback((notify: () => void) => {
-    if (!sessionID) return () => undefined
-    return store.subscribe((state, previous) => {
-      if (state.question[sessionID] !== previous.question[sessionID]) notify()
-    })
-  }, [sessionID, store])
-  return React.useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
-}
-
 /** Get sessions list for a directory */
 export function useSessions(directory?: string) {
   return useDirectorySync(
@@ -2476,6 +2445,7 @@ function useScopedBlockingRequests<T extends { id: string }>(
   directory: string | undefined,
   selectRequestsBySession: (state: State) => Record<string, T[] | undefined>,
   empty: T[],
+  options?: { bootstrap?: boolean },
 ): T[] {
   const cacheRef = useRef<ScopedBlockingRequestCache<T>>({
     sessionID: null,
@@ -2483,39 +2453,55 @@ function useScopedBlockingRequests<T extends { id: string }>(
     requestsBySession: null,
     result: empty,
   })
+  const store = useDirectoryStore(directory, options)
+  const getRequests = useCallback((state: State) => {
+    const requestsBySession = selectRequestsBySession(state)
+    const cache = cacheRef.current
+    if (
+      cache.sessionID === sessionID
+      && cache.sessions === state.session
+      && cache.requestsBySession === requestsBySession
+    ) {
+      return cache.result
+    }
 
-  return useDirectorySync(
-    useCallback((state: State) => {
-      const requestsBySession = selectRequestsBySession(state)
-      const cache = cacheRef.current
-      if (
-        cache.sessionID === sessionID
-        && cache.sessions === state.session
-        && cache.requestsBySession === requestsBySession
-      ) {
-        return cache.result
-      }
+    const next = collectScopedBlockingRequests(state.session, requestsBySession, sessionID, empty)
+    const result = areRequestArraysReferentiallyEqual(cache.result, next) ? cache.result : next
+    cacheRef.current = {
+      sessionID,
+      sessions: state.session,
+      requestsBySession,
+      result,
+    }
+    return result
+  }, [empty, selectRequestsBySession, sessionID])
+  const getSnapshot = useCallback(() => getRequests(store.getState()), [getRequests, store])
+  const subscribe = useCallback((notify: () => void) => store.subscribe((state, previous) => {
+    if (
+      state.session !== previous.session
+      || selectRequestsBySession(state) !== selectRequestsBySession(previous)
+    ) {
+      notify()
+    }
+  }), [selectRequestsBySession, store])
 
-      const next = collectScopedBlockingRequests(state.session, requestsBySession, sessionID, empty)
-      const result = areRequestArraysReferentiallyEqual(cache.result, next) ? cache.result : next
-      cacheRef.current = {
-        sessionID,
-        sessions: state.session,
-        requestsBySession,
-        result,
-      }
-      return result
-    }, [empty, selectRequestsBySession, sessionID]),
-    directory,
-  )
+  return React.useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 }
 
-export function useScopedBlockingPermissions(sessionID: string | null, directory?: string): PermissionRequest[] {
-  return useScopedBlockingRequests(sessionID, directory, selectPermissionRequestsBySession, EMPTY_PERMISSION_REQUESTS)
+export function useScopedBlockingPermissions(
+  sessionID: string | null,
+  directory?: string,
+  options?: { bootstrap?: boolean },
+): PermissionRequest[] {
+  return useScopedBlockingRequests(sessionID, directory, selectPermissionRequestsBySession, EMPTY_PERMISSION_REQUESTS, options)
 }
 
-export function useScopedBlockingQuestions(sessionID: string | null, directory?: string): QuestionRequest[] {
-  return useScopedBlockingRequests(sessionID, directory, selectQuestionRequestsBySession, EMPTY_QUESTION_REQUESTS)
+export function useScopedBlockingQuestions(
+  sessionID: string | null,
+  directory?: string,
+  options?: { bootstrap?: boolean },
+): QuestionRequest[] {
+  return useScopedBlockingRequests(sessionID, directory, selectQuestionRequestsBySession, EMPTY_QUESTION_REQUESTS, options)
 }
 
 export function useParentSession(sessionID: string | null, directory?: string): Session | null {

@@ -60,6 +60,15 @@ If instructions materially conflict and their ownership does not resolve the con
 - Treat browser-only state as intentionally local to each profile and origin. See `docs/fork-runtime-state.md` for the storage boundary.
 - The packaged and source applications may run simultaneously, but avoid concurrent edits to the same shared setting or metadata because cross-process writes can be last-writer-wins.
 
+## Supported Surfaces
+
+- VS Code is not a supported target for fork-only behavior. Fork-only features do not require VS Code implementation, parity, or validation unless the user explicitly requests it.
+
+## Inbox Semantics
+
+- A running agent uses the live activity indicator and is not unread. Only the final response after the agent finishes can create unread state; read/unread state must not replace or compete with the running indicator.
+- An agent error uses its separate persistent error state until the session is restarted. Error state is not unread state and must not be represented by unread metadata.
+
 ## Skills
 
 - Load every applicable repository-local skill under `.agents/skills` as required by OpenChamber's `AGENTS.md`.

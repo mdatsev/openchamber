@@ -3,7 +3,13 @@ import type { Message, Part, ReasoningPart, TextPart, ToolPart } from '@opencode
 
 import type { MessageStreamPhase } from '@/stores/types/sessionTypes';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { useDirectorySync, useSessionMessages, useSessionPermissions, useSessionQuestions, useSessionStatus } from '@/sync/sync-context';
+import {
+    useDirectorySync,
+    useScopedBlockingPermissions,
+    useScopedBlockingQuestions,
+    useSessionMessages,
+    useSessionStatus,
+} from '@/sync/sync-context';
 import { isFullySyntheticMessage } from '@/lib/messages/synthetic';
 import { useCurrentSessionActivity } from './useSessionActivity';
 
@@ -326,8 +332,8 @@ export function useAssistantStatus(): AssistantStatusSnapshot {
         currentSessionDirectory ?? undefined,
     );
 
-    const sessionPermissionRequests = useSessionPermissions(currentSessionId ?? '', currentSessionDirectory ?? undefined);
-    const sessionQuestionRequests = useSessionQuestions(currentSessionId ?? '', currentSessionDirectory ?? undefined);
+    const sessionPermissionRequests = useScopedBlockingPermissions(currentSessionId, currentSessionDirectory ?? undefined);
+    const sessionQuestionRequests = useScopedBlockingQuestions(currentSessionId, currentSessionDirectory ?? undefined);
 
     const sessionAbortRecord = useSessionUIStore(
         React.useCallback((state) => {

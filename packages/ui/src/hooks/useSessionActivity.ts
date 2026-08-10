@@ -1,6 +1,12 @@
 import React from 'react';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { useDirectorySync, useSessionStatus, useSessionMessages, useSessionPermissions, useSessionQuestions } from '@/sync/sync-context';
+import {
+  useDirectorySync,
+  useScopedBlockingPermissions,
+  useScopedBlockingQuestions,
+  useSessionMessages,
+  useSessionStatus,
+} from '@/sync/sync-context';
 import { setGlobalSessionInterrupted } from '@/sync/global-session-status';
 
 // Mirrors OpenCode SessionStatus: busy|retry|idle.
@@ -38,8 +44,8 @@ const INTERRUPTED_RESULT: SessionActivityResult = {
 function useSessionActivity(sessionId: string | null | undefined, directory?: string): SessionActivityResult {
   const status = useSessionStatus(sessionId ?? '', directory);
   const messages = useSessionMessages(sessionId ?? '', directory);
-  const permissions = useSessionPermissions(sessionId ?? '', directory);
-  const questions = useSessionQuestions(sessionId ?? '', directory);
+  const permissions = useScopedBlockingPermissions(sessionId ?? null, directory);
+  const questions = useScopedBlockingQuestions(sessionId ?? null, directory);
   const statusSnapshotAt = useDirectorySync(
     React.useCallback((state) => state.sessionStatusSnapshotAt, []),
     directory,

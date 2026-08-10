@@ -9,7 +9,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Icon } from '@/components/icon/Icon';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { useGlobalSessionStatus, useSessionQuestions } from '@/sync/sync-context';
+import { useGlobalSessionStatus, useScopedBlockingQuestions } from '@/sync/sync-context';
 import { useSessionUnseenCount } from '@/sync/notification-store';
 import { useSwitcherItems, type SwitcherItem } from '@/components/session/sidebar/hooks/useSwitcherItems';
 import { useUIStore } from '@/stores/useUIStore';
@@ -193,7 +193,7 @@ function SwitcherRow({ session, depth, variant, secondaryMeta, hasChildren, isEx
 
   const sessionStatus = useGlobalSessionStatus(session.id);
   const sessionDirectory = resolveGlobalSessionDirectory(session) ?? undefined;
-  const sessionQuestions = useSessionQuestions(session.id, sessionDirectory, { bootstrap: false });
+  const sessionQuestions = useScopedBlockingQuestions(session.id, sessionDirectory, { bootstrap: false });
   const unseenCount = useSessionUnseenCount(session.id);
 
   const isActive = currentSessionId === session.id;

@@ -1,7 +1,10 @@
 ---
 mode: all
-description: Simplifies recently modified OpenChamber code for clarity and maintainability while preserving exact behavior. Use after implementation with a concrete scope or a request to simplify current worktree changes.
+description: Simplifies recently modified OpenChamber code for clarity and
+  maintainability while preserving exact behavior. Use after implementation with
+  a concrete scope or a request to simplify current worktree changes.
 permission:
+  "*": allow
   edit: allow
   task: deny
   doom_loop: deny
