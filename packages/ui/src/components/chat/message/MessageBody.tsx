@@ -1,5 +1,5 @@
 import React from 'react';
-import type { Part } from '@opencode-ai/sdk/v2';
+import type { TranscriptPart, TranscriptSubtaskPart, TranscriptTextPart, TranscriptToolPart } from '../transcript/types';
 
 import UserTextPart from './parts/UserTextPart';
 import ToolPart from './parts/ToolPart';
@@ -7,7 +7,6 @@ import AssistantTextPart from './parts/AssistantTextPart';
 import ReasoningPart from './parts/ReasoningPart';
 import { MessageFilesDisplay } from '../FileAttachment';
 import { TurnChangedFilesDropdown } from '../TurnChangedFilesDropdown';
-import type { ToolPart as ToolPartType } from '@opencode-ai/sdk/v2';
 import type { StreamPhase, ToolPopupContent, AgentMentionInfo } from './types';
 import type { TurnActivityGroup, TurnChangedFile, TurnGroupingContext } from '../lib/turns/types';
 import { cn } from '@/lib/utils';
@@ -24,7 +23,8 @@ import type { ContentChangeReason } from '@/hooks/useChatAutoFollow';
 import { SimpleMarkdownRenderer } from '../MarkdownRenderer';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useUIStore } from '@/stores/useUIStore';
-import { flattenAssistantTextParts, suggestPlanTitleFromText } from '@/lib/messages/messageText';
+import { suggestPlanTitleFromText } from '@/lib/messages/messageText';
+import { flattenTranscriptTextParts } from '../transcript/text';
 import { MULTIRUN_EXECUTION_FORK_PROMPT_META_TEXT } from '@/lib/messages/executionMeta';
 import { useMessageTTS } from '@/hooks/useMessageTTS';
 import { useConfigStore } from '@/stores/useConfigStore';
@@ -43,7 +43,10 @@ import { isExpandableTool, isStandaloneTool } from './parts/toolRenderUtils';
 import TurnActivity from '../components/TurnActivity';
 import { createProjectPlanFile } from '@/lib/openchamberConfig';
 import { resolveProjectForSessionDirectory } from '@/lib/projectResolution';
-import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
+import {
+    useVisibleChatDirectory,
+    useVisibleOpenCodeSessionContext,
+} from '@/hooks/useVisibleChatDirectory';
 import { useI18n } from '@/lib/i18n';
 import { extractLoopbackUrls } from '@/lib/url';
 import { useDeviceInfo } from '@/lib/device';
@@ -122,7 +125,7 @@ const StaticTurnChangedFilePills = React.memo(({ files }: { files: TurnChangedFi
 ));
 
 const InteractiveTurnChangedFilePills = React.memo(({ files }: { files: TurnChangedFile[] }) => {
-    const effectiveDirectory = useEffectiveDirectory();
+    const effectiveDirectory = useVisibleChatDirectory();
     const isMobile = useUIStore((state) => state.isMobile);
     const navigateToDiff = useUIStore((state) => state.navigateToDiff);
     const openContextDiff = useUIStore((state) => state.openContextDiff);
@@ -151,48 +154,15 @@ const TurnChangedFilePills = React.memo(({ files, isInteractive }: { files?: Tur
     return isInteractive ? <InteractiveTurnChangedFilePills files={files} /> : <StaticTurnChangedFilePills files={files} />;
 });
 
-type SubtaskPartLike = Part & {
-    type: 'subtask';
-    description?: unknown;
-    command?: unknown;
-    agent?: unknown;
-    prompt?: unknown;
-    taskSessionID?: unknown;
-    model?: {
-        providerID?: unknown;
-        modelID?: unknown;
-    };
-};
+type SubtaskPartLike = TranscriptSubtaskPart;
+type ShellActionPartLike = TranscriptTextPart & { shellAction: NonNullable<TranscriptTextPart['shellAction']> };
 
-type ShellActionPartLike = Part & {
-    type: 'text';
-    shellAction?: {
-        command?: unknown;
-        output?: unknown;
-        status?: unknown;
-    };
-};
-
-const isSubtaskPart = (part: Part): part is SubtaskPartLike => {
-    return part.type === 'subtask';
-};
-
-const isShellActionPart = (part: Part): part is ShellActionPartLike => {
-    const textPart = part as unknown as { type?: unknown; shellAction?: unknown };
-    return textPart.type === 'text' && typeof textPart.shellAction === 'object' && textPart.shellAction !== null;
-};
-
-const normalizeSubtaskModel = (model: SubtaskPartLike['model']): string | null => {
-    if (!model || typeof model !== 'object') return null;
-    const providerID = typeof model.providerID === 'string' ? model.providerID.trim() : '';
-    const modelID = typeof model.modelID === 'string' ? model.modelID.trim() : '';
-    if (!providerID || !modelID) return null;
-    return `${providerID}/${modelID}`;
-};
+const isSubtaskPart = (part: TranscriptPart): part is SubtaskPartLike => part.kind === 'subtask';
+const isShellActionPart = (part: TranscriptPart): part is ShellActionPartLike => part.kind === 'text' && Boolean(part.shellAction);
 
 const UserSubtaskPart: React.FC<{ part: SubtaskPartLike }> = ({ part }) => {
     const [expanded, setExpanded] = React.useState(false);
-    const effectiveDirectory = useEffectiveDirectory();
+    const effectiveDirectory = useVisibleChatDirectory();
     const { isMobile } = useDeviceInfo();
     const setCurrentSession = useSessionUIStore((state) => state.setCurrentSession);
     const openContextPanelTab = useUIStore((state) => state.openContextPanelTab);
@@ -202,8 +172,8 @@ const UserSubtaskPart: React.FC<{ part: SubtaskPartLike }> = ({ part }) => {
     const command = typeof part.command === 'string' ? part.command.trim() : '';
     const agent = typeof part.agent === 'string' ? part.agent.trim() : '';
     const prompt = typeof part.prompt === 'string' ? part.prompt.trim() : '';
-    const taskSessionID = typeof part.taskSessionID === 'string' ? part.taskSessionID.trim() : '';
-    const model = normalizeSubtaskModel(part.model);
+    const taskSessionID = part.taskSessionId?.trim() ?? '';
+    const model = part.model ?? null;
 
     return (
         <div className="mt-2">
@@ -401,7 +371,7 @@ const formatTurnDuration = (durationMs: number): string => {
 interface MessageBodyProps {
     sessionId?: string;
     messageId: string;
-    parts: Part[];
+    parts: TranscriptPart[];
     isUser: boolean;
     isMessageCompleted: boolean;
     messageFinish?: string;
@@ -466,7 +436,7 @@ const writeRevealedToolIds = (messageId: string, value: Set<string>): void => {
 
 const UserMessageBody = React.memo(({ messageId, parts, messageCreatedAt, isMobile, alwaysShowActions = isMobile, hasTouchInput, hasTextContent, onCopyMessage, copiedMessage, onShowPopup, agentMention, onRevert, onFork, contextPinned, contextPinPending, onToggleContextPin, userActionsMode = 'inline', stickyUserHeaderEnabled = true }: {
     messageId: string;
-    parts: Part[];
+    parts: TranscriptPart[];
     messageCreatedAt?: number | null;
     isMobile: boolean;
     alwaysShowActions?: boolean;
@@ -491,8 +461,8 @@ const UserMessageBody = React.memo(({ messageId, parts, messageCreatedAt, isMobi
     const copyHintTimeoutRef = React.useRef<number | null>(null);
 
     const userContentParts = React.useMemo(() => {
-        return parts.filter((part) => {
-            if (part.type === 'text') {
+        return parts.filter((part): part is TranscriptTextPart | TranscriptSubtaskPart => {
+            if (part.kind === 'text') {
                 return !isEmptyTextPart(part);
             }
             if (isSubtaskPart(part)) {
@@ -763,7 +733,7 @@ const UserMessageBody = React.memo(({ messageId, parts, messageCreatedAt, isMobi
                     );
                 })}
             </div>
-            <MessageFilesDisplay files={parts} onShowPopup={onShowPopup} compact />
+            <MessageFilesDisplay files={parts.filter((part) => part.kind === 'file')} onShowPopup={onShowPopup} compact />
             {actionsBlock}
         </div>
     );
@@ -1123,14 +1093,11 @@ const AssistantMessageBody = React.memo(({
     const visibleParts = React.useMemo(() => {
         return parts
             .filter((part) => !isEmptyTextPart(part))
-            .filter((part) => {
-                const rawPart = part as Record<string, unknown>;
-                return rawPart.type !== 'compaction';
-            });
+;
     }, [parts]);
 
     const toolParts = React.useMemo(() => {
-        return visibleParts.filter((part): part is ToolPartType => part.type === 'tool');
+        return visibleParts.filter((part): part is TranscriptToolPart => part.kind === 'tool');
     }, [visibleParts]);
 
     const toolRevealStateRef = React.useRef<{
@@ -1210,15 +1177,14 @@ const AssistantMessageBody = React.memo(({
     }, [currentToolIds, messageId]);
 
     const assistantTextParts = React.useMemo(() => {
-        return visibleParts.filter((part) => part.type === 'text');
+        return visibleParts.filter((part) => part.kind === 'text');
     }, [visibleParts]);
-    const assistantPlanText = React.useMemo(() => flattenAssistantTextParts(assistantTextParts), [assistantTextParts]);
+    const assistantPlanText = React.useMemo(() => flattenTranscriptTextParts(assistantTextParts), [assistantTextParts]);
     const suggestedPlanTitle = React.useMemo(() => suggestPlanTitleFromText(assistantPlanText), [assistantPlanText]);
 
     const openContextPreview = useUIStore((state) => state.openContextPreview);
     const isVSCode = isVSCodeRuntime();
     const isMiniChatSurface = chatSurfaceMode === 'mini-chat';
-    const canUseProjectPlanActions = !isVSCode && !isMiniChatSurface && !isMobile;
     const canShowMultiRunAction = !isVSCode && !isMiniChatSurface && !isMobile;
 
     const messagePreviewUrl = React.useMemo(() => {
@@ -1254,11 +1220,15 @@ const AssistantMessageBody = React.memo(({
     }, [assistantTextParts, isMobile, isMiniChatSurface, isVSCode, toolParts]);
 
     const createSessionFromAssistantMessage = useSessionUIStore((state) => state.createSessionFromAssistantMessage);
-    const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
+    const {
+        isOpenCode: isVisibleOpenCodeChat,
+        sessionId: currentSessionId,
+    } = useVisibleOpenCodeSessionContext();
+    const canUseProjectPlanActions = isVisibleOpenCodeChat && !isVSCode && !isMiniChatSurface && !isMobile;
     const getDirectoryForSession = useSessionUIStore((state) => state.getDirectoryForSession);
     const openMultiRunLauncherWithPrompt = useUIStore((state) => state.openMultiRunLauncherWithPrompt);
     const projects = useProjectsStore((state) => state.projects);
-    const effectiveDirectory = useEffectiveDirectory();
+    const effectiveDirectory = useVisibleChatDirectory();
     const isReviewSessionView = reviewTransferDirection === 'review-to-original';
     const effectiveReviewTransferDirection = (!isMobile && !isVSCode) ? reviewTransferDirection : null;
     const reviewTransferAction = React.useMemo(() => {
@@ -1321,20 +1291,20 @@ const AssistantMessageBody = React.memo(({
 
     const hasPendingTools = React.useMemo(() => {
         return toolParts.some((toolPart) => {
-            const state = (toolPart as Record<string, unknown>).state as Record<string, unknown> | undefined ?? {};
+            const state = (toolPart as unknown as Record<string, unknown>).state as Record<string, unknown> | undefined ?? {};
             const status = state?.status;
             return status === 'pending' || status === 'running' || status === 'started';
         });
     }, [toolParts]);
 
-    const isActiveTool = React.useCallback((toolPart: ToolPartType): boolean => {
-        const state = (toolPart as Record<string, unknown>).state as Record<string, unknown> | undefined ?? {};
+    const isActiveTool = React.useCallback((toolPart: TranscriptToolPart): boolean => {
+        const state = (toolPart as unknown as Record<string, unknown>).state as Record<string, unknown> | undefined ?? {};
         const status = state?.status;
         return status === 'pending' || status === 'running' || status === 'started';
     }, []);
 
-    const isToolFinalized = React.useCallback((toolPart: ToolPartType) => {
-        const state = (toolPart as Record<string, unknown>).state as Record<string, unknown> | undefined ?? {};
+    const isToolFinalized = React.useCallback((toolPart: TranscriptToolPart) => {
+        const state = (toolPart as unknown as Record<string, unknown>).state as Record<string, unknown> | undefined ?? {};
         const status = state?.status;
         if (status === 'pending' || status === 'running' || status === 'started') {
             return false;
@@ -1351,7 +1321,7 @@ const AssistantMessageBody = React.memo(({
         return true;
     }, []);
 
-    const shouldShowTool = React.useCallback((toolPart: ToolPartType): boolean => {
+    const shouldShowTool = React.useCallback((toolPart: TranscriptToolPart): boolean => {
         return isActiveTool(toolPart) || isToolFinalized(toolPart);
     }, [isActiveTool, isToolFinalized]);
 
@@ -1366,7 +1336,7 @@ const AssistantMessageBody = React.memo(({
     }, [toolParts, hasPendingTools, isToolFinalized]);
 
     const reasoningParts = React.useMemo(() => {
-        return visibleParts.filter((part) => part.type === 'reasoning');
+        return visibleParts.filter((part) => part.kind === 'reasoning');
     }, [visibleParts]);
 
     const reasoningComplete = React.useMemo(() => {
@@ -1374,7 +1344,7 @@ const AssistantMessageBody = React.memo(({
             return true;
         }
         return reasoningParts.every((part) => {
-            const time = (part as Record<string, unknown>).time as { end?: number } | undefined;
+            const time = (part as unknown as Record<string, unknown>).time as { end?: number } | undefined;
             return typeof time?.end === 'number';
         });
     }, [reasoningParts]);
@@ -1654,7 +1624,7 @@ const AssistantMessageBody = React.memo(({
     const hasAnchoredActivitySegments = activityGroupSegmentsForMessage.length > 0;
 
     const activityByPart = React.useMemo(() => {
-        const byRef = new Map<Part, (typeof activityPartsForTurn)[number]>();
+        const byRef = new Map<TranscriptPart, (typeof activityPartsForTurn)[number]>();
         const byId = new Map<string, (typeof activityPartsForTurn)[number]>();
         activityPartsForTurn.forEach((activity) => {
             byRef.set(activity.part, activity);
@@ -1665,7 +1635,7 @@ const AssistantMessageBody = React.memo(({
         });
 
         return {
-            get: (part: Part) => {
+            get: (part: TranscriptPart) => {
                 const direct = byRef.get(part);
                 if (direct) {
                     return direct;
@@ -1743,7 +1713,7 @@ const AssistantMessageBody = React.memo(({
         let lastIndex = -1;
         for (let index = 0; index < visibleParts.length; index += 1) {
             const part = visibleParts[index];
-            if (!part || part.type !== 'text') {
+            if (!part || part.kind !== 'text') {
                 continue;
             }
             if (shouldDeferSortedInlineText) {
@@ -1802,8 +1772,8 @@ const AssistantMessageBody = React.memo(({
         // between the activity before it and the activity after it.
         const localToolPartIds = new Set<string>();
         visibleParts.forEach((part, partIndex) => {
-            if (part.type === 'tool') {
-                localToolPartIds.add(part.id ?? `${messageId}-part-${partIndex}-${part.type}`);
+            if (part.kind === 'tool') {
+                localToolPartIds.add(part.id ?? `${messageId}-part-${partIndex}-${part.kind}`);
             }
         });
         const segmentsAfterLocalTool = new Map<string, TurnActivityGroup[]>();
@@ -1844,7 +1814,7 @@ const AssistantMessageBody = React.memo(({
         while (i < visibleParts.length) {
             const part = visibleParts[i];
 
-            if (part.type === 'text') {
+            if (part.kind === 'text') {
                 const activity = activityByPart.get(part);
                 if (shouldDeferSortedInlineText) {
                     i += 1;
@@ -1880,7 +1850,7 @@ const AssistantMessageBody = React.memo(({
                 continue;
             }
 
-            if (part.type === 'reasoning') {
+            if (part.kind === 'reasoning') {
                 const activity = activityByPart.get(part);
                 if (activity?.kind === 'reasoning') {
                     i += 1;
@@ -1918,10 +1888,10 @@ const AssistantMessageBody = React.memo(({
                 continue;
             }
 
-            if (part.type === 'tool') {
-                const toolPart = part as ToolPartType;
+            if (part.kind === 'tool') {
+                const toolPart = part as TranscriptToolPart;
                 const toolName = toolPart.tool?.toLowerCase() ?? '';
-                const toolPartId = toolPart.id ?? `${messageId}-part-${i}-${part.type}`;
+                const toolPartId = toolPart.id ?? `${messageId}-part-${i}-${part.kind}`;
 
                 if (isSortedRenderMode && !isActivityOwnerMessage) {
                     flushSegmentsAfterTool(toolPartId);
@@ -2228,7 +2198,7 @@ const AssistantMessageBody = React.memo(({
                         </FadeInOnReveal>
                     )}
                 </div>
-                <MessageFilesDisplay files={parts} onShowPopup={onShowPopup} />
+                <MessageFilesDisplay files={parts.filter((part) => part.kind === 'file')} onShowPopup={onShowPopup} />
                 {shouldRenderStandaloneActionsAfterContent && (
                     <div className={INLINE_MESSAGE_ACTIONS_CLASS_NAME} data-message-actions="true">
                         <div className="flex items-center gap-1.5" data-message-action-group="true">

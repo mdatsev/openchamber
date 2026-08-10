@@ -1,93 +1,80 @@
 import { getRuntimeKey } from '@/lib/runtime-switch';
 import { getPinnedSessionKey } from '@/stores/useSessionPinnedStore';
-import type { SessionNode } from './types';
+import type { CatalogSessionNode, SessionNode } from './types';
+import { getOpenCodeSourceSession } from './openCodeSessionAdapter';
 
-/**
- * Per-row render extras precomputed once per group render and threaded down to
- * each `SessionNodeItem`. Hoisting these out of the row `React.memo` comparator
- * turns an O(rows × subtree-depth) walk into per-row `Set.has`/string compares.
- *
- * The child variant intentionally omits `childRenderExtrasFor` — the resolver is
- * shared from the group and re-passed, so it does not need to recurse through
- * each child's extras object.
- */
+type AnySessionNode = CatalogSessionNode | SessionNode;
+
 export type SessionNodeChildRenderExtras = {
   subtreeContainsEditing: Set<string>;
   menuOpenSessionId: string | null;
   nodeStructureKey: string;
 };
 
-export type SessionNodeRenderExtras<TNode = SessionNode> = SessionNodeChildRenderExtras & {
+export type SessionNodeRenderExtras<TNode = CatalogSessionNode> = SessionNodeChildRenderExtras & {
   childRenderExtrasFor?: (child: TNode) => SessionNodeChildRenderExtras;
 };
 
-/**
- * Walk `nodes` and add `node.session.id` to `result` for every node
- * whose subtree contains `targetId`. This is used to precompute, once
- * per SessionGroupSection render, which rows need to update when
- * `editingId` changes. With M visible rows, this
- * turns an O(M × subtree-depth) walk inside `SessionNodeItem.areEqual`
- * into a single O(M) `Set.has` per row.
- */
+const isCatalogNode = (node: AnySessionNode): node is CatalogSessionNode => 'controller' in node;
+const getOpenCodeId = (node: AnySessionNode) => (
+  isCatalogNode(node) ? node.controller.getOpenCodeSessionId() : node.session.id
+);
+const getParentId = (node: AnySessionNode) => (
+  isCatalogNode(node)
+    ? node.session.parentIdentity?.sessionId ?? null
+    : (node.session as typeof node.session & { parentID?: string | null }).parentID ?? null
+);
+const getNodeDirectory = (node: AnySessionNode, fallback?: string | null) => {
+  const session = isCatalogNode(node) ? getOpenCodeSourceSession(node.session) : node.session;
+  return (session as typeof session & { directory?: string | null }).directory ?? fallback ?? '';
+};
+const getNodeRuntimeKey = (node: AnySessionNode) => (
+  isCatalogNode(node) ? node.session.identity.runtimeKey : getRuntimeKey()
+);
+const getNodeStructureId = (node: AnySessionNode) => (
+  isCatalogNode(node)
+    ? `${node.session.identity.runtimeKey}:${node.session.identity.harness}:${node.session.identity.sessionId}`
+    : node.session.id
+);
+
 export const collectSubtreeContainingId = (
-  nodes: SessionNode[],
+  nodes: AnySessionNode[],
   targetId: string | null,
   result: Set<string>,
 ): void => {
   if (!targetId) return;
-
-  const visit = (node: SessionNode): boolean => {
-    let containsTarget = node.session.id === targetId;
-    for (const child of node.children) {
-      containsTarget = visit(child) || containsTarget;
-    }
-    if (containsTarget) {
-      result.add(node.session.id);
-    }
+  const visit = (node: AnySessionNode): boolean => {
+    let containsTarget = getOpenCodeId(node) === targetId;
+    for (const child of node.children) containsTarget = visit(child) || containsTarget;
+    const sessionId = getOpenCodeId(node);
+    if (containsTarget && sessionId) result.add(sessionId);
     return containsTarget;
   };
-
-  for (const node of nodes) {
-    visit(node);
-  }
+  for (const node of nodes) visit(node);
 };
 
-export const nodeContainsSessionId = (node: SessionNode, sessionId: string | null): boolean => {
-  if (!sessionId) {
-    return false;
-  }
-
-  if (node.session.id === sessionId) {
-    return true;
-  }
-
-  for (const child of node.children) {
-    if (nodeContainsSessionId(child, sessionId)) {
-      return true;
-    }
-  }
-
-  return false;
+export const nodeContainsSessionId = (node: AnySessionNode, sessionId: string | null): boolean => {
+  if (!sessionId) return false;
+  if (getOpenCodeId(node) === sessionId) return true;
+  return node.children.some((child) => nodeContainsSessionId(child, sessionId));
 };
 
-export const selectFolderRootNodes = (
+export const selectFolderRootNodes = <TNode extends AnySessionNode>(
   sessionIds: string[],
-  nodeBySessionId: ReadonlyMap<string, SessionNode>,
-): SessionNode[] => {
+  nodeBySessionId: ReadonlyMap<string, TNode>,
+): TNode[] => {
   const assignedSessionIds = new Set(sessionIds);
-
   return sessionIds
     .map((sessionId) => nodeBySessionId.get(sessionId))
-    .filter((node): node is SessionNode => {
+    .filter((node): node is TNode => {
       if (!node) return false;
-
       const visited = new Set<string>();
-      let parentID = (node.session as SessionNode['session'] & { parentID?: string | null }).parentID ?? null;
+      let parentID = getParentId(node);
       while (parentID && !visited.has(parentID)) {
         if (assignedSessionIds.has(parentID) && nodeBySessionId.has(parentID)) return false;
         visited.add(parentID);
         const parentNode = nodeBySessionId.get(parentID);
-        parentID = (parentNode?.session as (SessionNode['session'] & { parentID?: string | null }) | undefined)?.parentID ?? null;
+        parentID = parentNode ? getParentId(parentNode) : null;
       }
       return true;
     });
@@ -95,7 +82,6 @@ export const selectFolderRootNodes = (
 
 const sessionObjectVersions = new WeakMap<object, number>();
 let nextSessionObjectVersion = 1;
-
 const getSessionObjectVersion = (session: object): number => {
   const existing = sessionObjectVersions.get(session);
   if (existing !== undefined) return existing;
@@ -105,66 +91,50 @@ const getSessionObjectVersion = (session: object): number => {
   return version;
 };
 
-/**
- * Build a key encoding descendant IDs and session object versions. This lets
- * row memoization detect one changed descendant without recursively comparing
- * every subtree after a reference-only grouping rebuild.
- */
-export const computeNodeStructureKey = (node: SessionNode): string => {
-  if (node.children.length === 0) {
-    return '';
-  }
-
-  const childKeys = node.children.map((child) => {
+export const computeNodeStructureKey = (node: AnySessionNode): string => {
+  if (node.children.length === 0) return '';
+  return node.children.map((child) => {
     const childVersion = getSessionObjectVersion(child.session);
-    if (child.children.length === 0) {
-      return `${child.session.id}@${childVersion}`;
-    }
-    return `${child.session.id}@${childVersion}:${computeNodeStructureKey(child)}`;
-  });
-
-  return childKeys.join('|');
+    const prefix = `${getNodeStructureId(child)}@${childVersion}`;
+    return child.children.length === 0 ? prefix : `${prefix}:${computeNodeStructureKey(child)}`;
+  }).join('|');
 };
 
 export const nodeHasPinnedMembershipChange = (
-  prevNode: SessionNode,
-  nextNode: SessionNode,
+  prevNode: AnySessionNode,
+  nextNode: AnySessionNode,
   prevPinnedSessionIds: Set<string>,
   nextPinnedSessionIds: Set<string>,
   prevGroupDirectory?: string | null,
   nextGroupDirectory?: string | null,
 ): boolean => {
-  const runtimeKey = getRuntimeKey();
-  const visit = (previous: SessionNode, current: SessionNode): boolean => {
-    if (previous.session.id !== current.session.id || previous.children.length !== current.children.length) {
-      return true;
+  const visit = (previous: AnySessionNode, current: AnySessionNode): boolean => {
+    const previousId = getOpenCodeId(previous);
+    const currentId = getOpenCodeId(current);
+    if (previousId !== currentId || previous.children.length !== current.children.length) return true;
+    if (previousId && currentId) {
+      const previousKey = getPinnedSessionKey(
+        getNodeRuntimeKey(previous),
+        getNodeDirectory(previous, prevGroupDirectory),
+        previousId,
+      );
+      const currentKey = getPinnedSessionKey(
+        getNodeRuntimeKey(current),
+        getNodeDirectory(current, nextGroupDirectory),
+        currentId,
+      );
+      if (
+        (previousKey ? prevPinnedSessionIds.has(previousKey) : false)
+        !== (currentKey ? nextPinnedSessionIds.has(currentKey) : false)
+      ) return true;
     }
-
-    const prevDirectory = (previous.session as SessionNode['session'] & { directory?: string | null }).directory
-      ?? prevGroupDirectory;
-    const nextDirectory = (current.session as SessionNode['session'] & { directory?: string | null }).directory
-      ?? nextGroupDirectory;
-    const prevKey = getPinnedSessionKey(runtimeKey, prevDirectory ?? '', previous.session.id);
-    const nextKey = getPinnedSessionKey(runtimeKey, nextDirectory ?? '', current.session.id);
-    if (
-      (prevKey ? prevPinnedSessionIds.has(prevKey) : false)
-      !== (nextKey ? nextPinnedSessionIds.has(nextKey) : false)
-    ) {
-      return true;
-    }
-
     return previous.children.some((child, index) => visit(child, current.children[index]));
   };
-
   return visit(prevNode, nextNode);
 };
 
-/**
- * Resolve the session id whose sidebar menu is open, or null if no
- * menu is open. Only one row can have its menu open at a time.
- */
 export const resolveMenuOpenSessionId = (
-  nodes: SessionNode[],
+  nodes: AnySessionNode[],
   menuKey: string | null,
   renderContext: 'project' | 'recent',
   archivedBucket: boolean,
@@ -172,16 +142,13 @@ export const resolveMenuOpenSessionId = (
   if (!menuKey) return null;
   const bucketTag = archivedBucket ? 'archived' : 'active';
   let result: string | null = null;
-  const visit = (node: SessionNode): boolean => {
-    const nodeMenuKey = `${renderContext}:${bucketTag}:${node.session.id}`;
-    if (nodeMenuKey === menuKey) {
-      result = node.session.id;
+  const visit = (node: AnySessionNode): boolean => {
+    const sessionId = getOpenCodeId(node) ?? getNodeStructureId(node);
+    if (`${renderContext}:${bucketTag}:${sessionId}` === menuKey) {
+      result = sessionId;
       return true;
     }
-    for (const child of node.children) {
-      if (visit(child)) return true;
-    }
-    return false;
+    return node.children.some(visit);
   };
   nodes.forEach((node) => visit(node));
   return result;

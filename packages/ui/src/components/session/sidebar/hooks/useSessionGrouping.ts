@@ -1,44 +1,47 @@
 import React from 'react';
-import type { Session } from '@opencode-ai/sdk/v2';
 import type { WorktreeMetadata } from '@/types/worktree';
-import type { SessionGroup, SessionNode } from '../types';
+import type { SessionGroup, CatalogSessionNode } from '../types';
+import type { SessionCatalogEntry } from '../sessionCatalog';
 import {
-  dedupeSessionsById,
   getArchivedScopeKey,
   normalizeForBranchComparison,
   normalizePath,
 } from '../utils';
-import { compareSessionsByLifecycleOrder, getSessionLifecycleOrderValue } from '@/sync/session-ordering';
 import { formatDirectoryName, formatPathForDisplay } from '@/lib/utils';
 import { useI18n } from '@/lib/i18n';
-import { resolveGlobalSessionDirectory } from '@/stores/useGlobalSessionsStore';
 import { getWorktreeFirstSeenAt } from '../worktreeFirstSeen';
+import { groupOpenCodeSessionNodes } from '../openCodeSessionAdapter';
+import { groupPrimeSessionNodes } from '../primeSessionAdapter';
+
+const getOpaqueWorktreeGroupId = (directory: string): string => {
+  let hash = 2166136261;
+  for (let index = 0; index < directory.length; index += 1) {
+    hash ^= directory.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `worktree:${(hash >>> 0).toString(36)}`;
+};
 
 type Args = {
   homeDirectory: string | null;
-  worktreeMetadata: Map<string, WorktreeMetadata>;
-  pinnedSessionIds: Set<string>;
   sessionOrderRanks: ReadonlyMap<string, number>;
   gitBranches: Map<string, string | null>;
   isVSCode: boolean;
 };
 
-const isArchivedSession = (session: Session): boolean => Boolean(session.time?.archived);
-
 export const useSessionGrouping = (args: Args) => {
   const { t } = useI18n();
-  const buildGroupSearchText = React.useCallback((group: SessionGroup): string => {
+  const buildGroupSearchText = React.useCallback((group: SessionGroup<CatalogSessionNode>): string => {
     return [group.label, group.branch ?? '', group.description ?? '', group.directory ?? ''].join(' ').toLowerCase();
   }, []);
 
-  const buildSessionSearchText = React.useCallback((session: Session): string => {
-    const sessionDirectory = normalizePath((session as Session & { directory?: string | null }).directory ?? null) ?? '';
+  const buildSessionSearchText = React.useCallback((session: SessionCatalogEntry): string => {
     const sessionTitle = (session.title || t('sessions.sidebar.session.untitled')).trim();
-    return `${sessionTitle} ${sessionDirectory}`.toLowerCase();
+    return sessionTitle.toLowerCase();
   }, [t]);
 
   const filterSessionNodesForSearch = React.useCallback(
-    (nodes: SessionNode[], query: string): SessionNode[] => {
+    (nodes: CatalogSessionNode[], query: string): CatalogSessionNode[] => {
       if (!query) {
         return nodes;
       }
@@ -62,30 +65,13 @@ export const useSessionGrouping = (args: Args) => {
 
   const buildGroupedSessions = React.useCallback(
     (
-      projectSessions: Session[],
+      projectNodes: CatalogSessionNode[],
       projectRoot: string | null,
       availableWorktrees: WorktreeMetadata[],
       projectRootBranch: string | null,
       projectIsRepo: boolean,
     ) => {
       const normalizedProjectRoot = normalizePath(projectRoot ?? null);
-      const sortedProjectSessions = dedupeSessionsById(projectSessions)
-        .sort((a, b) => compareSessionsByLifecycleOrder(a, b, args.pinnedSessionIds, args.sessionOrderRanks));
-
-      const sessionMap = new Map(sortedProjectSessions.map((session) => [session.id, session]));
-      const childrenMap = new Map<string, Session[]>();
-      sortedProjectSessions.forEach((session) => {
-        const parentID = (session as Session & { parentID?: string | null }).parentID;
-        if (!parentID) return;
-        const parentSession = sessionMap.get(parentID);
-        if (!parentSession || isArchivedSession(parentSession) !== isArchivedSession(session)) {
-          return;
-        }
-        const collection = childrenMap.get(parentID) ?? [];
-        collection.push(session);
-        childrenMap.set(parentID, collection);
-      });
-      childrenMap.forEach((list) => list.sort((a, b) => compareSessionsByLifecycleOrder(a, b, args.pinnedSessionIds, args.sessionOrderRanks)));
 
       const worktreeByPath = new Map<string, WorktreeMetadata>();
       availableWorktrees.forEach((meta) => {
@@ -95,59 +81,44 @@ export const useSessionGrouping = (args: Args) => {
         }
       });
 
-      const getSessionWorktree = (session: Session): WorktreeMetadata | null => {
-        const sessionDirectory = normalizePath((session as Session & { directory?: string | null }).directory ?? null);
-        const sessionWorktreeMeta = args.worktreeMetadata.get(session.id) ?? null;
-        if (sessionWorktreeMeta) return sessionWorktreeMeta;
-        if (sessionDirectory) {
-          const worktree = worktreeByPath.get(sessionDirectory) ?? null;
-          if (worktree && sessionDirectory !== normalizedProjectRoot) {
-            return worktree;
-          }
+      const roots = projectNodes;
+
+      const groupedNodes = new Map<string, CatalogSessionNode[]>();
+      const archivedKey = 'archived';
+      const rootKey = 'root';
+      const worktreeIdByDirectory = new Map(availableWorktrees.map((worktree) => {
+        const directory = normalizePath(worktree.path) ?? worktree.path;
+        return [directory, getOpaqueWorktreeGroupId(directory)] as const;
+      }));
+      const resolveWorktreeGroupId = (directory: string): string => (
+        worktreeIdByDirectory.get(directory) ?? getOpaqueWorktreeGroupId(directory)
+      );
+      const projections = [
+        groupOpenCodeSessionNodes(
+          roots.filter((node) => node.controller.kind === 'opencode'),
+          { rootId: rootKey, archivedId: archivedKey, worktreeIdByDirectory },
+        ),
+        groupPrimeSessionNodes(
+          roots.filter((node) => node.controller.kind === 'passive'),
+          { rootId: rootKey, worktreeIdByDirectory },
+        ),
+      ];
+      for (const projection of projections) {
+        for (const [groupId, groupNodes] of projection) {
+          const bucket = groupedNodes.get(groupId);
+          if (bucket) bucket.push(...groupNodes);
+          else groupedNodes.set(groupId, [...groupNodes]);
         }
-        return null;
-      };
+      }
+      for (const bucket of groupedNodes.values()) {
+        bucket.sort((left, right) => (
+          right.session.updatedAt - left.session.updatedAt
+          || right.session.createdAt - left.session.createdAt
+          || left.session.identity.sessionId.localeCompare(right.session.identity.sessionId)
+        ));
+      }
 
-      const buildProjectNode = (session: Session): SessionNode => {
-        const children = childrenMap.get(session.id) ?? [];
-        return { session, children: children.map((child) => buildProjectNode(child)), worktree: getSessionWorktree(session) };
-      };
-
-      const roots = sortedProjectSessions.filter((session) => {
-        const parentID = (session as Session & { parentID?: string | null }).parentID;
-        if (!parentID) return true;
-        const parentSession = sessionMap.get(parentID);
-        if (!parentSession) return true;
-        return isArchivedSession(parentSession) !== isArchivedSession(session);
-      });
-
-      const groupedNodes = new Map<string, SessionNode[]>();
-      const archivedKey = '__archived__';
-
-      const getGroupKey = (session: Session) => {
-        if (session.time?.archived) return archivedKey;
-        // VS Code groups by open workspace, not by worktree: every non-archived
-        // session in a project belongs to that project's single (root) group.
-        // Worktrees aren't registered in VS Code, so the desktop directory-match
-        // below would otherwise dump these sessions into the archived bucket.
-        if (args.isVSCode) return normalizedProjectRoot ?? '__project_root__';
-        const metadataPath = normalizePath(args.worktreeMetadata.get(session.id)?.path ?? null);
-        const normalizedDir = metadataPath ?? resolveGlobalSessionDirectory(session);
-        if (!normalizedDir) return archivedKey;
-        if (normalizedDir !== normalizedProjectRoot && worktreeByPath.has(normalizedDir)) return normalizedDir;
-        if (normalizedDir === normalizedProjectRoot) return normalizedProjectRoot ?? '__project_root__';
-        return archivedKey;
-      };
-
-      roots.forEach((session) => {
-        const node = buildProjectNode(session);
-        const groupKey = getGroupKey(session);
-        if (!groupedNodes.has(groupKey)) groupedNodes.set(groupKey, []);
-        groupedNodes.get(groupKey)?.push(node);
-      });
-
-      const rootKey = normalizedProjectRoot ?? '__project_root__';
-      const groups: SessionGroup[] = [{
+      const groups: SessionGroup<CatalogSessionNode>[] = [{
         id: 'root',
         label: (projectIsRepo && projectRootBranch && projectRootBranch !== 'HEAD')
           ? t('sessions.sidebar.grouping.projectRootWithBranch', { branch: projectRootBranch })
@@ -166,14 +137,14 @@ export const useSessionGrouping = (args: Args) => {
       const worktreeActivityInfo = new Map<string, { hasActiveSession: boolean; lastUpdatedAt: number }>();
       availableWorktrees.forEach((meta) => {
         const directory = normalizePath(meta.path) ?? meta.path;
-        const sessionsInWorktree = groupedNodes.get(directory) ?? [];
+        const sessionsInWorktree = groupedNodes.get(resolveWorktreeGroupId(directory)) ?? [];
         const hasActiveSession = sessionsInWorktree.length > 0;
         // Lifecycle rank wins when present; timestamps seed bootstrap ordering.
         const lastUpdatedAt = sessionsInWorktree.reduce((max, node) => {
-          const updatedAt = getSessionLifecycleOrderValue(node.session, args.sessionOrderRanks);
-          if (!Number.isFinite(updatedAt)) {
-            return max;
-          }
+          const openCodeId = node.controller.getOpenCodeSessionId();
+          const updatedAt = openCodeId
+            ? (args.sessionOrderRanks.get(openCodeId) ?? node.session.updatedAt)
+            : node.session.updatedAt;
           return Math.max(max, updatedAt);
         }, 0);
 
@@ -226,7 +197,7 @@ export const useSessionGrouping = (args: Args) => {
           : (meta.label || meta.name || formatDirectoryName(directory, args.homeDirectory) || directory);
 
         groups.push({
-          id: `worktree:${directory}`,
+          id: resolveWorktreeGroupId(directory),
           label,
           branch: currentBranch || metadataBranch,
           description: formatPathForDisplay(directory, args.homeDirectory),
@@ -235,7 +206,7 @@ export const useSessionGrouping = (args: Args) => {
           worktree: meta,
           directory,
           folderScopeKey: directory,
-          sessions: groupedNodes.get(directory) ?? [],
+          sessions: groupedNodes.get(resolveWorktreeGroupId(directory)) ?? [],
         });
       });
 
@@ -257,7 +228,7 @@ export const useSessionGrouping = (args: Args) => {
 
       return groups;
     },
-    [args.homeDirectory, args.worktreeMetadata, args.pinnedSessionIds, args.sessionOrderRanks, args.gitBranches, args.isVSCode, t],
+    [args.homeDirectory, args.sessionOrderRanks, args.gitBranches, args.isVSCode, t],
   );
 
   return {

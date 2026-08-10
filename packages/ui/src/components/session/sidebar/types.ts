@@ -1,6 +1,22 @@
 import type { Session } from '@opencode-ai/sdk/v2';
+import { serializeChatIdentity } from '@/lib/chat-identity';
 import type { WorktreeMetadata } from '@/types/worktree';
+import type { SessionCatalogEntry, SessionCatalogNode } from './sessionCatalog';
 
+export type SessionNodeController = Readonly<{
+  kind: 'opencode' | 'passive';
+  getOpenCodeSessionId: () => string | null;
+}>;
+
+export type CatalogSessionNode = Readonly<{
+  session: SessionCatalogEntry;
+  ownership: SessionCatalogNode['ownership'];
+  controller: SessionNodeController;
+  children: CatalogSessionNode[];
+}>;
+
+// Legacy SDK-backed controller node. Kept as the private OpenCode controller
+// contract and for compatibility with controller-focused utilities.
 export type SessionNode = {
   session: Session;
   children: SessionNode[];
@@ -12,7 +28,7 @@ export type SessionGroupFolderScope = {
   directory: string | null;
 };
 
-export type SessionGroup = {
+export type SessionGroup<TNode = SessionNode> = {
   id: string;
   label: string;
   branch: string | null;
@@ -29,13 +45,17 @@ export type SessionGroup = {
    * instead of reading the single folderScopeKey.
    */
   folderScopes?: SessionGroupFolderScope[];
-  sessions: SessionNode[];
+  sessions: TNode[];
 };
 
-export type GroupSearchData = {
-  filteredNodes: SessionNode[];
+export type GroupSearchData<TNode = CatalogSessionNode> = {
+  filteredNodes: TNode[];
   matchedSessionCount: number;
   folderNameMatchCount: number;
   groupMatches: boolean;
   hasMatch: boolean;
 };
+
+export const getSessionNodeIdentityKey = (node: CatalogSessionNode): string => (
+  serializeChatIdentity(node.session.identity)
+);

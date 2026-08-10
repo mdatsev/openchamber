@@ -1,4 +1,9 @@
-import type { Message } from '@opencode-ai/sdk/v2';
+type FreshnessMessage = {
+    id: string;
+    role: string;
+    createdAt?: number;
+    time?: { created?: number };
+};
 
 export class MessageFreshnessDetector {
     private static instance: MessageFreshnessDetector;
@@ -23,7 +28,7 @@ export class MessageFreshnessDetector {
         return this.sessionStartTimes.get(sessionId);
     }
 
-    shouldAnimateMessage(message: Message, sessionId: string): boolean {
+    shouldAnimateMessage(message: FreshnessMessage, sessionId: string): boolean {
 
         if (message.role !== 'assistant') {
             return false;
@@ -38,15 +43,15 @@ export class MessageFreshnessDetector {
         if (!sessionStartTime) {
 
             this.seenMessageIds.add(message.id);
-            this.messageCreationTimes.set(message.id, message.time.created);
+            this.messageCreationTimes.set(message.id, message.createdAt ?? message.time?.created ?? 0);
             return false;
         }
 
-        const isFresh = message.time.created > (sessionStartTime - 5000);
+        const isFresh = (message.createdAt ?? message.time?.created ?? 0) > (sessionStartTime - 5000);
 
         if (!isFresh) {
             this.seenMessageIds.add(message.id);
-            this.messageCreationTimes.set(message.id, message.time.created);
+            this.messageCreationTimes.set(message.id, message.createdAt ?? message.time?.created ?? 0);
         }
 
         return isFresh;

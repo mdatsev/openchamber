@@ -45,3 +45,10 @@ the `openContext*` actions in `useUIStore`.
   their stores/snapshots instead.
 - Runtime scope: desktop/web `MainLayout` only. VS Code and the dedicated
   mobile shell have their own layouts and do not consume this registry.
+- The rail, panel namespace, and directory-backed surfaces resolve against the
+  harness-neutral visible chat. A Prime session uses only its adapter-private
+  catalog working directory; missing placement hides directory-backed panel
+  data instead of falling back to the previous OpenCode directory. The Context
+  surface is semantic rather than directory-derived: Prime usage comes from the
+  Prime context snapshot, while the OpenCode projection continues to use SDK
+  session/message state.

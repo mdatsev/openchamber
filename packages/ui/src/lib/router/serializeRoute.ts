@@ -1,4 +1,5 @@
 import type { MainTab } from '@/stores/useUIStore';
+import type { ChatHarness } from '@/lib/chat-identity';
 import { isEmbeddedSessionChat } from '@/components/layout/contextPanelEmbeddedChat';
 import { ROUTE_PARAMS } from './types';
 
@@ -7,6 +8,7 @@ import { ROUTE_PARAMS } from './types';
  */
 export interface AppRouteState {
   sessionId: string | null;
+  sessionHarness?: ChatHarness | null;
   tab: MainTab;
   isSettingsOpen: boolean;
   settingsPath: string;
@@ -28,6 +30,9 @@ function serializeRoute(state: AppRouteState): URLSearchParams {
   // Session ID - always include if present
   if (state.sessionId && state.sessionId.trim().length > 0) {
     params.set(ROUTE_PARAMS.SESSION, state.sessionId);
+    if (state.sessionHarness === 'prime') {
+      params.set(ROUTE_PARAMS.HARNESS, 'prime');
+    }
   }
 
   // Settings takes precedence - if open, include settings section

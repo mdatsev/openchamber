@@ -1,5 +1,4 @@
-import type { Session } from '@opencode-ai/sdk/v2';
-import type { SessionNode } from './types';
+import type { CatalogSessionNode, SessionNode } from './types';
 
 export type CollapsedActivityState = 'question' | 'active' | 'unread' | null;
 
@@ -16,23 +15,22 @@ export const mergeCollapsedActivityStates = (
 };
 
 const getSessionNodeActivityState = (
-  node: SessionNode,
+  node: CatalogSessionNode | SessionNode,
   activeSessionIds: Set<string>,
   unreadSessionIds: Set<string>,
   includeUnreadSubtasks: boolean,
   pendingQuestionSessionIds: Set<string>,
 ): CollapsedActivityState => {
-  if (pendingQuestionSessionIds.has(node.session.id)) {
-    return 'question';
-  }
-
-  if (activeSessionIds.has(node.session.id)) {
-    return 'active';
-  }
+  const isCatalogNode = 'controller' in node;
+  const openCodeId = isCatalogNode ? node.controller.getOpenCodeSessionId() : node.session.id;
+  if (openCodeId && pendingQuestionSessionIds.has(openCodeId)) return 'question';
+  if ((openCodeId && activeSessionIds.has(openCodeId)) || isCatalogNode && node.session.activity === 'working') return 'active';
 
   let state: CollapsedActivityState = null;
-  const isSubtask = Boolean((node.session as Session & { parentID?: string | null }).parentID);
-  if (unreadSessionIds.has(node.session.id) && (includeUnreadSubtasks || !isSubtask)) {
+  const isSubtask = isCatalogNode
+    ? node.session.parentIdentity !== null
+    : Boolean((node.session as typeof node.session & { parentID?: string | null }).parentID);
+  if (openCodeId && unreadSessionIds.has(openCodeId) && (includeUnreadSubtasks || !isSubtask)) {
     state = 'unread';
   }
 
@@ -48,7 +46,7 @@ const getSessionNodeActivityState = (
 };
 
 export const getSessionNodesActivityState = (
-  nodes: SessionNode[],
+  nodes: Array<CatalogSessionNode | SessionNode>,
   activeSessionIds: Set<string>,
   unreadSessionIds: Set<string>,
   includeUnreadSubtasks: boolean,

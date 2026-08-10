@@ -12,6 +12,7 @@ export const createGracefulShutdownRuntime = (dependencies) => {
     sessionGoalRuntime,
     contextObligatoryRuntime,
     scheduledTasksRuntime,
+    featureRoutesRuntime,
     getHealthCheckInterval,
     clearHealthCheckInterval,
     getTerminalRuntime,
@@ -48,6 +49,11 @@ export const createGracefulShutdownRuntime = (dependencies) => {
     sessionGoalRuntime?.stop?.();
     contextObligatoryRuntime?.stop?.();
     scheduledTasksRuntime?.stop?.();
+    try {
+      await featureRoutesRuntime?.dispose?.();
+    } catch {
+      // Prime attachment cleanup is best effort during process shutdown.
+    }
 
     const healthCheckInterval = getHealthCheckInterval();
     if (healthCheckInterval) {

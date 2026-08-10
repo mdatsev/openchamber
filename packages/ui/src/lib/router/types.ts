@@ -1,3 +1,4 @@
+import type { ChatHarness } from '@/lib/chat-identity';
 import type { SidebarSection } from '@/constants/sidebar';
 import type { MainTab } from '@/stores/useUIStore';
 
@@ -8,6 +9,8 @@ import type { MainTab } from '@/stores/useUIStore';
 export interface RouteState {
   /** Session ID to navigate to */
   sessionId: string | null;
+  /** Session harness; omitted routes retain the OpenCode default. */
+  sessionHarness: ChatHarness | null;
   /** Main tab to display (chat, git, diff, terminal, files) */
   tab: MainTab | null;
   /** Settings section - when non-null, settings dialog should be open */
@@ -39,6 +42,7 @@ export const VALID_SETTINGS_SECTIONS: readonly SidebarSection[] = [
  */
 export const ROUTE_PARAMS = {
   SESSION: 'session',
+  HARNESS: 'harness',
   TAB: 'tab',
   SETTINGS: 'settings',
   FILE: 'file',

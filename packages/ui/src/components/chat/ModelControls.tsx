@@ -36,6 +36,7 @@ import { useUIStore } from '@/stores/useUIStore';
 import { useModelLists } from '@/hooks/useModelLists';
 import { useIsTextTruncated } from '@/hooks/useIsTextTruncated';
 import { formatEffortLabel, getCycledPrimaryAgentName, isPrimaryMode, type MobileControlsPanel } from './mobileControlsUtils';
+import type { ComposerModelControlsRenderProps } from './composer/controller/types';
 import { getCurrentIntlLocale, useI18n } from '@/lib/i18n';
 import { useOpenCodeReadiness } from '@/hooks/useOpenCodeReadiness';
 import { eventMatchesShortcut, getEffectiveShortcutCombo, normalizeCombo } from '@/lib/shortcuts';
@@ -284,11 +285,7 @@ const formatDate = (value?: string) => {
     return formatReleaseDate(parsedDate);
 };
 
-interface ModelControlsProps {
-    className?: string;
-    mobilePanel?: MobileControlsPanel;
-    onMobilePanelChange?: (panel: MobileControlsPanel) => void;
-}
+export type ModelControlsProps = ComposerModelControlsRenderProps;
 
 export const ModelControls: React.FC<ModelControlsProps> = ({
     className,

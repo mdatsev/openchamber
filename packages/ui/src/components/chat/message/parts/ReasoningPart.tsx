@@ -1,6 +1,6 @@
 import React from 'react';
 import { animate, type AnimationPlaybackControls } from 'motion';
-import type { Part } from '@opencode-ai/sdk/v2';
+import type { TranscriptReasoningPart } from '../../transcript/types';
 import { cn } from '@/lib/utils';
 import type { ContentChangeReason } from '@/hooks/useChatAutoFollow';
 import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
@@ -15,8 +15,6 @@ import type { StreamPhase } from '../types';
 const TOOL_ROW_TEXT_CLASS = '!text-[length:var(--text-meta)] !leading-5 sm:!leading-6 tracking-normal';
 const TOOL_ROW_TITLE_CLASS = cn('typography-meta font-medium', TOOL_ROW_TEXT_CLASS);
 const TOOL_ROW_DESCRIPTION_CLASS = cn('typography-meta', TOOL_ROW_TEXT_CLASS);
-
-type PartWithText = Part & { text?: string; content?: string; time?: { start?: number; end?: number } };
 
 type ReasoningVariant = 'thinking' | 'justification';
 
@@ -435,7 +433,7 @@ export const ReasoningTimelineBlock: React.FC<ReasoningTimelineBlockProps> = ({
 };
 
 type ReasoningPartProps = {
-    part: Part;
+    part: TranscriptReasoningPart;
     onContentChange?: (reason?: ContentChangeReason) => void;
     messageId: string;
     streamPhase?: StreamPhase;
@@ -448,10 +446,9 @@ const ReasoningPart = React.memo(({
     streamPhase,
 }: ReasoningPartProps) => {
     const chatRenderMode = useUIStore((state) => state.chatRenderMode);
-    const partWithText = part as PartWithText;
-    const rawText = partWithText.text || partWithText.content || '';
+    const rawText = part.text;
     const textContent = React.useMemo(() => cleanReasoningText(rawText), [rawText]);
-    const time = partWithText.time;
+    const time = part.time;
     const canBeStreaming = streamPhase === undefined || streamPhase !== 'completed';
     const isStreaming = chatRenderMode === 'live' && canBeStreaming && typeof time?.end !== 'number';
     const throttledText = useStreamingTextThrottle({

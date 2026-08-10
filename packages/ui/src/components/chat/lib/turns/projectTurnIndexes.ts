@@ -1,16 +1,16 @@
-import type { TurnIndexes, TurnProjectionResult, TurnRecord } from './types';
+import type { TranscriptTurnIndexes, TranscriptTurnProjectionResult, TranscriptTurnRecord } from './types';
 
-export const projectTurnIndexes = (turns: TurnRecord[]): TurnProjectionResult => {
-    const turnById = new Map<string, TurnRecord>();
+export const projectTurnIndexes = (turns: TranscriptTurnRecord[]): TranscriptTurnProjectionResult => {
+    const turnById = new Map<string, TranscriptTurnRecord>();
     const messageToTurnId = new Map<string, string>();
-    const messageMetaById: TurnIndexes['messageMetaById'] = new Map();
+    const messageMetaById: TranscriptTurnIndexes['messageMetaById'] = new Map();
     const groupedMessageIds = new Set<string>();
 
     turns.forEach((turn) => {
         turnById.set(turn.turnId, turn);
 
-        const firstAssistantId = turn.assistantMessages[0]?.info.id;
-        const lastAssistantId = turn.assistantMessages[turn.assistantMessages.length - 1]?.info.id;
+        const firstAssistantId = turn.assistantMessages[0]?.id;
+        const lastAssistantId = turn.assistantMessages[turn.assistantMessages.length - 1]?.id;
 
         messageToTurnId.set(turn.userMessageId, turn.turnId);
         groupedMessageIds.add(turn.userMessageId);

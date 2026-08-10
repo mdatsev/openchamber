@@ -1,11 +1,19 @@
 import React from 'react';
 import type { Message, Part } from '@opencode-ai/sdk/v2';
+import type { ChatIdentity } from '@/lib/chat-identity';
+import type { TranscriptMessage, TranscriptPart } from '@/components/chat/transcript/types';
 import { WorkerHighlightedCode } from '@/components/code/WorkerHighlightedCode';
 
-import { deriveMessageRole } from '@/components/chat/message/messageRole';
+import { deriveOpenCodeMessageRole } from '@/components/chat/transcript/openCodeTranscriptAdapter';
 import { Icon } from "@/components/icon/Icon";
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useUIStore } from '@/stores/useUIStore';
+import { useChatSelectionStore } from '@/stores/useChatSelectionStore';
+import { usePrimeCatalogRecord } from '@/stores/usePrimeCatalogStore';
+import {
+  getPrimeTranscriptKey,
+  usePrimeTranscriptStore,
+} from '@/stores/usePrimeTranscriptStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { computeCacheHitRate } from '@/stores/utils/tokenUtils';
 import { useSessions, useSessionMessageRecords } from '@/sync/sync-context';
@@ -195,7 +203,7 @@ const addBuckets = (target: ContextBuckets, value: ContextBuckets): ContextBucke
 });
 
 const deriveRoleBucket = (message: SessionMessage): 'user' | 'assistant' | 'tool' | 'other' => {
-  const roleInfo = deriveMessageRole(message.info);
+  const roleInfo = deriveOpenCodeMessageRole(message.info);
   if (roleInfo.isUser) return 'user';
   if (roleInfo.role === 'assistant') return 'assistant';
   if (roleInfo.role === 'tool') return 'tool';
@@ -267,7 +275,7 @@ const resolveProviderAndModel = (
   };
 };
 
-export const ContextPanelContent: React.FC = () => {
+const OpenCodeContextPanelContent: React.FC = () => {
   const { t } = useI18n();
   const timeFormatPreference = useUIStore((state) => state.timeFormatPreference);
   const [expandedRawMessages, setExpandedRawMessages] = React.useState<Record<string, boolean>>({});
@@ -319,8 +327,8 @@ export const ContextPanelContent: React.FC = () => {
   const viewModel = React.useMemo(() => {
     const currentSession = currentSessionId ? sessions.find((session) => session.id === currentSessionId) ?? null : null;
 
-    const assistantMessages = sessionMessages.filter((entry) => deriveMessageRole(entry.info).role === 'assistant');
-    const userMessages = sessionMessages.filter((entry) => deriveMessageRole(entry.info).isUser);
+    const assistantMessages = sessionMessages.filter((entry) => deriveOpenCodeMessageRole(entry.info).role === 'assistant');
+    const userMessages = sessionMessages.filter((entry) => deriveOpenCodeMessageRole(entry.info).isUser);
 
     let contextMessage: SessionMessage | null = null;
     for (let i = assistantMessages.length - 1; i >= 0; i -= 1) {
@@ -359,7 +367,7 @@ export const ContextPanelContent: React.FC = () => {
       : 0;
 
     const systemPrompt = ([...sessionMessages].reverse().find(
-      (entry) => deriveMessageRole(entry.info).isUser && typeof (entry.info as { system?: unknown }).system === 'string',
+      (entry) => deriveOpenCodeMessageRole(entry.info).isUser && typeof (entry.info as { system?: unknown }).system === 'string',
     )?.info as { system?: string } | undefined)?.system || '';
 
     const computedBreakdown = computeContextBreakdown(sessionMessages, systemPrompt);
@@ -537,7 +545,7 @@ export const ContextPanelContent: React.FC = () => {
           <div className="typography-micro text-muted-foreground">{t('contextSidebar.section.rawMessages')}</div>
           <div className="mt-2.5 space-y-1">
             {[...sessionMessages].reverse().map((message) => {
-              const roleInfo = deriveMessageRole(message.info);
+              const roleInfo = deriveOpenCodeMessageRole(message.info);
               const role = roleInfo.role;
               const isAssistant = role === 'assistant';
               const isUser = role === 'user';
@@ -650,4 +658,313 @@ export const ContextPanelContent: React.FC = () => {
       </div>
     </div>
   );
+};
+
+
+const projectPrimeContextPart = (part: TranscriptPart): Record<string, unknown> => {
+  if (part.kind === 'text') return { type: 'text', text: part.text };
+  if (part.kind === 'reasoning') return { type: 'thinking', text: part.text };
+  if (part.kind === 'tool') {
+    return {
+      type: 'tool',
+      name: part.tool,
+      status: part.state.status,
+      ...(part.state.input ? { input: part.state.input } : {}),
+      ...(typeof part.state.output === 'string' ? { output: part.state.output } : {}),
+      ...(typeof part.state.error === 'string' ? { error: part.state.error } : {}),
+      ...(part.state.metadata ? { metadata: part.state.metadata } : {}),
+    };
+  }
+  if (part.kind === 'file') {
+    return {
+      type: 'file',
+      ...(part.filename ? { filename: part.filename } : {}),
+      ...(part.mime ? { mime: part.mime } : {}),
+      ...(typeof part.size === 'number' ? { size: part.size } : {}),
+    };
+  }
+  if (part.kind === 'agent') return { type: 'agent' };
+  return { type: 'subtask' };
+};
+
+const projectPrimeContextMessage = (message: TranscriptMessage) => ({
+  role: message.role,
+  ...(typeof message.createdAt === 'number' ? { timestamp: message.createdAt } : {}),
+  ...(message.status ? { status: message.status } : {}),
+  ...(message.finish ? { finish: message.finish } : {}),
+  parts: message.toolResult
+    ? [{
+        type: 'tool_result',
+        ...(message.toolResult.name ? { name: message.toolResult.name } : {}),
+        error: message.toolResult.error,
+        output: message.toolResult.output,
+        ...(message.toolResult.metadata ? { metadata: message.toolResult.metadata } : {}),
+      }]
+    : message.parts.map(projectPrimeContextPart),
+});
+
+const primeMessagePartsLabel = (message: TranscriptMessage): string => {
+  if (message.toolResult?.name) return message.toolResult.name;
+  const labels = message.parts.map((part) => part.kind === 'tool' ? `tool: ${part.tool}` : part.kind);
+  return [...new Set(labels)].join(', ');
+};
+
+const primeUserSnippet = (message: TranscriptMessage): string => message.parts
+  .filter((part) => part.kind === 'text')
+  .map((part) => part.text.trim())
+  .filter(Boolean)
+  .join(' ')
+  .slice(0, 160);
+
+const optionalNonNegativeNumber = (value: unknown) => {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    return null;
+  }
+  return value;
+};
+
+const PrimeContextPanelContent: React.FC<{ identity: ChatIdentity }> = ({ identity }) => {
+  const { t } = useI18n();
+  const timeFormatPreference = useUIStore((state) => state.timeFormatPreference);
+  const [expandedMessages, setExpandedMessages] = React.useState<Record<string, boolean>>({});
+  const [copiedMessageId, setCopiedMessageId] = React.useState<string | null>(null);
+  const copyResetTimeoutRef = React.useRef<number | null>(null);
+  const catalogRecord = usePrimeCatalogRecord(identity);
+  const transcriptKey = getPrimeTranscriptKey(identity);
+  const snapshot = usePrimeTranscriptStore((state) => state.byKey.get(transcriptKey) ?? null);
+  const context = snapshot?.context ?? null;
+  const messages = snapshot?.messages;
+  const inputTokens = optionalNonNegativeNumber(context?.usage.inputTokens);
+  const outputTokens = optionalNonNegativeNumber(context?.usage.outputTokens);
+  const cacheReadTokens = optionalNonNegativeNumber(context?.usage.cacheReadTokens);
+  const cacheWriteTokens = optionalNonNegativeNumber(context?.usage.cacheWriteTokens);
+  const sessionCost = optionalNonNegativeNumber(context?.usage.cost);
+  const explicitTotal = optionalNonNegativeNumber(context?.usage.totalTokens);
+  const windowUsed = optionalNonNegativeNumber(context?.window?.used);
+  const windowLimit = optionalNonNegativeNumber(context?.window?.limit);
+  const explicitWindowPercent = optionalNonNegativeNumber(context?.window?.percent);
+  const windowPercent = explicitWindowPercent
+    ?? (windowUsed !== null && windowLimit !== null && windowLimit > 0
+      ? (windowUsed / windowLimit) * 100
+      : null);
+  const totalTokens = windowUsed
+    ?? explicitTotal
+    ?? (inputTokens !== null || outputTokens !== null
+      ? (inputTokens ?? 0) + (outputTokens ?? 0) + (cacheReadTokens ?? 0) + (cacheWriteTokens ?? 0)
+      : null);
+  const messageSummary = React.useMemo(() => {
+    let user = 0;
+    let assistant = 0;
+    let firstTimestamp: number | null = null;
+    for (const message of messages ?? []) {
+      if (message.role === 'user') user += 1;
+      if (message.role === 'assistant') assistant += 1;
+      if (firstTimestamp === null && typeof message.createdAt === 'number') {
+        firstTimestamp = message.createdAt;
+      }
+    }
+    return { total: messages?.length ?? 0, user, assistant, firstTimestamp };
+  }, [messages]);
+  const rawMessages = React.useMemo(
+    () => [...(messages ?? [])]
+      .filter((message) => !(message.synthetic && message.userMessageMarker))
+      .reverse(),
+    [messages],
+  );
+  const createdAt = catalogRecord?.createdAt ?? messageSummary.firstTimestamp;
+  const contextValue = snapshot?.contextAvailability === 'loading' && !context
+    ? t('common.loading')
+    : totalTokens === null
+      ? '—'
+      : windowLimit !== null
+        ? `${formatNumber(totalTokens)} / ${formatNumber(windowLimit)}`
+        : formatNumber(totalTokens);
+
+  React.useEffect(() => {
+    setExpandedMessages({});
+    setCopiedMessageId(null);
+  }, [identity.runtimeKey, identity.sessionId]);
+
+  React.useEffect(() => () => {
+    if (copyResetTimeoutRef.current !== null) window.clearTimeout(copyResetTimeoutRef.current);
+  }, []);
+
+  const handleCopyMessage = React.useCallback(async (messageId: string, value: string) => {
+    const result = await copyTextToClipboard(value);
+    if (!result.ok) return;
+    setCopiedMessageId(messageId);
+    if (copyResetTimeoutRef.current !== null) window.clearTimeout(copyResetTimeoutRef.current);
+    copyResetTimeoutRef.current = window.setTimeout(() => {
+      setCopiedMessageId((previous) => previous === messageId ? null : previous);
+      copyResetTimeoutRef.current = null;
+    }, 2000);
+  }, []);
+
+  return (
+    <div className="h-full overflow-y-auto bg-background">
+      <div className="mx-auto w-full max-w-[52rem] px-5 py-6">
+        <div className="mb-6">
+          <h2 className="typography-ui-header font-semibold text-foreground truncate">
+            {catalogRecord?.title || t('contextSidebar.session.untitled')}
+          </h2>
+          {createdAt && (
+            <div className="mt-1 typography-micro text-muted-foreground/70">
+              {formatDateTime(createdAt, timeFormatPreference)}
+            </div>
+          )}
+        </div>
+
+        <div className="mb-5 rounded-lg bg-[var(--surface-elevated)]/70 px-4 py-3.5">
+          <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+            <span className="typography-micro text-muted-foreground">
+              {t('contextSidebar.section.context')}
+            </span>
+            <span className="typography-micro tabular-nums text-muted-foreground/70">
+              {contextValue}
+            </span>
+          </div>
+          {windowPercent !== null ? (
+            <>
+              <div className="mt-2 h-1 overflow-hidden rounded-full bg-[var(--surface-subtle)]">
+                <div
+                  className="h-full rounded-full"
+                  style={{
+                    width: `${Math.min(100, Math.max(0, windowPercent))}%`,
+                    backgroundColor: windowPercent > 90
+                      ? 'var(--status-error)'
+                      : windowPercent > 75
+                        ? 'var(--status-warning)'
+                        : 'var(--status-success)',
+                  }}
+                />
+              </div>
+              <div className="mt-1.5 text-right typography-micro tabular-nums text-muted-foreground/70">
+                {t('contextSidebar.context.percentUsed', { percent: windowPercent.toFixed(1) })}
+              </div>
+            </>
+          ) : null}
+        </div>
+
+        <div className="mb-5 grid grid-cols-[repeat(auto-fit,minmax(5.5rem,1fr))] gap-2">
+          {([
+            { label: t('contextSidebar.stats.messages'), value: formatNumber(messageSummary.total) },
+            { label: t('contextSidebar.stats.user'), value: formatNumber(messageSummary.user) },
+            { label: t('contextSidebar.stats.assistant'), value: formatNumber(messageSummary.assistant) },
+          ] as const).map((item) => (
+            <div key={item.label} className="rounded-lg bg-[var(--surface-elevated)]/70 px-3 py-2.5">
+              <div className="typography-micro text-muted-foreground/70">{item.label}</div>
+              <div className="mt-0.5 typography-ui-label tabular-nums text-foreground">{item.value}</div>
+            </div>
+          ))}
+        </div>
+
+        <div className="mb-6 rounded-lg bg-[var(--surface-elevated)]/70 px-4 py-3.5">
+          <div className="typography-micro text-muted-foreground mb-2.5">
+            {t('contextSidebar.section.context')}
+          </div>
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(5.5rem,1fr))] gap-x-4 gap-y-2.5">
+            {([
+              { label: t('contextSidebar.tokens.input'), value: inputTokens === null ? '—' : formatNumber(inputTokens) },
+              { label: t('contextSidebar.tokens.output'), value: outputTokens === null ? '—' : formatNumber(outputTokens) },
+              { label: t('contextSidebar.tokens.cacheRead'), value: cacheReadTokens === null ? '—' : formatNumber(cacheReadTokens) },
+              { label: t('contextSidebar.tokens.cacheWrite'), value: cacheWriteTokens === null ? '—' : formatNumber(cacheWriteTokens) },
+              { label: t('contextSidebar.stats.cost'), value: sessionCost === null ? '—' : formatMoney(sessionCost) },
+            ] as const).map((item) => (
+              <div key={item.label}>
+                <div className="typography-micro text-muted-foreground/70">{item.label}</div>
+                <div className="mt-0.5 typography-ui-label tabular-nums text-foreground">
+                  {item.value}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <div className="typography-micro text-muted-foreground">
+            {t('contextSidebar.section.rawMessages')}
+          </div>
+          <div className="mt-2.5 space-y-1">
+            {rawMessages.map((message) => {
+              const isExpanded = expandedMessages[message.id] === true;
+              const isCopied = copiedMessageId === message.id;
+              const partsLabel = primeMessagePartsLabel(message);
+              const userSnippet = message.role === 'user' ? primeUserSnippet(message) : '';
+              const previewTime = formatMessagePreviewTime(message.createdAt ?? null, timeFormatPreference);
+              const projectedMessage = projectPrimeContextMessage(message);
+              const jsonValue = isExpanded ? JSON.stringify(projectedMessage, null, 2) : '';
+              return (
+                <div key={message.id} className="overflow-hidden rounded-lg bg-[var(--surface-elevated)]/70">
+                  <button
+                    type="button"
+                    className="w-full cursor-pointer px-3 py-1.5 text-left hover:bg-[var(--interactive-hover)]"
+                    aria-expanded={isExpanded}
+                    onClick={() => {
+                      setExpandedMessages((previous) => ({
+                        ...previous,
+                        [message.id]: !(previous[message.id] === true),
+                      }));
+                    }}
+                  >
+                    <div
+                      className="grid items-center gap-x-2 whitespace-nowrap typography-micro"
+                      style={{ gridTemplateColumns: 'minmax(0, 1fr) max-content' }}
+                    >
+                      <span className="min-w-0 truncate text-muted-foreground">
+                        <span className="typography-ui-label text-foreground">{message.role}:</span>{' '}
+                        {message.role === 'user' ? userSnippet : partsLabel || '—'}
+                      </span>
+                      <span className="text-right text-muted-foreground">{previewTime}</span>
+                    </div>
+                  </button>
+                  {isExpanded ? (
+                    <div className="border-t border-[var(--surface-subtle)] p-0">
+                      <div className="group relative max-h-[26rem] w-full overflow-auto bg-[var(--surface-background)]">
+                        <div className="absolute right-2 top-1 z-10 opacity-0 transition-opacity group-hover:opacity-100">
+                          <button
+                            type="button"
+                            className="rounded p-1 text-muted-foreground transition-colors hover:bg-interactive-hover/60 hover:text-foreground"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void handleCopyMessage(message.id, jsonValue);
+                            }}
+                            aria-label={isCopied ? t('contextSidebar.actions.copied') : t('contextSidebar.actions.copyJson')}
+                            title={isCopied ? t('contextSidebar.actions.copied') : t('contextSidebar.actions.copy')}
+                          >
+                            {isCopied
+                              ? <Icon name="check" className="size-3.5" />
+                              : <Icon name="file-copy" className="size-3.5" />}
+                          </button>
+                        </div>
+                        <WorkerHighlightedCode
+                          language="json"
+                          code={jsonValue}
+                          style={{
+                            margin: 0,
+                            padding: '0.75rem',
+                            background: 'transparent',
+                            fontSize: 'var(--text-micro)',
+                            lineHeight: '1.35',
+                          }}
+                          wrap
+                        />
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export const ContextPanelContent: React.FC = () => {
+  const visibleChatIdentity = useChatSelectionStore((state) => state.visibleChatIdentity);
+  if (visibleChatIdentity?.harness === 'prime') {
+    return <PrimeContextPanelContent identity={visibleChatIdentity} />;
+  }
+  return <OpenCodeContextPanelContent />;
 };

@@ -2,7 +2,7 @@ import React from 'react';
 import { useMobileAppActions } from '@/apps/mobileAppContext';
 import { cn } from '@/lib/utils';
 import type { TurnActivityRecord as TurnActivityPart } from '../../lib/turns/types';
-import type { ToolPart as ToolPartType } from '@opencode-ai/sdk/v2';
+import type { TranscriptReasoningPart, TranscriptTextPart, TranscriptToolPart } from '../../transcript/types';
 import type { StreamPhase } from '../types';
 import type { ContentChangeReason } from '@/hooks/useChatAutoFollow';
 import type { ToolPopupContent } from '../types';
@@ -73,7 +73,7 @@ const ExternalLinkFavicon: React.FC<{ href: string }> = ({ href }) => {
 
 const isActivityRunning = (activity: TurnActivityPart): boolean => {
     if (activity.kind !== 'tool') return false;
-    const part = activity.part as ToolPartType;
+    const part = activity.part as TranscriptToolPart;
     const status = (part.state?.status as string) || undefined;
     const isFinalized = status === 'completed' || status === 'error' || status === 'aborted' || status === 'failed' || status === 'timeout' || status === 'cancelled';
     if (isFinalized) {
@@ -98,7 +98,7 @@ const sortPartsByTime = (parts: TurnActivityPart[]): TurnActivityPart[] => parts
  * Extract a short filename from a tool part's input (for aggregation display).
  */
 const getToolFileName = (activity: TurnActivityPart): string | null => {
-    const part = activity.part as ToolPartType;
+    const part = activity.part as TranscriptToolPart;
     const state = part.state as { input?: Record<string, unknown>; metadata?: Record<string, unknown> } | undefined;
     const input = state?.input;
     const metadata = state?.metadata;
@@ -120,7 +120,7 @@ const getToolFileName = (activity: TurnActivityPart): string | null => {
 };
 
 const getToolFilePath = (activity: TurnActivityPart): string | null => {
-    const part = activity.part as ToolPartType;
+    const part = activity.part as TranscriptToolPart;
     const state = part.state as { input?: Record<string, unknown>; metadata?: Record<string, unknown> } | undefined;
     const input = state?.input;
     const metadata = state?.metadata;
@@ -137,7 +137,7 @@ const getToolFilePath = (activity: TurnActivityPart): string | null => {
 };
 
 const getToolSkillDirectory = (activity: TurnActivityPart): string | null => {
-    const part = activity.part as ToolPartType;
+    const part = activity.part as TranscriptToolPart;
     const state = part.state as { metadata?: Record<string, unknown> } | undefined;
     const dir = state?.metadata?.dir;
 
@@ -184,7 +184,7 @@ const formatTodoSummary = (todos: unknown[]): string | null => {
 };
 
 const getTodoSummaryFromActivity = (activity: TurnActivityPart): string | null => {
-    const part = activity.part as ToolPartType;
+    const part = activity.part as TranscriptToolPart;
     const state = part.state as { input?: Record<string, unknown>; output?: unknown } | undefined;
     const input = state?.input;
     const output = state?.output;
@@ -224,7 +224,7 @@ const getTodoSummaryFromActivity = (activity: TurnActivityPart): string | null =
 };
 
 const getToolReadOffset = (activity: TurnActivityPart): number | undefined => {
-    const part = activity.part as ToolPartType;
+    const part = activity.part as TranscriptToolPart;
     const state = part.state as { input?: Record<string, unknown>; metadata?: Record<string, unknown> } | undefined;
     const input = state?.input;
     const metadata = state?.metadata;
@@ -302,7 +302,7 @@ const resolveSkillFilePath = (skillPathOrDir: string): string => {
  * Get a short description for a static tool (for aggregation display).
  */
 const getToolShortDescription = (activity: TurnActivityPart): string | null => {
-    const part = activity.part as ToolPartType;
+    const part = activity.part as TranscriptToolPart;
     const toolName = part.tool?.toLowerCase() ?? '';
     const state = part.state as { input?: Record<string, unknown>; metadata?: Record<string, unknown> } | undefined;
     const input = state?.input;
@@ -397,7 +397,7 @@ const ExpandableToolRow: React.FC<ExpandableToolRowProps> = ({
 
     const content = (
         <ToolPart
-            part={activity.part as ToolPartType}
+            part={activity.part as TranscriptToolPart}
             isExpanded={isExpanded}
             onToggle={handleToggle}
             isMobile={isMobile}
@@ -502,7 +502,7 @@ const aggregateRows = (parts: TurnActivityPart[]): AggregatedRow[] => {
         }
 
         // Tool part
-        const toolPart = activity.part as ToolPartType;
+        const toolPart = activity.part as TranscriptToolPart;
         const toolName = toolPart.tool?.toLowerCase() ?? '';
 
         if (isStandaloneTool(toolName)) {
@@ -802,7 +802,7 @@ const InlineReasoningBlock = React.memo(({ activity, onContentChange, streamPhas
 }) => {
     return (
         <ReasoningPart
-            part={activity.part}
+            part={activity.part as TranscriptReasoningPart}
             messageId={activity.messageId}
             streamPhase={streamPhase}
             onContentChange={onContentChange}
@@ -820,7 +820,7 @@ const InlineJustificationBlock = React.memo(({ activity, onContentChange, action
 }) => {
     return (
         <JustificationBlock
-            part={activity.part}
+            part={activity.part as TranscriptTextPart}
             messageId={activity.messageId}
             onContentChange={onContentChange}
             actions={actions}

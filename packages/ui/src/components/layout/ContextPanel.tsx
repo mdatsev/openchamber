@@ -24,7 +24,10 @@ import { SidebarFilesTree } from './SidebarFilesTree';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
 import { openExternalUrl } from '@/lib/url';
 import { copyTextToClipboard } from '@/lib/clipboard';
-import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
+import {
+  useVisibleChatDirectory,
+  useVisibleOpenCodeSessionContext,
+} from '@/hooks/useVisibleChatDirectory';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/lib/i18n';
 import { useFilesViewTabsStore } from '@/stores/useFilesViewTabsStore';
@@ -718,9 +721,9 @@ const PreviewPane: React.FC<PreviewPaneProps> = ({ rawUrl, onNavigate }) => {
   const [consoleEvents, setConsoleEvents] = React.useState<PreviewConsoleEvent[]>([]);
   const [inspectMode, setInspectMode] = React.useState(false);
   const [hoverTarget, setHoverTarget] = React.useState<PreviewElementMetadata | null>(null);
-  const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
-  const newSessionDraftOpen = useSessionUIStore((state) => state.newSessionDraft?.open);
-  const effectiveDirectory = useEffectiveDirectory();
+  const { sessionId: currentSessionId, newSessionDraft } = useVisibleOpenCodeSessionContext();
+  const newSessionDraftOpen = newSessionDraft?.open === true;
+  const effectiveDirectory = useVisibleChatDirectory();
   const addInlineCommentDraft = useInlineCommentDraftStore((state) => state.addDraft);
   const addAttachedFile = useInputStore((state) => state.addAttachedFile);
 
@@ -1516,8 +1519,8 @@ const IframeBrowserPane: React.FC<DesktopBrowserPaneProps> = ({ initialUrl, dire
   const [hoverTarget, setHoverTarget] = React.useState<PreviewElementMetadata | null>(null);
   const [proxyState, setProxyState] = React.useState<PreviewProxyState>({ status: 'idle' });
   const [urlAuthReadyKey, setUrlAuthReadyKey] = React.useState('');
-  const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
-  const newSessionDraftOpen = useSessionUIStore((state) => state.newSessionDraft?.open);
+  const { sessionId: currentSessionId, newSessionDraft } = useVisibleOpenCodeSessionContext();
+  const newSessionDraftOpen = newSessionDraft?.open === true;
   const addInlineCommentDraft = useInlineCommentDraftStore((state) => state.addDraft);
   const addAttachedFile = useInputStore((state) => state.addAttachedFile);
 
@@ -2006,8 +2009,8 @@ const DesktopBrowserPane: React.FC<DesktopBrowserPaneProps> = ({ initialUrl, dir
     if (!url || url === 'about:blank' || !directory || !tabID) return;
     setContextPanelTabTargetPath(directory, tabID, url);
   }, [directory, tabID, setContextPanelTabTargetPath]);
-  const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
-  const newSessionDraftOpen = useSessionUIStore((state) => state.newSessionDraft?.open);
+  const { sessionId: currentSessionId, newSessionDraft } = useVisibleOpenCodeSessionContext();
+  const newSessionDraftOpen = newSessionDraft?.open === true;
   const addInlineCommentDraft = useInlineCommentDraftStore((state) => state.addDraft);
   const addAttachedFile = useInputStore((state) => state.addAttachedFile);
 
@@ -2256,7 +2259,7 @@ const DesktopBrowserPane: React.FC<DesktopBrowserPaneProps> = ({ initialUrl, dir
 
 export const ContextPanel: React.FC = () => {
   const { t } = useI18n();
-  const effectiveDirectory = useEffectiveDirectory() ?? '';
+  const effectiveDirectory = useVisibleChatDirectory() ?? '';
   const directoryKey = React.useMemo(() => normalizeDirectoryKey(effectiveDirectory), [effectiveDirectory]);
 
   const panelState = useUIStore((state) => (directoryKey ? state.contextPanelByDirectory[directoryKey] : undefined));

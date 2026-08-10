@@ -1,10 +1,10 @@
 import React from 'react';
 
-import type { ChatMessageEntry } from '../lib/turns/types';
+import type { TranscriptMessageEntry } from '../lib/turns/types';
 
 interface TurnAssistantBlockProps {
-    assistantMessages: ChatMessageEntry[];
-    renderMessage: (message: ChatMessageEntry) => React.ReactNode;
+    assistantMessages: TranscriptMessageEntry[];
+    renderMessage: (message: TranscriptMessageEntry) => React.ReactNode;
 }
 
 const TurnAssistantBlock: React.FC<TurnAssistantBlockProps> = ({ assistantMessages, renderMessage }) => {

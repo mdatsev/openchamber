@@ -1,17 +1,17 @@
-import type { Message, Part } from '@opencode-ai/sdk/v2';
+import type { OpenCodeMessageRecord } from '../../transcript/openCodeTypes';
+import type { TranscriptChangedFile, TranscriptMessage, TranscriptPart } from '../../transcript/types';
 
-export interface ChatMessageEntry {
-    info: Message;
-    parts: Part[];
-}
+/** @deprecated OpenCode-shaped compatibility input for existing turn helpers. */
+export type ChatMessageEntry = OpenCodeMessageRecord;
+export type TranscriptMessageEntry = TranscriptMessage;
 
 type TurnActivityKind = 'tool' | 'reasoning' | 'justification';
 
-export interface TurnMessageRecord {
+export interface TurnMessageRecord<TMessage = ChatMessageEntry> {
     messageId: string;
     role: string;
     parentMessageId?: string;
-    message: ChatMessageEntry;
+    message: TMessage;
     order: number;
 }
 
@@ -19,40 +19,21 @@ export interface TurnPartRecord {
     id: string;
     turnId: string;
     messageId: string;
-    part: Part;
+    part: TranscriptPart;
     partIndex: number;
     endedAt?: number;
 }
 
-export interface TurnActivityRecord extends TurnPartRecord {
-    kind: TurnActivityKind;
-}
-
-export interface TurnDiffStats {
-    additions: number;
-    deletions: number;
-    files: number;
-}
-
-export interface TurnChangedFile {
-    file: string;
-    additions: number;
-    deletions: number;
-}
-
+export interface TurnActivityRecord extends TurnPartRecord { kind: TurnActivityKind; }
+export interface TurnDiffStats { additions: number; deletions: number; files: number; }
+export type TurnChangedFile = TranscriptChangedFile;
 export interface TurnActivityGroup {
     id: string;
     anchorMessageId: string;
     afterToolPartId: string | null;
     parts: TurnActivityRecord[];
 }
-
-export interface TurnSummaryRecord {
-    text?: string;
-    sourceMessageId?: string;
-    sourcePartId?: string;
-}
-
+export interface TurnSummaryRecord { text?: string; sourceMessageId?: string; sourcePartId?: string; }
 export interface TurnStreamState {
     isStreaming: boolean;
     isRetrying: boolean;
@@ -61,14 +42,14 @@ export interface TurnStreamState {
     durationMs?: number;
 }
 
-export interface TurnRecord {
+export interface TurnRecord<TMessage = ChatMessageEntry> {
     turnId: string;
     userMessageId: string;
-    userMessage: ChatMessageEntry;
+    userMessage: TMessage;
     headerMessageId?: string;
-    messages: TurnMessageRecord[];
+    messages: TurnMessageRecord<TMessage>[];
     assistantMessageIds: string[];
-    assistantMessages: ChatMessageEntry[];
+    assistantMessages: TMessage[];
     activityParts: TurnActivityRecord[];
     activitySegments: TurnActivityGroup[];
     summary: TurnSummaryRecord;
@@ -94,21 +75,27 @@ interface TurnMessageMeta {
     headerMessageId?: string;
 }
 
-export interface TurnIndexes {
-    turnById: Map<string, TurnRecord>;
+export interface TurnIndexes<TMessage = ChatMessageEntry> {
+    turnById: Map<string, TurnRecord<TMessage>>;
     messageToTurnId: Map<string, string>;
     messageMetaById: Map<string, TurnMessageMeta>;
 }
 
-export interface TurnProjectionResult {
-    turns: TurnRecord[];
-    indexes: TurnIndexes;
+export interface TurnProjectionResult<TMessage = ChatMessageEntry> {
+    turns: TurnRecord<TMessage>[];
+    indexes: TurnIndexes<TMessage>;
     lastTurnId: string | null;
     lastTurnMessageIds: Set<string>;
     ungroupedMessageIds: Set<string>;
 }
 
-export type Turn = Pick<TurnRecord, 'turnId' | 'userMessage' | 'assistantMessages'>;
+export type Turn<TMessage = ChatMessageEntry> = Pick<TurnRecord<TMessage>, 'turnId' | 'userMessage' | 'assistantMessages'>;
+
+export type TranscriptTurnMessageRecord = TurnMessageRecord<TranscriptMessageEntry>;
+export type TranscriptTurnRecord = TurnRecord<TranscriptMessageEntry>;
+export type TranscriptTurnIndexes = TurnIndexes<TranscriptMessageEntry>;
+export type TranscriptTurnProjectionResult = TurnProjectionResult<TranscriptMessageEntry>;
+export type TranscriptTurn = Turn<TranscriptMessageEntry>;
 
 export interface TurnGroupingContext {
     turnId: string;

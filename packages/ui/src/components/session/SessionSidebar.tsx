@@ -31,9 +31,12 @@ import { useSessionSearchEffects } from './sidebar/hooks/useSessionSearchEffects
 import { useSessionActions } from './sidebar/hooks/useSessionActions';
 import { useSidebarPersistence } from './sidebar/hooks/useSidebarPersistence';
 import { useProjectRepoStatus } from './sidebar/hooks/useProjectRepoStatus';
-import { useProjectSessionLists } from './sidebar/hooks/useProjectSessionLists';
 import { useAuthoritativeSessionCleanup } from './sidebar/hooks/useAuthoritativeSessionCleanup';
 import { createSessionOwnershipIndex } from './sidebar/sessionOwnership';
+import { createOpenCodeSessionCatalog, getOpenCodeSourceSession } from './sidebar/openCodeSessionAdapter';
+import { createPrimeSessionCatalog } from './sidebar/primeSessionAdapter';
+import { mergeSessionCatalogGraphs } from './sidebar/sessionCatalog';
+import { projectSessionCatalogGraph } from './sidebar/sessionPresentationAdapter';
 import { useStickyProjectHeaders } from './sidebar/hooks/useStickyProjectHeaders';
 import { ProjectEditDialog } from '@/components/layout/ProjectEditDialog';
 import { UpdateDialog } from '@/components/ui/UpdateDialog';
@@ -66,11 +69,11 @@ import {
 import { BulkActionBar } from './sidebar/BulkActionBar';
 import { useSidebarBulkActions } from './sidebar/hooks/useSidebarBulkActions';
 import { useSessionDisplayStore } from '@/stores/useSessionDisplayStore';
-import { type SessionGroup, type SessionNode } from './sidebar/types';
+import { getSessionNodeIdentityKey, type SessionGroup, type CatalogSessionNode } from './sidebar/types';
 import {
-  deriveRecentSessions,
+  deriveRecentSessionNodes,
 } from './sidebar/activitySections';
-import { useSessionPinnedStore } from '@/stores/useSessionPinnedStore';
+import { isSessionPinned, useSessionPinnedStore } from '@/stores/useSessionPinnedStore';
 import {
   formatProjectLabel,
   normalizePath,
@@ -100,6 +103,12 @@ import { subscribeOpenchamberEvents } from '@/lib/openchamberEvents';
 import { buildSessionBootstrapDemands } from './sidebar/sessionBootstrapDemands';
 import { recordWorktreesSeen } from './sidebar/worktreeFirstSeen';
 import { getRuntimeKey } from '@/lib/runtime-switch';
+import { refreshPrimeCatalog, usePrimeCatalogStore } from '@/stores/usePrimeCatalogStore';
+import { projectFreshPrimeActivityBySession, usePrimeLiveStore } from '@/stores/usePrimeLiveStore';
+import { chatIdentitiesEqual, serializeChatIdentity, type ChatIdentity } from '@/lib/chat-identity';
+import { useChatSelectionStore } from '@/stores/useChatSelectionStore';
+import { selectChatIdentity } from '@/sync/session-navigation';
+import { usePrimeSessionSelection } from '@/hooks/usePrimeSessionSelection';
 import { streamPerfCount, streamPerfMark } from '@/stores/utils/streamDebug';
 import { runBackgroundNetworkTask } from '@/lib/background-network';
 
@@ -590,6 +599,18 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
   }, [liveSessions]);
 
   const runtimeKey = getRuntimeKey();
+  const runtimeApis = useRuntimeAPIs();
+  const selectPrimeSession = usePrimeSessionSelection();
+  const primeSnapshot = usePrimeCatalogStore((state) => state.byRuntime.get(runtimeKey) ?? null);
+  const primeLiveStates = usePrimeLiveStore((state) => state.byKey);
+  const primeLiveActivityBySessionId = React.useMemo(
+    () => projectFreshPrimeActivityBySession(runtimeKey, primeLiveStates),
+    [primeLiveStates, runtimeKey],
+  );
+  React.useEffect(() => {
+    if (!isVisible) return;
+    void refreshPrimeCatalog(runtimeKey, runtimeApis);
+  }, [isVisible, runtimeApis, runtimeKey]);
   const projectWorktreeDiscoveryKey = React.useMemo(
     () => `${runtimeKey}|${projects
       .map((project) => `${project.id}:${normalizePath(project.path) ?? ''}`)
@@ -745,19 +766,6 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
 
   const { isTablet } = useDeviceInfo();
   const alwaysShowSidebarActions = mobileVariant || isTablet;
-
-  const {
-    buildGroupSearchText,
-    filterSessionNodesForSearch,
-    buildGroupedSessions,
-  } = useSessionGrouping({
-    homeDirectory,
-    worktreeMetadata,
-    pinnedSessionIds,
-    sessionOrderRanks,
-    gitBranches,
-    isVSCode,
-  });
 
   const { scheduleCollapsedProjectsPersist } = useSidebarPersistence({
     isVSCode,
@@ -970,6 +978,28 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
   );
 
   const stableHandleSessionSelect = useStableRenderCallback(handleSessionSelect);
+  const handleCatalogSessionSelect = useStableRenderCallback((identity: ChatIdentity) => {
+    const previousIdentity = useChatSelectionStore.getState().visibleChatIdentity;
+    useUIStore.getState().closeMainSurfaces();
+    if (mobileVariant) {
+      setActiveMainTab('chat');
+      setSessionSwitcherOpen(false);
+    }
+    if (identity.harness === 'prime') {
+      void selectPrimeSession(identity);
+    } else if (!chatIdentitiesEqual(previousIdentity, identity)) {
+      selectChatIdentity(identity);
+    }
+    if (!chatIdentitiesEqual(previousIdentity, identity)) {
+      onSessionSelected?.(identity.sessionId);
+    } else if (allowReselect) {
+      onSessionSelected?.(identity.sessionId);
+    }
+    if (isSessionSearchOpen || sessionSearchQuery.length > 0) {
+      setSessionSearchQuery('');
+      setIsSessionSearchOpen(false);
+    }
+  });
   const stableHandleSessionDoubleClick = useStableRenderCallback(handleSessionDoubleClick);
   const stableHandleSaveEdit = useStableRenderCallback(handleSaveEdit);
   const stableHandleCancelEdit = useStableRenderCallback(handleCancelEdit);
@@ -1140,7 +1170,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
     void refreshGlobalSessionsForDirectories(addedDirectories, syncSessionsSnapshotRef.current);
   }, [isVSCode, projectSessionDirectories]);
 
-  const { github } = useRuntimeAPIs();
+  const { github } = runtimeApis;
   const githubAuthStatus = useGitHubAuthStore((state) => state.status);
   const githubAuthChecked = useGitHubAuthStore((state) => state.hasChecked);
   const gitRepoStatus = useGitRepoStatusMap(isVisible ? normalizedProjectPaths : EMPTY_STRING_ARRAY);
@@ -1161,14 +1191,101 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
     () => createSessionOwnershipIndex(sessions, normalizedProjects, availableWorktreesByProject, isVSCode, archivedSessions),
     [archivedSessions, availableWorktreesByProject, isVSCode, normalizedProjects, sessions],
   );
+  const worktreeByDirectory = React.useMemo(() => {
+    const worktrees = new Map<string, WorktreeMetadata>();
+    for (const projectWorktrees of availableWorktreesByProject.values()) {
+      for (const worktree of projectWorktrees) {
+        const directory = normalizePath(worktree.path);
+        if (directory) worktrees.set(directory, worktree);
+      }
+    }
+    return worktrees;
+  }, [availableWorktreesByProject]);
+  const combinedSessionCatalog = React.useMemo(() => {
+    const openCodeCatalog = createOpenCodeSessionCatalog({
+      sessions: [...sessions, ...archivedSessions],
+      ownerBySessionId: sessionOwnership.bySessionId,
+      compareSessions: (left, right) => compareSessionsByLifecycleOrder(
+        left,
+        right,
+        pinnedSessionIds,
+        sessionOrderRanks,
+      ),
+      runtimeKey,
+    });
+    const graphs = [openCodeCatalog];
+    if (primeSnapshot) {
+      graphs.push(createPrimeSessionCatalog({
+        runtimeKey,
+        snapshot: primeSnapshot,
+        projects: normalizedProjects,
+        availableWorktreesByProject,
+        liveActivityBySessionId: primeLiveActivityBySessionId,
+      }));
+    }
+    const openCodeOrder = new Map(openCodeCatalog.roots.map((node, index) => [
+      node.session.identity.sessionId,
+      index,
+    ]));
+    return mergeSessionCatalogGraphs(runtimeKey, graphs, (left, right) => {
+      const leftSource = left.identity.harness === 'opencode' ? getOpenCodeSourceSession(left) : null;
+      const rightSource = right.identity.harness === 'opencode' ? getOpenCodeSourceSession(right) : null;
+      const leftPinned = leftSource
+        ? isSessionPinned(pinnedSessionIds, resolveGlobalSessionDirectory(leftSource), leftSource.id)
+        : false;
+      const rightPinned = rightSource
+        ? isSessionPinned(pinnedSessionIds, resolveGlobalSessionDirectory(rightSource), rightSource.id)
+        : false;
+      if (leftPinned !== rightPinned) return leftPinned ? -1 : 1;
+      if (leftSource && rightSource) {
+        return (openCodeOrder.get(leftSource.id) ?? 0) - (openCodeOrder.get(rightSource.id) ?? 0);
+      }
+      return right.updatedAt - left.updatedAt
+        || right.createdAt - left.createdAt
+        || left.identity.harness.localeCompare(right.identity.harness)
+        || left.identity.sessionId.localeCompare(right.identity.sessionId);
+    });
+  }, [
+    archivedSessions,
+    availableWorktreesByProject,
+    normalizedProjects,
+    pinnedSessionIds,
+    primeLiveActivityBySessionId,
+    primeSnapshot,
+    runtimeKey,
+    sessionOrderRanks,
+    sessionOwnership.bySessionId,
+    sessions,
+  ]);
+  const catalogNodesByProject = React.useMemo(() => {
+    const projectedNodes = projectSessionCatalogGraph(combinedSessionCatalog, (sourceSession) => {
+      const metadata = worktreeMetadata.get(sourceSession.id);
+      if (metadata) return metadata;
+      const directory = resolveGlobalSessionDirectory(sourceSession);
+      return directory ? (worktreeByDirectory.get(directory) ?? null) : null;
+    });
+    const nodesByProject = new Map<string, CatalogSessionNode[]>();
+    for (const node of projectedNodes) {
+      const bucket = nodesByProject.get(node.ownership.projectId);
+      if (bucket) bucket.push(node);
+      else nodesByProject.set(node.ownership.projectId, [node]);
+    }
+    return nodesByProject;
+  }, [combinedSessionCatalog, worktreeByDirectory, worktreeMetadata]);
+  const {
+    buildGroupSearchText,
+    filterSessionNodesForSearch,
+    buildGroupedSessions,
+  } = useSessionGrouping({
+    homeDirectory,
+    sessionOrderRanks,
+    gitBranches,
+    isVSCode,
+  });
   useAuthoritativeSessionCleanup({
     enabled: isVisible,
     hasAuthoritativeGlobalSessions,
     sessions: persistenceSessions,
-  });
-
-  const { getSessionsForProject, getArchivedSessionsForProject } = useProjectSessionLists({
-    ownership: sessionOwnership,
   });
 
   useArchivedAutoFolders({
@@ -1325,8 +1442,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
     searchMatchCount,
   } = useSessionSidebarSections({
     normalizedProjects: sortedProjects,
-    getSessionsForProject,
-    getArchivedSessionsForProject,
+    nodesByProject: catalogNodesByProject,
     availableWorktreesByProject,
     projectRepoStatus,
     projectRootBranches,
@@ -1366,17 +1482,15 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
     hasInitializedArchivedCollapseRef.current = true;
   }, [projectSections]);
 
-  const sessionSidebarMetaById = React.useMemo(() => {
+  const sessionSidebarMetaByIdentity = React.useMemo(() => {
     const meta = new Map<string, {
-      node: SessionNode;
+      node: CatalogSessionNode;
       projectId: string | null;
-      groupDirectory: string | null;
       secondaryMeta: {
         projectLabel?: string | null;
         branchLabel?: string | null;
       } | null;
     }>();
-    const projectPathLengthBySessionId = new Map<string, number>();
 
     projectSections.forEach((section) => {
       const projectLabel = formatProjectLabel(
@@ -1390,24 +1504,14 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
           : null;
         const secondaryMeta = { projectLabel, branchLabel: branchCandidate };
 
-        const visit = (nodes: SessionNode[]) => {
+        const visit = (nodes: CatalogSessionNode[]) => {
           nodes.forEach((node) => {
-            const nextProjectPathLength = section.project.normalizedPath.length;
-            const currentProjectPathLength = projectPathLengthBySessionId.get(node.session.id) ?? -1;
-            if (nextProjectPathLength < currentProjectPathLength) {
-              return;
-            }
-
-            meta.set(node.session.id, {
+            meta.set(getSessionNodeIdentityKey(node), {
               node,
               projectId: section.project.id,
-              groupDirectory: group.directory,
               secondaryMeta,
             });
-            projectPathLengthBySessionId.set(node.session.id, nextProjectPathLength);
-            if (node.children.length > 0) {
-              visit(node.children);
-            }
+            if (node.children.length > 0) visit(node.children);
           });
         };
 
@@ -1419,57 +1523,49 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
   }, [projectSections, homeDirectory]);
 
   const recentSessions = React.useMemo(() => {
-    if (!showRecentSection || isVSCode) {
-      return [];
-    }
+    if (!showRecentSection || isVSCode) return [];
+    const projectedRootSessions = [...sessionSidebarMetaByIdentity.values()]
+      .map((entry) => entry.node)
+      .filter((node) => node.session.parentIdentity === null);
+    const rootOrder = new Map(combinedSessionCatalog.roots.map((node, index) => [
+      serializeChatIdentity(node.session.identity),
+      index,
+    ]));
+    return deriveRecentSessionNodes(projectedRootSessions, activeSessionIdSet)
+      .sort((left, right) => (
+        (rootOrder.get(getSessionNodeIdentityKey(left)) ?? Number.MAX_SAFE_INTEGER)
+        - (rootOrder.get(getSessionNodeIdentityKey(right)) ?? Number.MAX_SAFE_INTEGER)
+      ));
+  }, [activeSessionIdSet, combinedSessionCatalog.roots, isVSCode, sessionSidebarMetaByIdentity, showRecentSection]);
 
-    return deriveRecentSessions(sessions, activeSessionIdSet)
-      .sort((a, b) => compareSessionsByLifecycleOrder(a, b, pinnedSessionIds, sessionOrderRanks));
-  }, [activeSessionIdSet, isVSCode, pinnedSessionIds, sessionOrderRanks, sessions, showRecentSection]);
-
-  // Prefetch is wired below, after recentSessions is computed.
+  // Prefetch remains an OpenCode controller capability; passive Prime rows do
+  // not materialize OpenCode message state.
+  const recentOpenCodeSessions = React.useMemo(() => recentSessions.flatMap((node) => (
+    node.controller.kind === 'opencode' ? [getOpenCodeSourceSession(node.session)] : []
+  )), [recentSessions]);
 
   const activitySections = React.useMemo(() => {
-    // VS Code renders the full grouped project view (one group per open
-    // workspace, folders + pinned native); the flat "recent" activity list is
-    // web/desktop-only.
-    if (isVSCode || !showRecentSection) {
-      return [];
-    }
+    if (isVSCode || !showRecentSection) return [];
 
-    const toItem = (session: Session) => {
-      const existing = sessionSidebarMetaById.get(session.id);
-      const sessionDirectory = normalizePath((session as Session & { directory?: string | null }).directory ?? null);
-      const node = existing?.node ?? { session, children: [], worktree: null };
+    const items = recentSessions.flatMap((node) => {
+      const existing = sessionSidebarMetaByIdentity.get(getSessionNodeIdentityKey(node));
+      if (!existing) return [];
       const filteredNodes = hasSessionSearchQuery
         ? filterSessionNodesForSearch([node], normalizedSessionSearchQuery)
         : [node];
       const filteredNode = filteredNodes[0];
-      if (!filteredNode) {
-        return null;
-      }
-      const secondaryMeta = existing?.secondaryMeta
-        ? {
-            projectLabel: existing.secondaryMeta.projectLabel,
-            branchLabel: isVSCode ? null : existing.secondaryMeta.branchLabel,
-          }
-        : null;
-      return {
+      if (!filteredNode) return [];
+      return [{
         node: filteredNode,
-        projectId: existing?.projectId ?? null,
-        groupDirectory: existing?.groupDirectory ?? sessionDirectory,
-        secondaryMeta,
-      };
-    };
-
-    const items = recentSessions
-      .map(toItem)
-      .filter((item): item is NonNullable<ReturnType<typeof toItem>> => item !== null);
+        projectId: existing.projectId,
+        secondaryMeta: existing.secondaryMeta,
+      }];
+    });
 
     return [
       { key: 'active-now' as const, title: t('sessions.sidebar.activity.recentTitle'), items },
     ];
-  }, [filterSessionNodesForSearch, hasSessionSearchQuery, isVSCode, normalizedSessionSearchQuery, recentSessions, sessionSidebarMetaById, showRecentSection, t]);
+  }, [filterSessionNodesForSearch, hasSessionSearchQuery, isVSCode, normalizedSessionSearchQuery, recentSessions, sessionSidebarMetaByIdentity, showRecentSection, t]);
 
   const hasActivitySectionItems = React.useMemo(
     () => activitySections.some((section) => section.items.length > 0),
@@ -1597,9 +1693,8 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
 
   const renderSessionNode = useStableRenderCallback(
     (
-      node: SessionNode,
+      node: CatalogSessionNode,
       depth: number = 0,
-      groupDirectory?: string | null,
       projectId?: string | null,
       archivedBucket: boolean = false,
       secondaryMeta?: { projectLabel?: string | null; branchLabel?: string | null } | null,
@@ -1609,7 +1704,6 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
       <SessionNodeItem
         node={node}
         depth={depth}
-        groupDirectory={groupDirectory}
         projectId={projectId}
         archivedBucket={archivedBucket}
         pinnedSessionIds={pinnedSessionIds}
@@ -1624,7 +1718,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
         handleSaveEdit={stableHandleSaveEdit}
         handleCancelEdit={stableHandleCancelEdit}
         toggleParent={toggleParent}
-        handleSessionSelect={stableHandleSessionSelect}
+        handleSessionSelect={handleCatalogSessionSelect}
         handleSessionDoubleClick={stableHandleSessionDoubleClick}
         togglePinnedSession={togglePinnedSession}
         handleShareSession={stableHandleShareSession}
@@ -1669,7 +1763,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
     return map;
   }, [flatSectionsForRender]);
 
-  const renderProjectStatusIndicator = React.useCallback((_projectId: string, groups: SessionGroup[]) => {
+  const renderProjectStatusIndicator = React.useCallback((_projectId: string, groups: SessionGroup<CatalogSessionNode>[]) => {
     const directories: Array<string | null> = [];
     groups.forEach((group) => {
       if (group.isArchivedBucket) return;
@@ -1695,7 +1789,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
 
   const renderGroupSessions = React.useCallback(
     (
-      group: SessionGroup,
+      group: SessionGroup<CatalogSessionNode>,
       groupKey: string,
       projectId?: string | null,
       hideGroupLabel?: boolean,
@@ -1892,7 +1986,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
       <SessionPrefetchEffect
         enabled={isVisible}
         sortedSessions={orderedSessions}
-        recentSessions={recentSessions}
+        recentSessions={recentOpenCodeSessions}
         prefetchSession={sync.prefetchSession}
       />
       {!hideDirectoryControls && !isVSCode ? (

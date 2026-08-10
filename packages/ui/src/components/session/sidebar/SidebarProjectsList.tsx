@@ -11,7 +11,7 @@ import {
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
 import { formatDirectoryName, formatPathForDisplay, cn } from '@/lib/utils';
-import type { SessionGroup } from './types';
+import type { CatalogSessionNode, SessionGroup } from './types';
 import type { SortableDragHandleProps } from './sortableItems';
 import { ProjectHeaderIdentity, SortableGroupItem, SortableProjectItem } from './sortableItems';
 import { formatProjectLabel } from './utils';
@@ -31,7 +31,7 @@ type ProjectSection = {
     iconImage?: { mime: string; updatedAt: number; source: 'custom' | 'auto' };
     iconBackground?: string;
   };
-  groups: SessionGroup[];
+  groups: SessionGroup<CatalogSessionNode>[];
 };
 
 const TOP_FADE_MAX_SIZE = 48;
@@ -58,7 +58,7 @@ type Props = {
   emptyState: React.ReactNode;
   searchEmptyState: React.ReactNode;
   renderGroupSessions: (
-    group: SessionGroup,
+    group: SessionGroup<CatalogSessionNode>,
     groupKey: string,
     projectId?: string | null,
     hideGroupLabel?: boolean,
@@ -66,9 +66,9 @@ type Props = {
     compactBodyPadding?: boolean,
     scrollContainerRef?: React.RefObject<HTMLElement | null>,
   ) => React.ReactNode;
-  getOrderedGroups: (projectId: string, groups: SessionGroup[]) => SessionGroup[];
+  getOrderedGroups: (projectId: string, groups: SessionGroup<CatalogSessionNode>[]) => SessionGroup<CatalogSessionNode>[];
   setGroupOrderByProject: React.Dispatch<React.SetStateAction<Map<string, string[]>>>;
-  renderProjectStatusIndicator?: (projectId: string, groups: SessionGroup[]) => React.ReactNode;
+  renderProjectStatusIndicator?: (projectId: string, groups: SessionGroup<CatalogSessionNode>[]) => React.ReactNode;
   homeDirectory: string | null;
   collapsedProjects: Set<string>;
   hideDirectoryControls: boolean;
@@ -110,13 +110,13 @@ function SidebarProjectsListComponent(props: Props): React.ReactNode {
   // Memoize getOrderedGroups per project so downstream consumers see a stable
   // array reference while inputs are unchanged (avoids O(P) fresh arrays per
   // list render invalidating the memoized group subtrees).
-  const orderedGroupsCacheRef = React.useRef<Map<string, { groups: SessionGroup[]; ordered: SessionGroup[] }>>(new Map());
+  const orderedGroupsCacheRef = React.useRef<Map<string, { groups: SessionGroup<CatalogSessionNode>[]; ordered: SessionGroup<CatalogSessionNode>[] }>>(new Map());
   const orderedGroupsCacheGetOrderedGroupsRef = React.useRef<typeof props.getOrderedGroups>(props.getOrderedGroups);
   if (orderedGroupsCacheGetOrderedGroupsRef.current !== props.getOrderedGroups) {
     orderedGroupsCacheGetOrderedGroupsRef.current = props.getOrderedGroups;
     orderedGroupsCacheRef.current.clear();
   }
-  const cachedGetOrderedGroups = (projectId: string, groups: SessionGroup[]): SessionGroup[] => {
+  const cachedGetOrderedGroups = (projectId: string, groups: SessionGroup<CatalogSessionNode>[]): SessionGroup<CatalogSessionNode>[] => {
     const cache = orderedGroupsCacheRef.current;
     const hit = cache.get(projectId);
     if (hit && hit.groups === groups) {

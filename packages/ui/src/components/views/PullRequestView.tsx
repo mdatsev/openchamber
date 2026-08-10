@@ -1,7 +1,10 @@
 import React from 'react';
 import { Icon } from '@/components/icon/Icon';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
-import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
+import {
+  useVisibleChatDirectory,
+  useVisibleOpenCodeSessionContext,
+} from '@/hooks/useVisibleChatDirectory';
 import { useDetectedWorktreeMetadata } from '@/hooks/useDetectedWorktreeRoot';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSessionWorktreeStore } from '@/sync/session-worktree-store';
@@ -35,13 +38,16 @@ const remoteCacheKey = (directory: string): string => `${getRuntimeKey()}::${dir
 export const PullRequestView: React.FC = () => {
   const { t } = useI18n();
   const { git } = useRuntimeAPIs();
-  const currentDirectory = useEffectiveDirectory();
+  const currentDirectory = useVisibleChatDirectory();
   const status = useGitStatus(currentDirectory ?? null);
   const branches = useGitBranches(currentDirectory ?? null);
   const { ensureAll } = useGitStore(useShallow((state) => ({ ensureAll: state.ensureAll })));
 
-  const currentSessionId = useSessionUIStore((s) => s.currentSessionId);
-  const newSessionDraft = useSessionUIStore((s) => s.newSessionDraft);
+  const {
+    isOpenCode: isVisibleOpenCodeChat,
+    sessionId: currentSessionId,
+    newSessionDraft,
+  } = useVisibleOpenCodeSessionContext();
   const worktreeMap = useSessionUIStore((s) => s.worktreeMetadata);
   const availableWorktrees = useSessionUIStore((s) => s.availableWorktrees);
 
@@ -71,13 +77,11 @@ export const PullRequestView: React.FC = () => {
     if (currentSessionId) {
       return worktreeMap.get(currentSessionId) ?? inferredWorktreeMetadata;
     }
-
-    if (newSessionDraft?.open) {
+    if (!isVisibleOpenCodeChat || newSessionDraft?.open) {
       return inferredWorktreeMetadata;
     }
-
     return undefined;
-  }, [currentSessionId, inferredWorktreeMetadata, newSessionDraft?.open, worktreeMap]);
+  }, [currentSessionId, inferredWorktreeMetadata, isVisibleOpenCodeChat, newSessionDraft?.open, worktreeMap]);
 
   const worktreeAttachment = useSessionWorktreeStore((s) =>
     currentSessionId ? s.getAttachment(currentSessionId) : undefined

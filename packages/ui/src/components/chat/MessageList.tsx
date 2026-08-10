@@ -1,16 +1,16 @@
 import React from 'react';
-import type { Part } from '@opencode-ai/sdk/v2';
+import type { TranscriptMessage, TranscriptMessageActions } from './transcript/types';
+import { TranscriptMessageActionsProvider } from './transcript/actions';
 import { elementScroll, useVirtualizer as useTanstackVirtualizer, type ReactVirtualizer, type VirtualItem } from '@tanstack/react-virtual';
 
 import ChatMessage from './ChatMessage';
 import { areOptionalRenderRelevantMessagesEqual, areRelevantTurnGroupingContextsEqual, areRenderRelevantMessagesEqual } from './message/renderCompare';
 import TurnItem from './components/TurnItem';
 import type { AnimationHandlers, ContentChangeReason } from '@/hooks/useChatAutoFollow';
-import type { ChatMessageEntry, TurnRecord, TurnGroupingContext } from './lib/turns/types';
+import type { TranscriptMessageEntry, TranscriptTurn, TranscriptTurnRecord, TurnGroupingContext } from './lib/turns/types';
 import { useTurnRecords } from './hooks/useTurnRecords';
 import { applyRetryOverlay } from './lib/turns/applyRetryOverlay';
 import { buildLiveStreamingEntry } from './lib/turns/streamingTailEntry';
-import { getNormalizedMessageForDisplay, hasCompactionPart } from './lib/messageDisplayNormalization';
 import { useUIStore } from '@/stores/useUIStore';
 import { useFeatureFlagsStore } from '@/stores/useFeatureFlagsStore';
 import { isHiddenUserMessage } from './message/hiddenUserMessage';
@@ -18,20 +18,14 @@ import { FadeInDisabledProvider } from './message/FadeInOnReveal';
 import { hasPendingUserSendAnimation, consumePendingUserSendAnimation } from '@/lib/userSendAnimation';
 import { streamPerfCount, streamPerfMark, streamPerfMeasure } from '@/stores/utils/streamDebug';
 import type { StreamPhase } from './message/types';
-import { useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
-import { useSessionParts } from '@/sync/sync-context';
 import { isMobileSurfaceRuntime } from '@/lib/runtimeSurface';
 import type { ReviewTransferDirection } from '@/lib/reviewFlow';
-import {
-    USER_SHELL_MARKER,
-    isUserShellMarkerMessage,
-    getShellBridgeAssistantDetails,
-    type ShellBridgeDetails,
-} from './lib/shellBridge';
+
 
 const MESSAGE_LIST_VIRTUALIZE_THRESHOLD = 5;
-const EMPTY_STATIC_ENTRY_MESSAGES: ChatMessageEntry[] = [];
+const EMPTY_STATIC_ENTRY_MESSAGES: TranscriptMessageEntry[] = [];
 const EMPTY_UNGROUPED_MESSAGE_IDS = new Set<string>();
+const EMPTY_MESSAGE_ACTIONS: TranscriptMessageActions = {};
 const TIMELINE_CACHE_LIMIT = 16;
 
 const sameKeys = (a: readonly string[] | undefined, b: readonly string[] | undefined): boolean => {
@@ -130,81 +124,11 @@ const useStableEvent = <TArgs extends unknown[], TResult>(handler: (...args: TAr
     return React.useCallback((...args: TArgs) => handlerRef.current(...args), []);
 };
 
-const resolveMessageRole = (message: ChatMessageEntry): string | null => {
-    const info = message.info as unknown as { clientRole?: string | null | undefined; role?: string | null | undefined };
-    return (typeof info.clientRole === 'string' ? info.clientRole : null)
-        ?? (typeof info.role === 'string' ? info.role : null)
-        ?? null;
-};
+const resolveMessageRole = (message: TranscriptMessageEntry): string => message.role;
 
-const getPartText = (part: Part): string => {
-    const text = (part as { text?: unknown }).text;
-    if (typeof text === 'string') {
-        return text;
-    }
-    const content = (part as { content?: unknown }).content;
-    if (typeof content === 'string') {
-        return content;
-    }
-    return '';
-};
-
-const normalizeCompactionSummaryMessage = (
-    message: ChatMessageEntry,
-    compactionCommandIds: Set<string>,
-): ChatMessageEntry => {
-    const role = resolveMessageRole(message);
-    if (role !== 'system') {
-        return message;
-    }
-
-    const parentID = getMessageParentId(message);
-    if (!parentID || !compactionCommandIds.has(parentID)) {
-        return message;
-    }
-
-    const info = message.info as unknown as { clientRole?: string | null | undefined };
-    if (info.clientRole === 'assistant') {
-        return message;
-    }
-
-    return {
-        ...message,
-        info: ({
-            ...(message.info as unknown as Record<string, unknown>),
-            clientRole: 'assistant',
-        } as unknown as typeof message.info),
-    };
-};
-
-const isAssistantMessageCompleted = (message: ChatMessageEntry): boolean => {
-    const info = message.info as { time?: { completed?: unknown }; status?: unknown };
-    const completed = info.time?.completed;
-    const status = info.status;
-    if (typeof completed !== 'number' || completed <= 0) {
-        return false;
-    }
-    if (typeof status === 'string') {
-        return status === 'completed';
-    }
-    return true;
-};
-
-const isUserSubtaskMessage = (message: ChatMessageEntry | undefined): boolean => {
-    if (!message) return false;
-    if (resolveMessageRole(message) !== 'user') return false;
-    return message.parts.some((part) => part?.type === 'subtask');
-};
-
-const getMessageId = (message: ChatMessageEntry | undefined): string | null => {
-    if (!message) return null;
-    const id = (message.info as unknown as { id?: unknown }).id;
-    return typeof id === 'string' && id.trim().length > 0 ? id : null;
-};
-
-const getMessageParentId = (message: ChatMessageEntry): string | null => {
-    const parentID = (message.info as unknown as { parentID?: unknown }).parentID;
-    return typeof parentID === 'string' && parentID.trim().length > 0 ? parentID : null;
+const isAssistantMessageCompleted = (message: TranscriptMessageEntry): boolean => {
+    if (typeof message.completedAt !== 'number' || message.completedAt <= 0) return false;
+    return typeof message.status === 'string' ? message.status === 'completed' : true;
 };
 
 const isInsideStuckSticky = (node: HTMLElement, container: HTMLElement, containerTop: number): boolean => {
@@ -222,136 +146,11 @@ const isInsideStuckSticky = (node: HTMLElement, container: HTMLElement, containe
     return false;
 };
 
-
-const readTaskSessionId = (toolPart: Part): string | null => {
-    const partRecord = toolPart as unknown as {
-        state?: {
-            metadata?: {
-                sessionId?: unknown;
-                sessionID?: unknown;
-            };
-            output?: unknown;
-        };
-    };
-    const metadata = partRecord.state?.metadata;
-    const fromMetadata =
-        (typeof metadata?.sessionID === 'string' && metadata.sessionID.trim().length > 0
-            ? metadata.sessionID.trim()
-            : null)
-        ?? (typeof metadata?.sessionId === 'string' && metadata.sessionId.trim().length > 0
-            ? metadata.sessionId.trim()
-            : null);
-    if (fromMetadata) return fromMetadata;
-
-    const output = partRecord.state?.output;
-    if (typeof output === 'string') {
-        const match = output.match(/task_id\s*:\s*([^\s<"']+)/i);
-        if (match?.[1]) {
-            return match[1];
-        }
-    }
-
-    return null;
-};
-
-const isSyntheticSubtaskBridgeAssistant = (message: ChatMessageEntry): { hide: boolean; taskSessionId: string | null } => {
-    if (resolveMessageRole(message) !== 'assistant') {
-        return { hide: false, taskSessionId: null };
-    }
-
-    if (message.parts.length !== 1) {
-        return { hide: false, taskSessionId: null };
-    }
-
-    const onlyPart = message.parts[0] as unknown as {
-        type?: unknown;
-        tool?: unknown;
-    } | null | undefined;
-
-    if (onlyPart?.type !== 'tool') {
-        return { hide: false, taskSessionId: null };
-    }
-
-    const toolName = typeof onlyPart.tool === 'string' ? onlyPart.tool.toLowerCase() : '';
-    if (toolName !== 'task') {
-        return { hide: false, taskSessionId: null };
-    }
-
-    return {
-        hide: true,
-        taskSessionId: readTaskSessionId(message.parts[0]),
-    };
-};
-
-const withSubtaskSessionId = (message: ChatMessageEntry, taskSessionId: string | null): ChatMessageEntry => {
-    if (!taskSessionId) return message;
-    const nextParts = message.parts.map((part) => {
-        if (part?.type !== 'subtask') return part;
-        const existing = (part as unknown as { taskSessionID?: unknown }).taskSessionID;
-        if (typeof existing === 'string' && existing.trim().length > 0) return part;
-        return {
-            ...part,
-            taskSessionID: taskSessionId,
-        } as Part;
-    });
-
-    return {
-        ...message,
-        parts: nextParts,
-    };
-};
-
-const withShellBridgeDetails = (message: ChatMessageEntry, details: ShellBridgeDetails | null): ChatMessageEntry => {
-    const command = typeof details?.command === 'string' ? details.command.trim() : '';
-    const output = typeof details?.output === 'string' ? details.output : '';
-    const status = typeof details?.status === 'string' ? details.status.trim() : '';
-
-    const nextParts: Part[] = [];
-    let injected = false;
-
-    for (const part of message.parts) {
-        if (!injected && part?.type === 'text') {
-            const text = (part as unknown as { text?: unknown }).text;
-            const synthetic = (part as unknown as { synthetic?: unknown }).synthetic;
-            if (synthetic === true && typeof text === 'string' && text.trim().startsWith(USER_SHELL_MARKER)) {
-                nextParts.push({
-                    type: 'text',
-                    text: '/shell',
-                    shellAction: {
-                        ...(command ? { command } : {}),
-                        ...(output ? { output } : {}),
-                        ...(status ? { status } : {}),
-                    },
-                } as unknown as Part);
-                injected = true;
-                continue;
-            }
-        }
-        nextParts.push(part);
-    }
-
-    if (!injected) {
-        nextParts.push({
-            type: 'text',
-            text: '/shell',
-            shellAction: {
-                ...(command ? { command } : {}),
-                ...(output ? { output } : {}),
-                ...(status ? { status } : {}),
-            },
-        } as unknown as Part);
-    }
-
-    return {
-        ...message,
-        parts: nextParts,
-    };
-};
-
 interface MessageListProps {
     sessionKey: string;
     disableStaging?: boolean;
-    messages: ChatMessageEntry[];
+    messages: TranscriptMessage[];
+    activeStreamingMessage?: TranscriptMessage | null;
     sessionIsWorking?: boolean;
     activeStreamingMessageId?: string | null;
     activeStreamingPhase?: StreamPhase | null;
@@ -366,7 +165,8 @@ interface MessageListProps {
     isLoadingOlder: boolean;
     scrollToBottom?: () => void;
     scrollRef?: React.RefObject<HTMLDivElement | null>;
-    directory?: string;
+    messageActions?: TranscriptMessageActions;
+    reviewTransferDirection?: ReviewTransferDirection | null;
 }
 
 export interface MessageListHandle {
@@ -383,20 +183,20 @@ type RenderEntry =
     | {
         kind: 'ungrouped';
         key: string;
-        message: ChatMessageEntry;
-        previousMessage?: ChatMessageEntry;
-        nextMessage?: ChatMessageEntry;
+        message: TranscriptMessageEntry;
+        previousMessage?: TranscriptMessageEntry;
+        nextMessage?: TranscriptMessageEntry;
     }
-    | { kind: 'turn'; key: string; turn: TurnRecord; isLastTurn: boolean; nextEntryFirstMessage?: ChatMessageEntry };
+    | { kind: 'turn'; key: string; turn: TranscriptTurnRecord; isLastTurn: boolean; nextEntryFirstMessage?: TranscriptMessageEntry };
 
 type TurnUiState = { isExpanded: boolean };
 
 
 
 interface MessageRowProps {
-    message: ChatMessageEntry;
-    previousMessage?: ChatMessageEntry;
-    nextMessage?: ChatMessageEntry;
+    message: TranscriptMessageEntry;
+    previousMessage?: TranscriptMessageEntry;
+    nextMessage?: TranscriptMessageEntry;
     turnGroupingContext?: TurnGroupingContext;
     assistantHeaderMessageId?: string;
     isInActiveTurn?: boolean;
@@ -452,7 +252,7 @@ const MessageRow = React.memo<MessageRowProps>(({
         && prev.onUserAnimationConsumed === next.onUserAnimationConsumed
         && prev.onContentChange === next.onContentChange
         && prev.scrollToBottom === next.scrollToBottom
-        && areRelevantTurnGroupingContextsEqual(prevTurn, nextTurn, prev.message.info.id, resolveMessageRole(prev.message) === 'user')
+        && areRelevantTurnGroupingContextsEqual(prevTurn, nextTurn, prev.message.id, resolveMessageRole(prev.message) === 'user')
         && prev.assistantHeaderMessageId === next.assistantHeaderMessageId
         && prev.isInActiveTurn === next.isInActiveTurn
         && prev.activeStreamingPhase === next.activeStreamingPhase
@@ -469,9 +269,9 @@ const MessageRow = React.memo<MessageRowProps>(({
 MessageRow.displayName = 'MessageRow';
 
 interface TurnBlockProps {
-    turn: TurnRecord;
+    turn: TranscriptTurnRecord;
     isLastTurn: boolean;
-    nextEntryFirstMessage?: ChatMessageEntry;
+    nextEntryFirstMessage?: TranscriptMessageEntry;
     sessionIsWorking: boolean;
     defaultActivityExpanded: boolean;
     turnUiStates: Map<string, TurnUiState>;
@@ -481,7 +281,7 @@ interface TurnBlockProps {
     getAnimationHandlers: (messageId: string) => AnimationHandlers;
     scrollToBottom?: () => void;
     stickyUserHeader?: boolean;
-    shouldAnimateUserMessage: (message: ChatMessageEntry) => boolean;
+    shouldAnimateUserMessage: (message: TranscriptMessageEntry) => boolean;
     onUserAnimationConsumed: (messageId: string) => void;
     activeStreamingMessageId?: string | null;
     activeStreamingPhase?: StreamPhase | null;
@@ -521,20 +321,20 @@ const TurnBlock = React.memo(({
         const ordered = [turn.userMessage, ...turn.assistantMessages];
         const lookup = new Map<string, number>();
         ordered.forEach((message, index) => {
-            lookup.set(message.info.id, index);
+            lookup.set(message.id, index);
         });
         return { ordered, lookup };
     }, [turn.assistantMessages, turn.userMessage]);
 
     const streamingAssistantMessageId = React.useMemo(() => {
-        if (activeStreamingMessageId && turn.assistantMessages.some((assistant) => assistant.info.id === activeStreamingMessageId)) {
+        if (activeStreamingMessageId && turn.assistantMessages.some((assistant) => assistant.id === activeStreamingMessageId)) {
             return activeStreamingMessageId;
         }
 
         for (let index = turn.assistantMessages.length - 1; index >= 0; index -= 1) {
             const assistant = turn.assistantMessages[index];
             if (!isAssistantMessageCompleted(assistant)) {
-                return assistant.info.id;
+                return assistant.id;
             }
         }
 
@@ -552,10 +352,10 @@ const TurnBlock = React.memo(({
         }
 
         if (streamingAssistantMessageId) {
-            const completedIds = new Set(completed.map((assistant) => assistant.info.id));
+            const completedIds = new Set(completed.map((assistant) => assistant.id));
             return turn.assistantMessages.filter((assistant) => (
-                completedIds.has(assistant.info.id)
-                || assistant.info.id === streamingAssistantMessageId
+                completedIds.has(assistant.id)
+                || assistant.id === streamingAssistantMessageId
             ));
         }
 
@@ -576,13 +376,13 @@ const TurnBlock = React.memo(({
     const visibleAssistantIds = React.useMemo(() => {
         const ids = new Map<string, number>();
         visibleAssistantMessages.forEach((assistant, index) => {
-            ids.set(assistant.info.id, index);
+            ids.set(assistant.id, index);
         });
         return ids;
     }, [visibleAssistantMessages]);
 
     const completedAssistantIdSet = React.useMemo(() => {
-        return new Set(completedAssistantMessages.map((assistant) => assistant.info.id));
+        return new Set(completedAssistantMessages.map((assistant) => assistant.id));
     }, [completedAssistantMessages]);
 
     const visibleActivityMessageIdSet = React.useMemo(() => {
@@ -601,7 +401,7 @@ const TurnBlock = React.memo(({
         if (turnIsInActiveStream && streamingAssistantMessageId) {
             return streamingAssistantMessageId;
         }
-        return visibleAssistantMessages[0]?.info.id;
+        return visibleAssistantMessages[0]?.id;
     }, [streamingAssistantMessageId, turnIsInActiveStream, visibleAssistantMessages]);
 
     const visibleActivityParts = React.useMemo(() => {
@@ -643,14 +443,8 @@ const TurnBlock = React.memo(({
     }, [chatRenderMode, visibleActivityMessageIdSet, turn.activitySegments, turn.assistantMessages.length]);
 
     const turnGroupingContextBase = React.useMemo(() => {
-        const userCreatedAt = (turn.userMessage.info.time as { created?: number } | undefined)?.created;
-        // OpenCode 1.4.0 moved variant from top-level to model.variant on UserMessage.
-        // Prefer the new location, fall back to the legacy one for older servers.
-        const info = turn.userMessage.info as { variant?: unknown; model?: { variant?: unknown } } | undefined;
-        const rawVariant = info?.model?.variant ?? info?.variant;
-        const userMessageVariant = typeof rawVariant === 'string' && rawVariant.trim().length > 0
-            ? rawVariant
-            : undefined;
+        const userCreatedAt = turn.userMessage.createdAt;
+        const userMessageVariant = turn.userMessage.modelVariant ?? turn.userMessage.variant;
         return {
             turnId: turn.turnId,
             summaryBody: turn.summaryText,
@@ -664,23 +458,23 @@ const TurnBlock = React.memo(({
             userMessageCreatedAt: typeof userCreatedAt === 'number' ? userCreatedAt : undefined,
             userMessageVariant,
         };
-    }, [turn.changedFiles, turn.diffStats, turn.hasReasoning, turn.hasTools, turn.headerMessageId, turn.summaryText, turn.turnId, turn.userMessage.info, visibleActivityParts, visibleActivitySegments]);
+    }, [turn.changedFiles, turn.diffStats, turn.hasReasoning, turn.hasTools, turn.headerMessageId, turn.summaryText, turn.turnId, turn.userMessage, visibleActivityParts, visibleActivitySegments]);
 
     const renderMessage = React.useCallback(
-        (message: ChatMessageEntry) => {
+        (message: TranscriptMessageEntry) => {
             const messageRole = resolveMessageRole(message);
             const isUserMessage = messageRole === 'user';
-            const messageIndex = messageOrder.lookup.get(message.info.id);
-            const assistantIndex = visibleAssistantIds.get(message.info.id) ?? -1;
+            const messageIndex = messageOrder.lookup.get(message.id);
+            const assistantIndex = visibleAssistantIds.get(message.id) ?? -1;
             const isAssistantMessage = assistantIndex >= 0;
             const isFirstAssistant = assistantIndex === 0;
             const isLastAssistant = assistantIndex === visibleAssistantMessages.length - 1;
-            const isActivityOwner = Boolean(activityOwnerMessageId) && message.info.id === activityOwnerMessageId;
-            const hasAnchoredActivitySegment = visibleActivitySegments.some((segment) => segment.anchorMessageId === message.info.id);
+            const isActivityOwner = Boolean(activityOwnerMessageId) && message.id === activityOwnerMessageId;
+            const hasAnchoredActivitySegment = visibleActivitySegments.some((segment) => segment.anchorMessageId === message.id);
             const shouldAttachFullTurnContext = chatRenderMode === 'sorted'
                 ? isAssistantMessage
                 : (isActivityOwner || isFirstAssistant || isLastAssistant);
-            const assistantHeaderMessageId = visibleAssistantMessages[0]?.info.id ?? turn.headerMessageId;
+            const assistantHeaderMessageId = visibleAssistantMessages[0]?.id ?? turn.headerMessageId;
 
             const previousMessage = isUserMessage
                 ? undefined
@@ -703,7 +497,7 @@ const TurnBlock = React.memo(({
                     isWorking: isLastTurn && sessionIsWorking && (
                         chatRenderMode === 'sorted'
                             ? hasAnchoredActivitySegment
-                            : message.info.id === streamingAssistantMessageId
+                            : message.id === streamingAssistantMessageId
                     ),
                     hasTools: turn.hasTools,
                     hasReasoning: turn.hasReasoning,
@@ -724,19 +518,19 @@ const TurnBlock = React.memo(({
 
             return (
                 <MessageRow
-                    key={message.info.id}
+                    key={message.id}
                     message={message}
                     previousMessage={previousMessage}
                     nextMessage={nextMessage}
                     turnGroupingContext={turnGroupingContext}
                     assistantHeaderMessageId={assistantHeaderMessageId}
-                    isInActiveTurn={Boolean(streamingAssistantMessageId) && message.info.id === streamingAssistantMessageId}
-                    activeStreamingPhase={message.info.id === streamingAssistantMessageId ? activeStreamingPhase : null}
+                    isInActiveTurn={Boolean(streamingAssistantMessageId) && message.id === streamingAssistantMessageId}
+                    activeStreamingPhase={message.id === streamingAssistantMessageId ? activeStreamingPhase : null}
                     reviewTransferDirection={reviewTransferDirection}
                     animateUserOnMount={shouldAnimateUserMessage(message)}
                     onUserAnimationConsumed={onUserAnimationConsumed}
                     onContentChange={onMessageContentChange}
-                    animationHandlers={getAnimationHandlers(message.info.id)}
+                    animationHandlers={getAnimationHandlers(message.id)}
                     scrollToBottom={scrollToBottom}
                 />
             );
@@ -771,7 +565,7 @@ const TurnBlock = React.memo(({
         ]
     );
 
-    const renderableTurn = React.useMemo(() => {
+    const renderableTurn = React.useMemo<TranscriptTurn>(() => {
         if (visibleAssistantMessages === turn.assistantMessages) {
             return turn;
         }
@@ -793,13 +587,13 @@ const TurnBlock = React.memo(({
 TurnBlock.displayName = 'TurnBlock';
 
 interface UngroupedMessageRowProps {
-    message: ChatMessageEntry;
-    previousMessage?: ChatMessageEntry;
-    nextMessage?: ChatMessageEntry;
+    message: TranscriptMessageEntry;
+    previousMessage?: TranscriptMessageEntry;
+    nextMessage?: TranscriptMessageEntry;
     onMessageContentChange: (reason?: ContentChangeReason) => void;
     getAnimationHandlers: (messageId: string) => AnimationHandlers;
     scrollToBottom?: () => void;
-    shouldAnimateUserMessage: (message: ChatMessageEntry) => boolean;
+    shouldAnimateUserMessage: (message: TranscriptMessageEntry) => boolean;
     onUserAnimationConsumed: (messageId: string) => void;
     activeStreamingMessageId?: string | null;
     activeStreamingPhase?: StreamPhase | null;
@@ -827,10 +621,10 @@ const UngroupedMessageRow = React.memo(({
             animateUserOnMount={shouldAnimateUserMessage(message)}
             onUserAnimationConsumed={onUserAnimationConsumed}
             onContentChange={onMessageContentChange}
-            animationHandlers={getAnimationHandlers(message.info.id)}
+            animationHandlers={getAnimationHandlers(message.id)}
             scrollToBottom={scrollToBottom}
-            isInActiveTurn={Boolean(activeStreamingMessageId) && message.info.id === activeStreamingMessageId}
-            activeStreamingPhase={message.info.id === activeStreamingMessageId ? activeStreamingPhase : null}
+            isInActiveTurn={Boolean(activeStreamingMessageId) && message.id === activeStreamingMessageId}
+            activeStreamingPhase={message.id === activeStreamingMessageId ? activeStreamingPhase : null}
             reviewTransferDirection={reviewTransferDirection}
         />
     );
@@ -849,23 +643,23 @@ interface MessageListEntryProps {
     turnUiStates: Map<string, TurnUiState>;
     onToggleTurnGroup: (turnId: string) => void;
     chatRenderMode: 'sorted' | 'live';
-    shouldAnimateUserMessage: (message: ChatMessageEntry) => boolean;
+    shouldAnimateUserMessage: (message: TranscriptMessageEntry) => boolean;
     onUserAnimationConsumed: (messageId: string) => void;
     activeStreamingMessageId?: string | null;
     activeStreamingPhase?: StreamPhase | null;
     reviewTransferDirection?: ReviewTransferDirection | null;
 }
 
-const turnContainsMessageId = (turn: TurnRecord, messageId: string | null | undefined): boolean => {
+const turnContainsMessageId = (turn: TranscriptTurnRecord, messageId: string | null | undefined): boolean => {
     if (!messageId) {
         return false;
     }
 
-    if (turn.userMessage.info.id === messageId) {
+    if (turn.userMessage.id === messageId) {
         return true;
     }
 
-    return turn.assistantMessages.some((assistant) => assistant.info.id === messageId);
+    return turn.assistantMessages.some((assistant) => assistant.id === messageId);
 };
 
 const MessageListEntry = React.memo(({
@@ -945,7 +739,7 @@ type StaticHistoryListProps = {
     turnUiStates: Map<string, TurnUiState>;
     onToggleTurnGroup: (turnId: string) => void;
     chatRenderMode: 'sorted' | 'live';
-    shouldAnimateUserMessage: (message: ChatMessageEntry) => boolean;
+    shouldAnimateUserMessage: (message: TranscriptMessageEntry) => boolean;
     onUserAnimationConsumed: (messageId: string) => void;
     reviewTransferDirection?: ReviewTransferDirection | null;
 };
@@ -1184,7 +978,7 @@ StaticHistoryList.displayName = 'StaticHistoryList';
 
 const StreamingTailContent: React.FC<{
     entry: RenderEntry;
-    directory?: string;
+    activeStreamingMessage?: TranscriptMessage | null;
     onMessageContentChange: (reason?: ContentChangeReason) => void;
     getAnimationHandlers: (messageId: string) => AnimationHandlers;
     scrollToBottom?: () => void;
@@ -1195,14 +989,14 @@ const StreamingTailContent: React.FC<{
     onToggleTurnGroup: (turnId: string) => void;
     chatRenderMode: 'sorted' | 'live';
     showTurnChangedFiles: boolean;
-    shouldAnimateUserMessage: (message: ChatMessageEntry) => boolean;
+    shouldAnimateUserMessage: (message: TranscriptMessageEntry) => boolean;
     onUserAnimationConsumed: (messageId: string) => void;
     activeStreamingMessageId?: string | null;
     activeStreamingPhase?: StreamPhase | null;
     reviewTransferDirection?: ReviewTransferDirection | null;
 }> = ({
     entry,
-    directory,
+    activeStreamingMessage,
     onMessageContentChange,
     getAnimationHandlers,
     scrollToBottom,
@@ -1219,15 +1013,14 @@ const StreamingTailContent: React.FC<{
     activeStreamingPhase,
     reviewTransferDirection,
 }) => {
-    const liveParts = useSessionParts(activeStreamingMessageId ?? '', directory);
     const planModeEnabled = useFeatureFlagsStore((state) => state.planModeEnabled);
     const liveEntry = React.useMemo(() => buildLiveStreamingEntry(entry, {
         activeStreamingMessageId,
-        liveParts,
+        liveMessage: activeStreamingMessage,
         showTextJustificationActivity: chatRenderMode === 'sorted',
         showTurnChangedFiles,
         mergeHiddenUserTurns: { planModeEnabled },
-    }), [activeStreamingMessageId, chatRenderMode, entry, liveParts, showTurnChangedFiles, planModeEnabled]);
+    }), [activeStreamingMessage, activeStreamingMessageId, chatRenderMode, entry, showTurnChangedFiles, planModeEnabled]);
 
     return (
         <MessageListEntry
@@ -1255,6 +1048,7 @@ StreamingTailContent.displayName = 'StreamingTailContent';
 const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(({
     sessionKey,
     messages,
+    activeStreamingMessage = null,
     sessionIsWorking = false,
     activeStreamingMessageId = null,
     activeStreamingPhase = null,
@@ -1263,7 +1057,8 @@ const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(({
     getAnimationHandlers,
     scrollToBottom,
     scrollRef,
-    directory,
+    messageActions,
+    reviewTransferDirection = null,
 }, ref) => {
     streamPerfMark('react.message_list_render');
     streamPerfCount('ui.message_list.render');
@@ -1272,9 +1067,6 @@ const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(({
     const activityRenderMode = useUIStore((state) => state.activityRenderMode);
     const showTurnChangedFiles = useUIStore((state) => state.showTurnChangedFiles);
     const defaultActivityExpanded = activityRenderMode === 'summary';
-    const reviewTransferDirection = useGlobalSessionsStore((state) => {
-        return state.reviewTransferBySessionId.get(sessionKey) ?? null;
-    });
     const [turnUiStates, setTurnUiStates] = React.useState<Map<string, TurnUiState>>(() => new Map());
     const userAnimationRef = React.useRef<{
         sessionKey: string | undefined;
@@ -1300,62 +1092,10 @@ const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(({
     }, [defaultActivityExpanded]);
 
 
-    const baseDisplayMessages = React.useMemo(() => streamPerfMeasure('ui.message_list.base_display_ms', () => {
-        const seenIds = new Set<string>();
-        const latestById = new Map<string, ChatMessageEntry>();
-        const dedupedMessages: ChatMessageEntry[] = [];
-        for (const message of messages) {
-            const messageId = message.info?.id;
-            if (typeof messageId === 'string') latestById.set(messageId, message);
-        }
-
-        // Preserve the first occurrence's chronological position, but use the last
-        // value because prepended history can overlap with newer live store data.
-        for (let index = 0; index < messages.length; index += 1) {
-            const message = messages[index];
-            const messageId = message.info?.id;
-            if (typeof messageId === 'string') {
-                if (seenIds.has(messageId)) {
-                    continue;
-                }
-                seenIds.add(messageId);
-            }
-            dedupedMessages.push(getNormalizedMessageForDisplay(
-                typeof messageId === 'string' ? latestById.get(messageId) ?? message : message,
-            ));
-        }
-
-        const output: ChatMessageEntry[] = [];
-        const compactionCommandIds = new Set<string>();
-        for (let index = 0; index < dedupedMessages.length; index += 1) {
-            const current = dedupedMessages[index];
-            const currentWithRole = normalizeCompactionSummaryMessage(current, compactionCommandIds);
-            if (hasCompactionPart(current) || current.parts.some((part) => part.type === 'text' && getPartText(part).trim() === '/compact')) {
-                compactionCommandIds.add(current.info.id);
-            }
-            const previous = output.length > 0 ? output[output.length - 1] : undefined;
-
-            if (isUserSubtaskMessage(previous)) {
-                const bridge = isSyntheticSubtaskBridgeAssistant(currentWithRole);
-                if (bridge.hide) {
-                    output[output.length - 1] = withSubtaskSessionId(previous as ChatMessageEntry, bridge.taskSessionId);
-                    continue;
-                }
-            }
-
-            if (isUserShellMarkerMessage(previous)) {
-                const bridge = getShellBridgeAssistantDetails(currentWithRole, getMessageId(previous));
-                if (bridge.hide) {
-                    output[output.length - 1] = withShellBridgeDetails(previous as ChatMessageEntry, bridge.details);
-                    continue;
-                }
-            }
-
-            output.push(currentWithRole);
-        }
-
-        return output;
-    }), [messages]);
+    const baseDisplayMessages = React.useMemo(
+        () => messages.filter((message) => !message.hidden || message.isCompactionSummary),
+        [messages],
+    );
 
     const historyContentRef = React.useRef<HTMLDivElement | null>(null);
     const resolveScrollContainer = React.useCallback((): HTMLDivElement | null => {
@@ -1401,24 +1141,24 @@ const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(({
 
         const turnEntryByUserMessageId = new Map<string, RenderEntry>();
         turnEntries.forEach((entry) => {
-            turnEntryByUserMessageId.set(entry.turn.userMessage.info.id, entry);
+            turnEntryByUserMessageId.set(entry.turn.userMessage.id, entry);
         });
 
         const orderedEntries: RenderEntry[] = [];
         staticEntryMessages.forEach((message, index) => {
-            const turnEntry = turnEntryByUserMessageId.get(message.info.id);
+            const turnEntry = turnEntryByUserMessageId.get(message.id);
             if (turnEntry) {
                 orderedEntries.push(turnEntry);
                 return;
             }
 
-            if (!staticEntryUngroupedIds.has(message.info.id)) {
+            if (!staticEntryUngroupedIds.has(message.id)) {
                 return;
             }
 
             orderedEntries.push({
                 kind: 'ungrouped',
-                key: `msg:${message.info.id}`,
+                key: `msg:${message.id}`,
                 message,
                 previousMessage: index > 0 ? staticEntryMessages[index - 1] : undefined,
                 nextMessage: index < staticEntryMessages.length - 1 ? staticEntryMessages[index + 1] : undefined,
@@ -1443,13 +1183,13 @@ const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(({
         }
 
         const lastMessage = displayMessages[displayMessages.length - 1];
-        if (!lastMessage || !projection.ungroupedMessageIds.has(lastMessage.info.id)) {
+        if (!lastMessage || !projection.ungroupedMessageIds.has(lastMessage.id)) {
             return undefined;
         }
 
         return {
             kind: 'ungrouped',
-            key: `msg:${lastMessage.info.id}`,
+            key: `msg:${lastMessage.id}`,
             message: lastMessage,
             previousMessage: displayMessages.length > 1 ? displayMessages[displayMessages.length - 2] : undefined,
             nextMessage: undefined,
@@ -1512,7 +1252,7 @@ const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(({
     const currentUserOrder = React.useMemo(() => {
         return messages
             .filter((message) => resolveMessageRole(message) === 'user')
-            .map((message) => message.info.id);
+            .map((message) => message.id);
     }, [messages]);
 
     // Detect new user messages SYNCHRONOUSLY during render.
@@ -1547,9 +1287,9 @@ const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(({
         anim.previousOrder = currentUserOrder;
     }
 
-    const shouldAnimateUserMessage = React.useCallback((message: ChatMessageEntry): boolean => {
+    const shouldAnimateUserMessage = React.useCallback((message: TranscriptMessageEntry): boolean => {
         if (resolveMessageRole(message) !== 'user') return false;
-        return userAnimationRef.current.animatedIds.has(message.info.id);
+        return userAnimationRef.current.animatedIds.has(message.id);
     }, []);
 
     const onUserAnimationConsumed = React.useCallback((messageId: string) => {
@@ -1561,12 +1301,12 @@ const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(({
 
         allEntries.forEach((entry, index) => {
             if (entry.kind === 'ungrouped') {
-                indexMap.set(entry.message.info.id, index);
+                indexMap.set(entry.message.id, index);
                 return;
             }
-            indexMap.set(entry.turn.userMessage.info.id, index);
+            indexMap.set(entry.turn.userMessage.id, index);
             entry.turn.assistantMessages.forEach((message) => {
-                indexMap.set(message.info.id, index);
+                indexMap.set(message.id, index);
             });
         });
 
@@ -1819,6 +1559,7 @@ const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(({
     const disableFadeIn = false;
 
     return (
+        <TranscriptMessageActionsProvider value={messageActions ?? EMPTY_MESSAGE_ACTIONS}>
         <div>
                 <FadeInDisabledProvider disabled={disableFadeIn}>
                     <div className="relative w-full">
@@ -1851,7 +1592,7 @@ const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(({
                         {trailingStreamingEntry ? (
                             <StreamingTailContent
                                 entry={trailingStreamingEntry}
-                                directory={directory}
+                                activeStreamingMessage={activeStreamingMessage}
                                 onMessageContentChange={stableTailContentChange}
                                 getAnimationHandlers={stableGetAnimationHandlers}
                                 scrollToBottom={stableScrollToBottom}
@@ -1873,6 +1614,7 @@ const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(({
                 </FadeInDisabledProvider>
 
         </div>
+        </TranscriptMessageActionsProvider>
     );
 });
 

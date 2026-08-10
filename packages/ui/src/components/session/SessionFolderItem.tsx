@@ -27,7 +27,6 @@ interface SessionFolderItemProps<TSessionNode> {
   renderSessionNode: (
     node: TSessionNode,
     depth?: number,
-    groupDir?: string | null,
     projectId?: string | null,
     archivedBucket?: boolean,
     secondaryMeta?: { projectLabel?: string | null; branchLabel?: string | null } | null,
@@ -41,7 +40,6 @@ interface SessionFolderItemProps<TSessionNode> {
    * can answer with a single string compare instead of a recursive walk.
    */
   getRenderExtras?: (node: TSessionNode) => SessionNodeRenderExtras<TSessionNode> | undefined;
-  groupDirectory?: string | null;
   projectId?: string | null;
   mobileVariant?: boolean;
   alwaysShowActions?: boolean;
@@ -76,7 +74,6 @@ const SessionFolderItemBase = <TSessionNode,>({
   onDelete,
   renderSessionNode,
   getRenderExtras,
-  groupDirectory,
   projectId,
   mobileVariant = false,
   alwaysShowActions = mobileVariant,
@@ -348,7 +345,7 @@ const SessionFolderItemBase = <TSessionNode,>({
           {/* Then sessions */}
           {sessions.length > 0 ? (
             sessions.map((node) =>
-              renderSessionNode(node, 0, groupDirectory ?? null, projectId ?? null, archivedBucket, undefined, 'project', getRenderExtras?.(node)),
+              renderSessionNode(node, 0, projectId ?? null, archivedBucket, undefined, 'project', getRenderExtras?.(node)),
             )
           ) : !subFolderItems ? (
             <div className="py-1 pl-1.5 text-left typography-micro text-muted-foreground/70">

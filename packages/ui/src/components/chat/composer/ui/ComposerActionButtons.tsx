@@ -12,20 +12,16 @@ import { Icon } from '@/components/icon/Icon';
 import { StopIcon } from '@/components/icons/StopIcon';
 import { useI18n } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
+import {
+    useComposerController,
+    useComposerControllerSnapshot,
+} from '../controller/useComposerController';
 
 type ComposerActionButtonsProps = {
     isMobile: boolean;
     footerIconButtonClass: string;
     sendIconSizeClass: string;
     stopIconSizeClass: string;
-    canSend: boolean;
-    canAbort: boolean;
-    hasContent: boolean;
-    currentSessionId: string | null;
-    newSessionDraftOpen: boolean;
-    onPrimaryAction: () => void;
-    onQueueMessage: () => void;
-    onAbort: () => void;
 };
 
 export const ComposerActionButtons = React.memo(function ComposerActionButtons(props: ComposerActionButtonsProps) {
@@ -34,32 +30,26 @@ export const ComposerActionButtons = React.memo(function ComposerActionButtons(p
         footerIconButtonClass,
         sendIconSizeClass,
         stopIconSizeClass,
-        canSend,
-        canAbort,
-        hasContent,
-        currentSessionId,
-        newSessionDraftOpen,
-        onPrimaryAction,
-        onQueueMessage,
-        onAbort,
     } = props;
     const { t } = useI18n();
+    const { actions } = useComposerController();
+    const { canSend, canAbort, hasContent, canSubmit, canQueue } = useComposerControllerSnapshot().actions;
 
     const sendButton = (
         <button
             type={isMobile ? 'button' : 'submit'}
-            disabled={!canSend || (!currentSessionId && !newSessionDraftOpen)}
+            disabled={!canSend || !canSubmit}
             onClick={(event) => {
                 if (!isMobile) {
                     return;
                 }
 
                 event.preventDefault();
-                onPrimaryAction();
+                actions.primaryAction();
             }}
             className={cn(
                 footerIconButtonClass,
-                canSend && (currentSessionId || newSessionDraftOpen)
+                canSend && canSubmit
                     ? 'text-primary hover:text-primary'
                     : 'opacity-30'
             )}
@@ -75,20 +65,20 @@ export const ComposerActionButtons = React.memo(function ComposerActionButtons(p
 
     return (
         <div className="relative">
-            {hasContent ? (
+            {hasContent && canQueue ? (
                 <button
                     type="button"
-                    disabled={!currentSessionId}
+                    disabled={!canQueue}
                     onClick={(event) => {
                         if (isMobile) {
                             event.preventDefault();
                         }
-                        onQueueMessage();
+                        actions.queueMessage();
                     }}
                     className={cn(
                         footerIconButtonClass,
                         'absolute z-20 bottom-full left-1/2 -translate-x-1/2 mb-1',
-                        currentSessionId ? 'text-primary hover:text-primary' : 'opacity-30'
+                        canQueue ? 'text-primary hover:text-primary' : 'opacity-30'
                     )}
                     aria-label={t('chat.chatInput.actions.queueMessageAria')}
                 >
@@ -97,7 +87,7 @@ export const ComposerActionButtons = React.memo(function ComposerActionButtons(p
             ) : null}
             <button
                 type="button"
-                onClick={onAbort}
+                onClick={actions.abort}
                 className={cn(
                     footerIconButtonClass,
                     'text-[var(--status-error)] hover:text-[var(--status-error)]'
@@ -113,12 +103,4 @@ export const ComposerActionButtons = React.memo(function ComposerActionButtons(p
     && prev.footerIconButtonClass === next.footerIconButtonClass
     && prev.sendIconSizeClass === next.sendIconSizeClass
     && prev.stopIconSizeClass === next.stopIconSizeClass
-    && prev.canSend === next.canSend
-    && prev.canAbort === next.canAbort
-    && prev.hasContent === next.hasContent
-    && prev.currentSessionId === next.currentSessionId
-    && prev.newSessionDraftOpen === next.newSessionDraftOpen
-    && prev.onPrimaryAction === next.onPrimaryAction
-    && prev.onQueueMessage === next.onQueueMessage
-    && prev.onAbort === next.onAbort
 ));

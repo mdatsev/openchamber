@@ -37,7 +37,7 @@ import type { ToolPopupContent } from './message/types';
 import { QueuedMessageChips } from './QueuedMessageChips';
 import { AutoReviewBanner } from './AutoReviewBanner';
 import type { FileMentionHandle } from './FileMentionAutocomplete';
-import type { CommandAutocompleteHandle, CommandInfo } from './CommandAutocomplete';
+import { CommandAutocomplete } from './CommandAutocomplete';
 import type { SkillAutocompleteHandle } from './SkillAutocomplete';
 import type { SnippetAutocompleteHandle } from './SnippetAutocomplete';
 import { cn } from "@/lib/utils";
@@ -139,6 +139,16 @@ import { MobilePillComposer } from './composer/ui/MobilePillComposer';
 import { ComposerContextChips } from './composer/ui/ComposerContextChips';
 import { LinkedReferenceRow } from './composer/ui/LinkedReferenceRow';
 import { RevertedMessageDock } from './composer/ui/RevertedMessageDock';
+import {
+    ComposerControllerProvider,
+    ComposerModelControls,
+} from './composer/controller/ComposerControllerProvider';
+import type {
+    ComposerCommandMenuRenderer,
+    ComposerController,
+    ComposerModelControlsRenderer,
+    ComposerCommandMenuHandle,
+} from './composer/controller/types';
 import { SessionSuggestionChip } from '@/components/chat/SessionSuggestionChip';
 import { SessionGoalRow } from '@/components/chat/SessionGoalRow';
 import { getOpenChamberCommands, parseSideChatCommand } from './openChamberCommands';
@@ -216,6 +226,25 @@ const MemoMobileAgentButton = React.memo(MobileAgentButton);
 const MemoMobileModelButton = React.memo(MobileModelButton);
 const MemoStatusRow = React.memo(StatusRow);
 
+const renderOpenCodeCommandMenu: ComposerCommandMenuRenderer = (props) => (
+    <CommandAutocomplete
+        ref={props.handleRef}
+        searchQuery={props.query}
+        onCommandSelect={(command) => props.onSelect(command.name)}
+        onClose={props.onClose}
+        style={props.style}
+    />
+);
+
+const renderOpenCodeModelControls: ComposerModelControlsRenderer = (props) => (
+    <MemoModelControls {...props} />
+);
+
+// ChatInput state is already observable through React. Changing the provider
+// value makes consumers read the new snapshot; non-React adapters can keep a
+// stable controller and notify this subscription directly.
+const subscribeToReactComposerState: ComposerController['subscribe'] = () => () => {};
+
 interface ChatInputProps {
     onOpenSettings?: () => void;
     scrollToBottom?: () => void;
@@ -229,7 +258,7 @@ const resolveChatDraftIdentity = (sessionId: string | null): ChatDraftIdentity |
     const directory = sessionId
         ? sessionState.getDirectoryForSession(sessionId) ?? sessionState.currentSessionDirectory
         : newSessionDirectory ?? useDirectoryStore.getState().currentDirectory;
-    return createChatDraftIdentity(getRuntimeKey(), directory, sessionId);
+    return createChatDraftIdentity(getRuntimeKey(), directory, sessionId, 'opencode');
 };
 
 const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollToBottom }) => {
@@ -284,7 +313,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
     const pendingDroppedAbsolutePathsRef = React.useRef<string[]>([]);
     const canAcceptDropRef = React.useRef(false);
     const mentionRef = React.useRef<FileMentionHandle>(null);
-    const commandRef = React.useRef<CommandAutocompleteHandle>(null);
+    const commandRef = React.useRef<ComposerCommandMenuHandle>(null);
     const skillRef = React.useRef<SkillAutocompleteHandle>(null);
     const snippetRef = React.useRef<SnippetAutocompleteHandle>(null);
     // Ref to track current message value without triggering re-renders in effects
@@ -309,6 +338,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
             activeRuntimeKey,
             currentSessionDirectoryForSync ?? currentDirectory,
             currentSessionId,
+            'opencode',
         ),
         [activeRuntimeKey, currentDirectory, currentSessionDirectoryForSync, currentSessionId],
     );
@@ -1378,7 +1408,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
     // it here so it routes through the same command-aware submit path.
     React.useEffect(() => {
         if (pendingPresetSubmit == null) return;
-        const text = useInputStore.getState().consumePendingPresetSubmit();
+        const text = useInputStore.getState().consumePendingPresetSubmit('opencode');
         if (text) submitPresetPrompt(text.text, text.type);
     }, [pendingPresetSubmit, submitPresetPrompt]);
 
@@ -1967,9 +1997,9 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         composerRef.current?.focus();
     };
 
-    const handleCommandSelect = (command: CommandInfo) => {
+    const handleCommandSelect = (commandName: string) => {
 
-        setMessage(`/${command.name} `);
+        setMessage(`/${commandName} `);
 
         closeAutocomplete();
 
@@ -2438,7 +2468,40 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         };
     }, []);
 
+    const composerController = React.useMemo<ComposerController>(() => {
+        const snapshot = {
+            actions: {
+                canSend,
+                canAbort,
+                hasContent,
+                canSubmit: Boolean(currentSessionId || newSessionDraftOpen),
+                canQueue: Boolean(currentSessionId),
+            },
+        };
+        return {
+            getSnapshot: () => snapshot,
+            subscribe: subscribeToReactComposerState,
+            actions: {
+                primaryAction: handlePrimaryAction,
+                queueMessage: handleQueueMessage,
+                abort: handleAbort,
+            },
+            renderCommandMenu: renderOpenCodeCommandMenu,
+            renderModelControls: renderOpenCodeModelControls,
+        };
+    }, [
+        canAbort,
+        canSend,
+        currentSessionId,
+        handleAbort,
+        handlePrimaryAction,
+        handleQueueMessage,
+        hasContent,
+        newSessionDraftOpen,
+    ]);
+
     return (
+        <ComposerControllerProvider controller={composerController}>
         <>
         <form
             ref={composerFormRef}
@@ -2563,7 +2626,6 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                         newSessionDraftOpen={newSessionDraftOpen}
                         hasContent={Boolean(hasContent)}
                         isVSCode={isVSCode}
-                        canAbort={canAbort}
                         footerIconButtonClass={footerIconButtonClass}
                         iconSizeClass={iconSizeClass}
                         stopIconSizeClass={stopIconSizeClass}
@@ -2576,7 +2638,6 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                         onOpenPrPicker={openPrPicker}
                         onOpenAttachSheet={openMobileAttachSheet}
                         onStartDictation={toggleDictation}
-                        onAbort={handleAbort}
                     />
                 ) : (
                 <>
@@ -2741,9 +2802,6 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                         iconSizeClass={iconSizeClass}
                         sendIconSizeClass={sendIconSizeClass}
                         stopIconSizeClass={stopIconSizeClass}
-                        canSend={canSend}
-                        canAbort={canAbort}
-                        hasContent={Boolean(hasContent)}
                         isExpandedInput={isExpandedInput}
                         permissionAutoAcceptEnabled={permissionAutoAcceptEnabled}
                         isPermissionAutoAcceptInteractive={isPermissionAutoAcceptInteractive}
@@ -2755,9 +2813,6 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                         onOpenAttachSheet={openMobileAttachSheet}
                         onToggleExpandedInput={handleToggleExpandedInput}
                         onTogglePermissionAutoAccept={handlePermissionAutoAcceptToggle}
-                        onPrimaryAction={handlePrimaryAction}
-                        onQueueMessage={handleQueueMessage}
-                        onAbort={handleAbort}
                         onStartDictation={toggleDictation}
                         onDictationInsert={handleDictationInsert}
                         onDictationInsertAndSend={handleDictationInsertAndSend}
@@ -2792,7 +2847,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                     outside the pill conditional so an open panel survives (and
                     stays visible over) the collapsed composer. */}
                 {isMobile ? (
-                    <MemoModelControls
+                    <ComposerModelControls
                         className="hidden"
                         mobilePanel={mobileControlsPanel}
                         onMobilePanelChange={setMobileControlsPanel}
@@ -2929,6 +2984,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
             />
         ) : null}
         </>
+        </ComposerControllerProvider>
     );
 };
 

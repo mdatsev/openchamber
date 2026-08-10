@@ -1,20 +1,31 @@
 import React from 'react';
-import type { Session } from '@opencode-ai/sdk/v2';
 
-import { useGlobalSessionsStore, resolveGlobalSessionDirectory } from '@/stores/useGlobalSessionsStore';
+import { isVSCodeRuntime } from '@/lib/desktop';
+import type { ChatHarness } from '@/lib/chat-identity';
+import { getRuntimeKey } from '@/lib/runtime-switch';
+import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
+import { useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useSessionPinnedStore } from '@/stores/useSessionPinnedStore';
 import { useGitAllBranches } from '@/stores/useGitStore';
-import type { SessionNode } from '../types';
-import { isPathWithinProject } from '../utils';
+import {
+  refreshPrimeCatalog,
+  usePrimeCatalogStore,
+} from '@/stores/usePrimeCatalogStore';
+import { createPrimeSessionCatalog } from '../primeSessionAdapter';
+import type { SessionCatalogNode } from '../sessionCatalog';
+import {
+  createOpenCodeSessionCatalog,
+  getOpenCodeCatalogBranchLabel,
+} from '../openCodeSessionAdapter';
+import { createSessionOwnershipIndex } from '../sessionOwnership';
 import { compareSessionsByLifecycleOrder, useSessionOrderingStore } from '@/sync/session-ordering';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { filterDiscoverableSessions } from '@/stores/useDisposableSideChatsStore';
+import { projectFreshPrimeActivityBySession, usePrimeLiveStore } from '@/stores/usePrimeLiveStore';
 
 export type SwitcherItem = {
-  node: SessionNode;
-  projectId: string | null;
-  groupDirectory: string | null;
+  node: SessionCatalogNode;
+  projectId: string;
   secondaryMeta: {
     projectLabel?: string | null;
     branchLabel?: string | null;
@@ -27,6 +38,7 @@ type SwitcherItemsOptions = {
   scopeProjectId?: string | null;
   /** How many parent sessions to return (default 7 — the desktop dropdown). */
   maxParents?: number;
+  harnesses?: readonly ChatHarness[];
 };
 
 const normalize = (value: string | null | undefined): string | null => {
@@ -36,8 +48,7 @@ const normalize = (value: string | null | undefined): string | null => {
   return replaced.length > 1 ? replaced.replace(/\/+$/, '') : replaced;
 };
 
-const formatProjectLabel = (project: { label?: string | null; path: string } | null): string | null => {
-  if (!project) return null;
+const formatProjectLabel = (project: { label?: string | null; path: string }): string | null => {
   const trimmed = project.label?.trim();
   if (trimmed) return trimmed;
   const segments = project.path.split(/[\\/]/).filter(Boolean);
@@ -45,7 +56,15 @@ const formatProjectLabel = (project: { label?: string | null; path: string } | n
 };
 
 export const useSwitcherItems = (enabled: boolean, options: SwitcherItemsOptions = {}): SwitcherItem[] => {
-  const { scopeProjectId = null, maxParents = MAX_PARENT_SESSIONS } = options;
+  const { scopeProjectId = null, maxParents = MAX_PARENT_SESSIONS, harnesses } = options;
+  const apis = useRuntimeAPIs();
+  const runtimeKey = getRuntimeKey();
+  const primeSnapshot = usePrimeCatalogStore((state) => state.byRuntime.get(runtimeKey) ?? null);
+  const primeLiveStates = usePrimeLiveStore((state) => state.byKey);
+  const primeLiveActivityBySessionId = React.useMemo(
+    () => projectFreshPrimeActivityBySession(runtimeKey, primeLiveStates),
+    [primeLiveStates, runtimeKey],
+  );
   const activeSessions = useGlobalSessionsStore((state) => state.activeSessions);
   const projects = useProjectsStore((state) => state.projects);
   const pinnedSessionIds = useSessionPinnedStore((state) => state.ids);
@@ -53,107 +72,127 @@ export const useSwitcherItems = (enabled: boolean, options: SwitcherItemsOptions
   const branchesByDirectory = useGitAllBranches();
   const availableWorktreesByProject = useSessionUIStore((state) => state.availableWorktreesByProject);
 
-  // Worktree sessions live OUTSIDE their project's path, so prefix matching
-  // can't resolve their project — and their branch is known from worktree
-  // discovery long before any git status is fetched for that directory.
-  const worktreeInfoByPath = React.useMemo(() => {
-    const map = new Map<string, { projectPath: string; branch: string | null }>();
-    for (const [projectPath, worktrees] of availableWorktreesByProject) {
-      const normalizedProjectPath = normalize(projectPath);
-      if (!normalizedProjectPath) continue;
+  React.useEffect(() => {
+    if (!enabled) return;
+    void refreshPrimeCatalog(runtimeKey, apis);
+  }, [apis, enabled, runtimeKey]);
+
+  const worktreeBranchesByDirectory = React.useMemo(() => {
+    const branches = new Map<string, string | null>();
+    for (const worktrees of availableWorktreesByProject.values()) {
       for (const worktree of worktrees) {
         const worktreePath = normalize(worktree.path);
         if (!worktreePath) continue;
-        map.set(worktreePath, { projectPath: normalizedProjectPath, branch: worktree.branch?.trim() || null });
+        branches.set(worktreePath, worktree.branch?.trim() || null);
       }
     }
-    return map;
+    return branches;
   }, [availableWorktreesByProject]);
 
   const normalizedProjects = React.useMemo(
-    () => projects
-      .map((project) => ({ ...project, normalizedPath: normalize(project.path) }))
-      .filter((project) => project.normalizedPath),
+    () => projects.flatMap((project) => {
+      const normalizedPath = normalize(project.path);
+      return normalizedPath ? [{ ...project, normalizedPath }] : [];
+    }),
     [projects],
   );
-
-  const findProjectForDirectory = React.useCallback(
-    (directory: string | null) => {
-      if (!directory) return null;
-      // Known worktree → its project, regardless of where the worktree lives.
-      const worktreeInfo = worktreeInfoByPath.get(normalize(directory) ?? directory);
-      if (worktreeInfo) {
-        const byPath = normalizedProjects.find((project) => project.normalizedPath === worktreeInfo.projectPath);
-        if (byPath) return byPath;
-      }
-      const matches = normalizedProjects
-        .filter((project) => isPathWithinProject(directory, project.normalizedPath))
-        .sort((a, b) => (b.normalizedPath?.length ?? 0) - (a.normalizedPath?.length ?? 0));
-      return matches[0] ?? null;
-    },
-    [normalizedProjects, worktreeInfoByPath],
+  const projectById = React.useMemo(
+    () => new Map(normalizedProjects.map((project) => [project.id, project])),
+    [normalizedProjects],
+  );
+  const harnessFilter = React.useMemo(
+    () => harnesses ? new Set(harnesses) : null,
+    [harnesses],
   );
 
-  const items = React.useMemo<SwitcherItem[]>(() => {
+  return React.useMemo<SwitcherItem[]>(() => {
     if (!enabled) return [];
-    const discoverableSessions = filterDiscoverableSessions(activeSessions);
 
-    const childrenByParent = new Map<string, Session[]>();
-    for (const session of discoverableSessions) {
-      const parentId = (session as Session & { parentID?: string | null }).parentID;
-      if (!parentId) continue;
-      if (session.time?.archived) continue;
-      const bucket = childrenByParent.get(parentId);
-      if (bucket) {
-        bucket.push(session);
-      } else {
-        childrenByParent.set(parentId, [session]);
+    const ownership = createSessionOwnershipIndex(
+      activeSessions,
+      normalizedProjects,
+      availableWorktreesByProject,
+      isVSCodeRuntime(),
+    );
+    const openCodeCatalog = createOpenCodeSessionCatalog({
+      sessions: activeSessions,
+      ownerBySessionId: ownership.bySessionId,
+      compareSessions: (left, right) => compareSessionsByLifecycleOrder(
+        left,
+        right,
+        pinnedSessionIds,
+        sessionOrderRanks,
+      ),
+      runtimeKey,
+    });
+    const primeCatalog = primeSnapshot
+      ? createPrimeSessionCatalog({
+          runtimeKey,
+          snapshot: primeSnapshot,
+          projects: normalizedProjects,
+          availableWorktreesByProject,
+          liveActivityBySessionId: primeLiveActivityBySessionId,
+        })
+      : null;
+    const openCodeOrder = new Map(openCodeCatalog.roots.map((node, index) => [node.session.identity.sessionId, index]));
+    const roots = [
+      ...openCodeCatalog.roots,
+      ...(primeCatalog?.roots ?? []),
+    ].filter((node) => !harnessFilter || harnessFilter.has(node.session.identity.harness));
+    roots.sort((left, right) => {
+      const leftPinned = left.session.identity.harness === 'opencode'
+        && pinnedSessionIds.has(left.session.identity.sessionId);
+      const rightPinned = right.session.identity.harness === 'opencode'
+        && pinnedSessionIds.has(right.session.identity.sessionId);
+      if (leftPinned !== rightPinned) return leftPinned ? -1 : 1;
+      if (left.session.identity.harness === 'opencode' && right.session.identity.harness === 'opencode') {
+        return (openCodeOrder.get(left.session.identity.sessionId) ?? 0)
+          - (openCodeOrder.get(right.session.identity.sessionId) ?? 0);
       }
-    }
-    childrenByParent.forEach((list) => {
-      list.sort((a, b) => compareSessionsByLifecycleOrder(a, b, pinnedSessionIds, sessionOrderRanks));
+      return right.session.updatedAt - left.session.updatedAt
+        || right.session.createdAt - left.session.createdAt
+        || left.session.identity.sessionId.localeCompare(right.session.identity.sessionId);
     });
 
-    const parents = discoverableSessions
-      .filter((session) => !session.time?.archived)
-      .filter((session) => !(session as Session & { parentID?: string | null }).parentID)
-      .filter((session) => {
-        if (!scopeProjectId) return true;
-        const directory = resolveGlobalSessionDirectory(session);
-        return findProjectForDirectory(directory)?.id === scopeProjectId;
-      })
-      .sort((a, b) => compareSessionsByLifecycleOrder(a, b, pinnedSessionIds, sessionOrderRanks))
-      .slice(0, maxParents);
-
-    const buildNode = (session: Session): SessionNode => {
-      const childSessions = childrenByParent.get(session.id) ?? [];
-      return {
-        session,
-        children: childSessions.map((child) => buildNode(child)),
-        worktree: null,
-      };
-    };
-
-    return parents.map((session) => {
-      const directory = resolveGlobalSessionDirectory(session);
-      const matchedProject = findProjectForDirectory(directory);
-      const projectLabel = formatProjectLabel(matchedProject);
-      // Live git branch when available; the discovered worktree branch fills
-      // in for directories whose git status hasn't been fetched yet.
-      const worktreeInfo = directory ? worktreeInfoByPath.get(normalize(directory) ?? directory) : null;
-      const liveBranch = directory ? branchesByDirectory.get(directory) : undefined;
-      const branchLabel = liveBranch ?? worktreeInfo?.branch ?? null;
-      return {
-        node: buildNode(session),
-        projectId: matchedProject?.id ?? null,
-        groupDirectory: directory,
-        secondaryMeta: {
-          projectLabel,
-          branchLabel: branchLabel && branchLabel !== projectLabel ? branchLabel : null,
-        },
-      };
-    });
-  }, [activeSessions, branchesByDirectory, enabled, findProjectForDirectory, maxParents, pinnedSessionIds, scopeProjectId, sessionOrderRanks, worktreeInfoByPath]);
-
-  return items;
+    return roots
+      .filter((node) => !scopeProjectId || node.ownership.projectId === scopeProjectId)
+      .slice(0, maxParents)
+      .flatMap((node) => {
+        const owner = node.ownership;
+        const project = projectById.get(owner.projectId);
+        if (!project) return [];
+        const projectLabel = formatProjectLabel(project);
+        const branchLabel = node.session.identity.harness === 'opencode'
+          ? getOpenCodeCatalogBranchLabel(
+              node.session,
+              branchesByDirectory,
+              worktreeBranchesByDirectory,
+            )
+          : null;
+        return [{
+          node,
+          projectId: owner.projectId,
+          secondaryMeta: {
+            projectLabel,
+            branchLabel: branchLabel && branchLabel !== projectLabel ? branchLabel : null,
+          },
+        }];
+      });
+  }, [
+    activeSessions,
+    availableWorktreesByProject,
+    branchesByDirectory,
+    enabled,
+    harnessFilter,
+    maxParents,
+    normalizedProjects,
+    pinnedSessionIds,
+    primeLiveActivityBySessionId,
+    primeSnapshot,
+    projectById,
+    runtimeKey,
+    scopeProjectId,
+    sessionOrderRanks,
+    worktreeBranchesByDirectory,
+  ]);
 };

@@ -1,12 +1,12 @@
 import React from 'react';
 import { cn } from '@/lib/utils';
-import type { Part } from '@opencode-ai/sdk/v2';
+import type { TranscriptTextPart } from '../../transcript/types';
 import type { AgentMentionInfo } from '../types';
 import { SimpleMarkdownRenderer } from '../../MarkdownRenderer';
 import { useUIStore } from '@/stores/useUIStore';
 import { useSkillsStore } from '@/stores/useSkillsStore';
 import { Icon } from "@/components/icon/Icon";
-import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
+import { useVisibleChatDirectory } from '@/hooks/useVisibleChatDirectory';
 import { getDirectoryForFilePath } from '@/lib/path-utils';
 import { useI18n } from '@/lib/i18n';
 import {
@@ -16,10 +16,8 @@ import {
 import { prepareUserMarkdownContent, SKILL_TOKEN_PATTERN } from './userTextPartContent';
 import { extractTerminalContexts } from '@/lib/messages/terminalContext';
 
-type PartWithText = Part & { text?: string; content?: string; value?: string };
-
 type UserTextPartProps = {
-    part: Part;
+    part: TranscriptTextPart;
     messageId: string;
     isMobile: boolean;
     agentMention?: AgentMentionInfo;
@@ -30,9 +28,7 @@ const normalizeUserMessageRenderingMode = (mode: unknown): 'markdown' | 'plain' 
 };
 
 const UserTextPart: React.FC<UserTextPartProps> = ({ part, messageId, agentMention }) => {
-    const partWithText = part as PartWithText;
-    const rawText = partWithText.text;
-    const serializedText = typeof rawText === 'string' ? rawText : partWithText.content || partWithText.value || '';
+    const serializedText = part.text;
     const terminalContextState = React.useMemo(() => extractTerminalContexts(serializedText), [serializedText]);
     const textContent = terminalContextState.visibleText;
 
@@ -42,7 +38,7 @@ const UserTextPart: React.FC<UserTextPartProps> = ({ part, messageId, agentMenti
     const collapsibleUserMessages = useUIStore((state) => state.collapsibleUserMessages);
     const skills = useSkillsStore((state) => state.skills);
     const openContextFile = useUIStore((state) => state.openContextFile);
-    const effectiveDirectory = useEffectiveDirectory();
+    const effectiveDirectory = useVisibleChatDirectory();
     const { t } = useI18n();
     const normalizedRenderingMode = normalizeUserMessageRenderingMode(userMessageRenderingMode);
     const isCollapsed = collapsibleUserMessages && !isExpanded;

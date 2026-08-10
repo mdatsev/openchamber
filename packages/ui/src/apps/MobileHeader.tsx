@@ -1,9 +1,14 @@
 import React from 'react';
 
 import { Icon } from '@/components/icon/Icon';
+import { ChatHarnessMarker } from '@/components/session/ChatHarnessMarker';
 import { useI18n } from '@/lib/i18n';
+import { getRuntimeKey } from '@/lib/runtime-switch';
 import { cn } from '@/lib/utils';
+import { useChatSelectionStore } from '@/stores/useChatSelectionStore';
+import { usePrimeCatalogRecord } from '@/stores/usePrimeCatalogStore';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
+import { getVisibleOpenCodeSessionId } from '@/sync/opencode-chat-selection';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSession } from '@/sync/sync-context';
 
@@ -23,24 +28,34 @@ export const MobileHeader: React.FC<{
   const [switcherOpen, setSwitcherOpen] = React.useState(false);
   const titleRef = React.useRef<HTMLButtonElement>(null);
   const currentDirectory = useDirectoryStore((state) => state.currentDirectory);
-  const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
+  const visibleChatIdentity = useChatSelectionStore((state) => state.visibleChatIdentity);
+  const currentSessionId = getVisibleOpenCodeSessionId(visibleChatIdentity, getRuntimeKey());
+  const passiveCatalogRecord = usePrimeCatalogRecord(visibleChatIdentity);
   const currentSessionDirectory = useSessionUIStore(
     React.useCallback((state) => (currentSessionId ? state.getDirectoryForSession(currentSessionId) : null), [currentSessionId]),
   );
   const effectiveDirectory = currentSessionDirectory || currentDirectory;
   const currentSession = useSession(currentSessionId, effectiveDirectory || undefined);
   const isNewSessionDraftOpen = useSessionUIStore((state) => Boolean(state.newSessionDraft?.open));
+  const newSessionDraftHarness = useSessionUIStore((state) => state.newSessionDraft.harness ?? 'opencode');
+  const visibleHeaderHarness = isNewSessionDraftOpen
+    ? newSessionDraftHarness
+    : visibleChatIdentity?.harness;
 
-  const sessionTitle = currentSession?.title?.trim();
+  const sessionTitle = passiveCatalogRecord?.title.trim() || currentSession?.title?.trim();
   // Single-line title, desktop-style: session title, or the "New session"
   // placeholder on the draft screen. No project/branch metadata line.
-  const primaryLabel = sessionTitle
-    || (currentSessionId ? t('mobile.sessions.untitled') : t('sessions.switcher.draftTitle'));
+  const primaryLabel = isNewSessionDraftOpen
+    ? t('sessions.switcher.draftTitle')
+    : sessionTitle
+      || (currentSessionId || passiveCatalogRecord
+        ? t('mobile.sessions.untitled')
+        : t('sessions.switcher.draftTitle'));
 
   React.useEffect(() => {
     setMetadataOpen(false);
     setSwitcherOpen(false);
-  }, [currentSessionId, effectiveDirectory]);
+  }, [currentSessionId, effectiveDirectory, visibleChatIdentity]);
 
   const handleOpenSessions = React.useCallback(() => {
     setMetadataOpen(false);
@@ -98,6 +113,13 @@ export const MobileHeader: React.FC<{
           >
             <span className="flex min-w-0 items-center gap-1">
               <span className="block min-w-0 truncate typography-ui-label text-foreground">{primaryLabel}</span>
+              {visibleHeaderHarness ? (
+                <ChatHarnessMarker
+                  harness={visibleHeaderHarness}
+                  compact
+                  className="max-w-24 overflow-hidden py-0 text-ellipsis leading-4 whitespace-nowrap"
+                />
+              ) : null}
               {/* Discoverability: the chevron marks the title as a disclosure
                   trigger and flips while the switcher is open. */}
               <Icon

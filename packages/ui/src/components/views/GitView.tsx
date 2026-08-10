@@ -5,7 +5,10 @@ import { useFireworksCelebration } from '@/contexts/FireworksContext';
 import type { GitIdentityProfile, CommitFileEntry, GitStatus } from '@/lib/api/types';
 import { useGitIdentitiesStore } from '@/stores/useGitIdentitiesStore';
 import { useShallow } from 'zustand/react/shallow';
-import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
+import {
+  useVisibleChatDirectory,
+  useVisibleOpenCodeSessionContext,
+} from '@/hooks/useVisibleChatDirectory';
 import { useGitmojiList } from '@/hooks/useGitmojiList';
 import { copyTextToClipboard } from '@/lib/clipboard';
 import {
@@ -198,11 +201,14 @@ type GitViewProps = {
 export const GitView: React.FC<GitViewProps> = ({ isActive }) => {
   const { t } = useI18n();
   const { git } = useRuntimeAPIs();
-  const currentDirectory = useEffectiveDirectory();
+  const currentDirectory = useVisibleChatDirectory();
   const [worktreeBootstrapStatus, setWorktreeBootstrapStatus] = React.useState<'pending' | 'ready' | 'failed' | null>(null);
   const [isWaitingForGitRefreshAfterBootstrap, setIsWaitingForGitRefreshAfterBootstrap] = React.useState(false);
-  const currentSessionId = useSessionUIStore((s) => s.currentSessionId);
-  const newSessionDraft = useSessionUIStore((s) => s.newSessionDraft);
+  const {
+    isOpenCode: isVisibleOpenCodeChat,
+    sessionId: currentSessionId,
+    newSessionDraft,
+  } = useVisibleOpenCodeSessionContext();
   const setDraftBootstrapPendingDirectory = useSessionUIStore((s) => s.setDraftBootstrapPendingDirectory);
   const worktreeMap = useSessionUIStore((s) => s.worktreeMetadata);
   const availableWorktrees = useSessionUIStore((s) => s.availableWorktrees);
@@ -231,13 +237,11 @@ export const GitView: React.FC<GitViewProps> = ({ isActive }) => {
     if (currentSessionId) {
       return worktreeMap.get(currentSessionId) ?? inferredWorktreeMetadata;
     }
-
-    if (newSessionDraft?.open) {
+    if (!isVisibleOpenCodeChat || newSessionDraft?.open) {
       return inferredWorktreeMetadata;
     }
-
     return undefined;
-  }, [currentSessionId, inferredWorktreeMetadata, newSessionDraft?.open, worktreeMap]);
+  }, [currentSessionId, inferredWorktreeMetadata, isVisibleOpenCodeChat, newSessionDraft?.open, worktreeMap]);
 
   const { profiles, globalIdentity, defaultGitIdentityId, loadProfiles, loadGlobalIdentity, loadDefaultGitIdentityId } =
     useGitIdentitiesStore(useShallow((s) => ({

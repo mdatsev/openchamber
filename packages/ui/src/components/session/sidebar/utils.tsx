@@ -129,14 +129,6 @@ export const isBranchDifferentFromLabel = (branch: string | null, label: string)
   return normalizeForBranchComparison(branch) !== normalizeForBranchComparison(label);
 };
 
-export const dedupeSessionsById = (sessions: Session[]): Session[] => {
-  const byId = new Map<string, Session>();
-  sessions.forEach((session) => {
-    byId.set(session.id, session);
-  });
-  return Array.from(byId.values());
-};
-
 export const getArchivedScopeKey = (projectRoot: string): string => `__archived__:${projectRoot}`;
 
 export const resolveArchivedFolderName = (session: Session, projectRoot: string | null): string => {

@@ -1,5 +1,5 @@
 import React from 'react';
-import type { Part } from '@opencode-ai/sdk/v2';
+import type { TranscriptReasoningPart, TranscriptTextPart } from '../../transcript/types';
 import { MarkdownRenderer } from '../../MarkdownRenderer';
 import type { StreamPhase, ToolPopupContent } from '../types';
 import type { ContentChangeReason } from '@/hooks/useChatAutoFollow';
@@ -9,10 +9,8 @@ import { streamPerfCount, streamPerfObserve } from '@/stores/utils/streamDebug';
 import { GeneratedJsonResultCard } from './GeneratedJsonResultCard';
 import { parseGeneratedJsonResult } from './generatedJsonResult';
 
-type PartWithText = Part & { text?: string; content?: string; value?: string; time?: { start?: number; end?: number } };
-
 interface AssistantTextPartProps {
-    part: Part;
+    part: TranscriptTextPart | TranscriptReasoningPart;
     sessionId?: string;
     messageId: string;
     streamPhase: StreamPhase;
@@ -30,13 +28,7 @@ const AssistantTextPart: React.FC<AssistantTextPartProps> = ({
 }) => {
     // Use part directly from props — parent provides the latest version from the store.
     // No store subscription here to avoid re-render cascade from unrelated delta events.
-    const partWithText = part as PartWithText;
-    const rawText = typeof partWithText.text === 'string' ? partWithText.text : '';
-    const contentText = typeof partWithText.content === 'string' ? partWithText.content : '';
-    const valueText = typeof partWithText.value === 'string' ? partWithText.value : '';
-    const textContent = [rawText, contentText, valueText].reduce((best, candidate) => {
-        return candidate.length > best.length ? candidate : best;
-    }, '');
+    const textContent = part.text;
     const isStreamingPhase = streamPhase === 'streaming';
     const isCooldownPhase = streamPhase === 'cooldown';
     const isStreaming = chatRenderMode === 'live' && (isStreamingPhase || isCooldownPhase);
@@ -60,10 +52,10 @@ const AssistantTextPart: React.FC<AssistantTextPartProps> = ({
 
     streamPerfObserve('ui.assistant_text_part.display_len', displayTextContent.length);
 
-    const time = partWithText.time;
+    const time = part.time;
     const isFinalized = Boolean(time && typeof time.end !== 'undefined');
 
-    const isRenderableTextPart = part.type === 'text' || part.type === 'reasoning';
+    const isRenderableTextPart = part.kind === 'text' || part.kind === 'reasoning';
     if (!isRenderableTextPart) {
         return null;
     }
@@ -99,7 +91,7 @@ const AssistantTextPart: React.FC<AssistantTextPartProps> = ({
                 isAnimated={false}
                 isStreaming={isStreaming}
                 disableStreamAnimation={chatRenderMode === 'sorted'}
-                variant={part.type === 'reasoning' ? 'reasoning' : 'assistant'}
+                variant={part.kind === 'reasoning' ? 'reasoning' : 'assistant'}
                 enableFileReferences={isFinalized}
                 onShowPopup={onShowPopup}
             />

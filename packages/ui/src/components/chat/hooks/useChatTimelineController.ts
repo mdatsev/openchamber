@@ -1,6 +1,7 @@
 import React from 'react';
 
-import type { ChatMessageEntry } from '../lib/turns/types';
+import type { ChatMessageEntry, TranscriptMessageEntry } from '../lib/turns/types';
+import { adaptOpenCodeTurnMessages } from '../transcript/openCodeTurnCompatibility';
 import type { MessageListHandle } from '../MessageList';
 import {
     buildTurnWindowModel,
@@ -27,7 +28,7 @@ type PendingScrollRequest = {
 interface UseChatTimelineControllerOptions {
     sessionId: string | null;
     sessionKey: string | null;
-    messages: ChatMessageEntry[];
+    messages: TranscriptMessageEntry[];
     historyMeta: SessionHistoryMeta | null;
     scrollRef: React.RefObject<HTMLDivElement | null>;
     messageListRef: React.RefObject<MessageListHandle | null>;
@@ -41,7 +42,7 @@ interface UseChatTimelineControllerOptions {
 export interface UseChatTimelineControllerResult {
     turnIds: string[];
     turnStart: number;
-    renderedMessages: ChatMessageEntry[];
+    renderedMessages: TranscriptMessageEntry[];
     historySignals: TurnHistorySignals;
     isLoadingOlder: boolean;
     pendingRevealWork: boolean;
@@ -59,6 +60,23 @@ export interface UseChatTimelineControllerResult {
     restoreViewportAnchor: (anchor: ViewportAnchor) => boolean;
     handleActiveTurnChange: (turnId: string | null) => void;
 }
+
+type OpenCodeUseChatTimelineControllerOptions = Omit<UseChatTimelineControllerOptions, 'messages'> & {
+    messages: ChatMessageEntry[];
+};
+
+interface UseChatTimelineControllerHook {
+    (options: UseChatTimelineControllerOptions): UseChatTimelineControllerResult;
+    /** @deprecated Test-fixture compatibility only. Pass TranscriptMessage values instead. */
+    (options: OpenCodeUseChatTimelineControllerOptions): UseChatTimelineControllerResult;
+}
+
+const hasOpenCodeMessageRecords = (
+    messages: TranscriptMessageEntry[] | ChatMessageEntry[],
+): messages is ChatMessageEntry[] => {
+    const first = messages[0];
+    return Boolean(first && 'info' in first);
+};
 
 const TURN_MODEL_CACHE_MAX = 30
 // Desktop load-older lead distance. Trigger well before the top: the fetch
@@ -81,20 +99,20 @@ const HISTORY_INTERACTION_GUARD_MS = 2000
 // Long smooth scrolls across a big session can take a couple of seconds;
 // the pin releases early as soon as the spy reports the target turn.
 const SCROLL_PIN_TIMEOUT_MS = 2500
-const turnModelCache = new Map<string, { messages: ChatMessageEntry[]; model: TurnWindowModel }>()
+const turnModelCache = new Map<string, { messages: TranscriptMessageEntry[]; model: TurnWindowModel }>()
 const getTurnModelCacheMax = () => {
     if (isVSCodeRuntime()) return VSCODE_TURN_MODEL_CACHE_MAX
     if (isMobileSurfaceRuntime()) return MOBILE_TURN_MODEL_CACHE_MAX
     return TURN_MODEL_CACHE_MAX
 }
 
-const shouldCacheTurnModelMessages = (messages: ChatMessageEntry[]): boolean => {
+const shouldCacheTurnModelMessages = (messages: TranscriptMessageEntry[]): boolean => {
     if (isVSCodeRuntime()) return messages.length <= VSCODE_TURN_MODEL_CACHE_MAX_MESSAGES
     if (isMobileSurfaceRuntime()) return messages.length <= MOBILE_TURN_MODEL_CACHE_MAX_MESSAGES
     return true
 }
 
-const rememberTurnModel = (key: string, value: { messages: ChatMessageEntry[]; model: TurnWindowModel }) => {
+const rememberTurnModel = (key: string, value: { messages: TranscriptMessageEntry[]; model: TurnWindowModel }) => {
     turnModelCache.delete(key)
     if (!shouldCacheTurnModelMessages(value.messages)) {
         return
@@ -183,19 +201,19 @@ const setScrollTopDefeatingMomentum = (container: HTMLElement, target: number) =
 const hasInsertedBeforeKnownOldest = (
     previousOldestId: string | null,
     currentOldestId: string | null,
-    messages: ChatMessageEntry[],
+    messages: TranscriptMessageEntry[],
 ): boolean => {
     if (!previousOldestId || !currentOldestId || currentOldestId === previousOldestId) {
         return false;
     }
 
-    return messages.some((message) => message.info.id === previousOldestId);
+    return messages.some((message) => message.id === previousOldestId);
 };
 
-export const useChatTimelineController = ({
+export const useChatTimelineController: UseChatTimelineControllerHook = ({
     sessionId,
     sessionKey,
-    messages,
+    messages: inputMessages,
     historyMeta,
     scrollRef,
     messageListRef,
@@ -204,9 +222,14 @@ export const useChatTimelineController = ({
     releaseAutoFollow,
     isPinned,
     showScrollButton,
-}: UseChatTimelineControllerOptions): UseChatTimelineControllerResult => {
+}: UseChatTimelineControllerOptions | OpenCodeUseChatTimelineControllerOptions): UseChatTimelineControllerResult => {
+    const messages = React.useMemo(() => (
+        hasOpenCodeMessageRecords(inputMessages)
+            ? adaptOpenCodeTurnMessages(inputMessages)
+            : inputMessages
+    ), [inputMessages]);
     const previousTurnWindowModelRef = React.useRef<TurnWindowModel | null>(null);
-    const previousMessagesRef = React.useRef<ChatMessageEntry[] | null>(null);
+    const previousMessagesRef = React.useRef<TranscriptMessageEntry[] | null>(null);
     const previousTurnWindowKeyRef = React.useRef<string | null>(null);
     const turnWindowModel = React.useMemo(() => {
         const key = sessionKey ?? ""
@@ -484,8 +507,8 @@ export const useChatTimelineController = ({
 
         let snap = prePrependScrollRef.current;
         const prev = prependTrackingRef.current;
-        const currentOldestId = renderedMessages[0]?.info?.id ?? null;
-        const currentNewestId = renderedMessages[renderedMessages.length - 1]?.info?.id ?? null;
+        const currentOldestId = renderedMessages[0]?.id ?? null;
+        const currentNewestId = renderedMessages[renderedMessages.length - 1]?.id ?? null;
         // A prepend = content inserted ABOVE the viewport: either the newest
         // stayed fixed, or the old first message still exists below a new first
         // message. The latter keeps preservation alive if a tail append lands in
@@ -654,7 +677,7 @@ export const useChatTimelineController = ({
         const container = scrollRef.current;
         const beforeMessages = messagesRef.current;
         const beforeMessageCount = beforeMessages.length;
-        const beforeOldestMessageId = beforeMessages[0]?.info?.id ?? null;
+        const beforeOldestMessageId = beforeMessages[0]?.id ?? null;
         const beforeLimit = historyMetaRef.current?.limit ?? getMemoryLimits().HISTORICAL_MESSAGES;
 
         // Store scroll snapshot BEFORE the fetch so useLayoutEffect can
@@ -667,7 +690,7 @@ export const useChatTimelineController = ({
                 anchor: captureViewportAnchor(),
                 historyVirtualized: messageListRef.current?.isHistoryVirtualized() ?? false,
                 oldestId: beforeOldestMessageId,
-                newestId: beforeMessages[beforeMessages.length - 1]?.info?.id ?? null,
+                newestId: beforeMessages[beforeMessages.length - 1]?.id ?? null,
             };
         }
 
@@ -695,7 +718,7 @@ export const useChatTimelineController = ({
 
                 const afterMessages = messagesRef.current;
                 const afterMessageCount = afterMessages.length;
-                const afterOldestMessageId = afterMessages[0]?.info?.id ?? null;
+                const afterOldestMessageId = afterMessages[0]?.id ?? null;
                 const afterLimit = historyMetaRef.current?.limit ?? loadedLimit;
                 const messageGrowth =
                     afterMessageCount > loadedMessageCount

@@ -1,5 +1,8 @@
 import React from 'react';
-import { useSessionUIStore } from '@/sync/session-ui-store';
+import { useChatSelectionStore } from '@/stores/useChatSelectionStore';
+import { chatIdentitiesEqual } from '@/lib/chat-identity';
+import { getRuntimeKey } from '@/lib/runtime-switch';
+import { selectChatIdentity } from '@/sync/session-navigation';
 import { useUIStore } from '@/stores/useUIStore';
 import { parseRoute, updateBrowserURL, hasRouteParams } from '@/lib/router';
 import type { RouteState, AppRouteState } from '@/lib/router';
@@ -48,7 +51,6 @@ export function useRouter(): void {
   const isApplyingRouteRef = React.useRef(false);
 
   // Get store actions (stable references)
-  const setCurrentSession = useSessionUIStore((state) => state.setCurrentSession);
   const setActiveMainTab = useUIStore((state) => state.setActiveMainTab);
   const setSettingsDialogOpen = useUIStore((state) => state.setSettingsDialogOpen);
   const setSettingsPage = useUIStore((state) => state.setSettingsPage);
@@ -68,10 +70,13 @@ export function useRouter(): void {
       try {
         // 1. Apply session first (may trigger async operations)
         if (route.sessionId) {
-          const currentSessionId = useSessionUIStore.getState().currentSessionId;
-          if (route.sessionId !== currentSessionId) {
-            const directoryHint = useSessionUIStore.getState().getDirectoryForSession(route.sessionId);
-            setCurrentSession(route.sessionId, directoryHint);
+          const identity = {
+            runtimeKey: getRuntimeKey(),
+            harness: route.sessionHarness ?? 'opencode',
+            sessionId: route.sessionId,
+          } as const;
+          if (!chatIdentitiesEqual(identity, useChatSelectionStore.getState().visibleChatIdentity)) {
+            selectChatIdentity(identity);
           }
         }
 
@@ -101,18 +106,19 @@ export function useRouter(): void {
         isApplyingRouteRef.current = false;
       }
     },
-    [setCurrentSession, setActiveMainTab, setSettingsDialogOpen, setSettingsPage, navigateToDiff]
+    [setActiveMainTab, setSettingsDialogOpen, setSettingsPage, navigateToDiff]
   );
 
   /**
    * Get current app state for URL serialization.
    */
   const getCurrentAppState = React.useCallback((): AppRouteState => {
-    const sessionState = useSessionUIStore.getState();
+    const visibleChatIdentity = useChatSelectionStore.getState().visibleChatIdentity;
     const uiState = useUIStore.getState();
 
     return {
-      sessionId: sessionState.currentSessionId,
+      sessionId: visibleChatIdentity?.sessionId ?? null,
+      sessionHarness: visibleChatIdentity?.harness ?? null,
       tab: uiState.activeMainTab,
       isSettingsOpen: uiState.isSettingsDialogOpen,
       settingsPath: uiState.settingsPage,
@@ -161,7 +167,8 @@ export function useRouter(): void {
       if (!isVSCode && !isEmbeddedChat) {
         updateBrowserURL({
           ...getCurrentAppState(),
-          sessionId: route.sessionId ?? useSessionUIStore.getState().currentSessionId,
+          sessionId: route.sessionId ?? useChatSelectionStore.getState().visibleChatIdentity?.sessionId ?? null,
+          sessionHarness: route.sessionHarness ?? useChatSelectionStore.getState().visibleChatIdentity?.harness ?? null,
           tab: route.tab ?? useUIStore.getState().activeMainTab,
           settingsPath: route.settingsPath ?? useUIStore.getState().settingsPage,
           diffFile: route.diffFile ?? useUIStore.getState().pendingDiffFile,
@@ -178,17 +185,15 @@ export function useRouter(): void {
       return;
     }
 
-    let prevSessionId: string | null = useSessionUIStore.getState().currentSessionId;
+    let previousIdentity = useChatSelectionStore.getState().visibleChatIdentity;
 
-    const unsubscribe = useSessionUIStore.subscribe((state) => {
-      const sessionId = state.currentSessionId;
-
-      // Skip if no change or if we're currently applying a route
-      if (sessionId === prevSessionId || isApplyingRouteRef.current) {
+    const unsubscribe = useChatSelectionStore.subscribe((state) => {
+      if (chatIdentitiesEqual(state.visibleChatIdentity, previousIdentity)
+        || isApplyingRouteRef.current) {
         return;
       }
 
-      prevSessionId = sessionId;
+      previousIdentity = state.visibleChatIdentity;
       syncURLFromState();
     });
 

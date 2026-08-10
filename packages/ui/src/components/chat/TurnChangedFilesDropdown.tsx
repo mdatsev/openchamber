@@ -1,5 +1,4 @@
 import React from 'react';
-import type { ToolPart } from '@opencode-ai/sdk/v2';
 import { Popover } from '@base-ui/react/popover';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { useIsGitRepo } from '@/stores/useGitStore';
@@ -16,6 +15,7 @@ import { changedFilesPopoverClassName, changedFilesPopoverStyle } from './change
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Icon } from "@/components/icon/Icon";
 import type { TurnActivityRecord } from './lib/turns/types';
+import type { TranscriptToolPart } from './transcript/types';
 
 interface TurnChangedFilesDropdownProps {
     activityParts: TurnActivityRecord[] | undefined;
@@ -32,10 +32,10 @@ export const TurnChangedFilesDropdown: React.FC<TurnChangedFilesDropdownProps> =
         // Skip work entirely in git repos — the global PendingChangesBar handles those.
         if (isGitRepo !== false) return [];
         if (!activityParts || activityParts.length === 0) return [];
-        const toolParts: ToolPart[] = [];
+        const toolParts: TranscriptToolPart[] = [];
         for (const activity of activityParts) {
             const part = activity.part;
-            if (part.type !== 'tool') continue;
+            if (part.kind !== 'tool') continue;
             if (!FILE_EDIT_TOOLS.has(part.tool)) continue;
             toolParts.push(part);
         }

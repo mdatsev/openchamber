@@ -279,6 +279,7 @@ export const PlanView: React.FC<PlanViewProps> = ({ targetPath = null, onNavigat
   });
 
   const {
+    canPersistDrafts,
     drafts: planFileDrafts,
     commentText,
     setCommentText,
@@ -641,6 +642,7 @@ export const PlanView: React.FC<PlanViewProps> = ({ targetPath = null, onNavigat
   );
 
   const blockWidgets = React.useMemo(() => {
+    if (!canPersistDrafts) return [];
     return buildCodeMirrorCommentWidgets({
       drafts: planFileDrafts,
       editingDraftId,
@@ -659,7 +661,7 @@ export const PlanView: React.FC<PlanViewProps> = ({ targetPath = null, onNavigat
       },
       onDelete: deleteDraft,
     });
-  }, [commentText, deleteDraft, editingDraftId, handleCancelComment, handleSaveComment, isDragging, lineSelection, planFileDrafts, planFileLabel, setCommentText, startEdit]);
+  }, [canPersistDrafts, commentText, deleteDraft, editingDraftId, handleCancelComment, handleSaveComment, isDragging, lineSelection, planFileDrafts, planFileLabel, setCommentText, startEdit]);
 
   return (
     <div className="relative flex h-full min-h-0 min-w-0 w-full flex-col overflow-hidden bg-background">
@@ -842,13 +844,13 @@ export const PlanView: React.FC<PlanViewProps> = ({ targetPath = null, onNavigat
                       onViewReady={(view) => { editorViewRef.current = view; }}
                       onViewDestroy={() => { editorViewRef.current = null; }}
                       blockWidgets={blockWidgets}
-                      highlightLines={lineSelection
+                      highlightLines={canPersistDrafts && lineSelection
                         ? {
                           start: Math.min(lineSelection.start, lineSelection.end),
                           end: Math.max(lineSelection.start, lineSelection.end),
                         }
                         : undefined}
-                      lineNumbersConfig={{
+                      lineNumbersConfig={canPersistDrafts ? {
                         domEventHandlers: {
                           mousedown: (view, line, event) => {
                             if (!(event instanceof MouseEvent)) return false;
@@ -912,7 +914,7 @@ export const PlanView: React.FC<PlanViewProps> = ({ targetPath = null, onNavigat
                             return false;
                           },
                         },
-                    }}
+                    } : undefined}
                   />
                 </div>
                 )}

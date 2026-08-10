@@ -1,12 +1,12 @@
 import React from 'react';
 
-import type { ChatMessageEntry, Turn } from '../lib/turns/types';
+import type { TranscriptMessageEntry, TranscriptTurn } from '../lib/turns/types';
 import TurnAssistantBlock from './TurnAssistantBlock';
 
 interface TurnItemProps {
-    turn: Turn;
+    turn: TranscriptTurn;
     stickyUserHeader?: boolean;
-    renderMessage: (message: ChatMessageEntry) => React.ReactNode;
+    renderMessage: (message: TranscriptMessageEntry) => React.ReactNode;
 }
 
 const TurnItem: React.FC<TurnItemProps> = ({ turn, stickyUserHeader = true, renderMessage }) => {

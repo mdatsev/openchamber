@@ -4,49 +4,28 @@ import { projectTurnIndexes } from './projectTurnIndexes';
 import { projectTurnChangedFiles, projectTurnDiffStats, projectTurnSummary } from './projectTurnSummary';
 import type {
     ChatMessageEntry,
-    TurnMessageRecord,
-    TurnProjectionResult,
-    TurnRecord,
+    TranscriptMessageEntry,
+    TranscriptTurnMessageRecord,
+    TranscriptTurnProjectionResult,
+    TranscriptTurnRecord,
     TurnStreamState,
 } from './types';
+import { adaptOpenCodeTurnMessages } from '../../transcript/openCodeTurnCompatibility';
 
-const resolveMessageRole = (message: ChatMessageEntry): string => {
-    const role = (message.info as { clientRole?: string | null; role?: string | null }).clientRole ?? message.info.role;
-    return typeof role === 'string' ? role : '';
-};
+const resolveMessageRole = (message: TranscriptMessageEntry): string => message.role;
 
-const getMessageParentId = (message: ChatMessageEntry): string | undefined => {
-    const parentId = (message.info as { parentID?: unknown }).parentID;
-    if (typeof parentId !== 'string' || parentId.trim().length === 0) {
-        return undefined;
-    }
-    return parentId;
-};
+const getMessageParentId = (message: TranscriptMessageEntry): string | undefined => message.parentId;
 
-const getMessageCreatedAt = (message: ChatMessageEntry): number | undefined => {
-    const created = (message.info as { time?: { created?: unknown } }).time?.created;
-    return typeof created === 'number' ? created : undefined;
-};
+const getMessageCreatedAt = (message: TranscriptMessageEntry): number | undefined => message.createdAt;
 
-const getMessageCompletedAt = (message: ChatMessageEntry): number | undefined => {
-    const completed = (message.info as { time?: { completed?: unknown } }).time?.completed;
-    return typeof completed === 'number' ? completed : undefined;
-};
+const getMessageCompletedAt = (message: TranscriptMessageEntry): number | undefined => message.completedAt;
 
-const getUserSummaryBody = (message: ChatMessageEntry): string | undefined => {
-    const summaryBody = (message.info as { summary?: { body?: unknown } | null | undefined })?.summary?.body;
-    if (typeof summaryBody !== 'string') {
-        return undefined;
-    }
+const getUserSummaryBody = (message: TranscriptMessageEntry): string | undefined => message.summaryBody;
 
-    const trimmed = summaryBody.trim();
-    return trimmed.length > 0 ? summaryBody : undefined;
-};
-
-const createTurnMessageRecord = (message: ChatMessageEntry, order: number): TurnMessageRecord => {
+const createTurnMessageRecord = (message: TranscriptMessageEntry, order: number): TranscriptTurnMessageRecord => {
     const role = resolveMessageRole(message);
     return {
-        messageId: message.info.id,
+        messageId: message.id,
         role,
         parentMessageId: getMessageParentId(message),
         message,
@@ -54,7 +33,7 @@ const createTurnMessageRecord = (message: ChatMessageEntry, order: number): Turn
     };
 };
 
-const buildTurnStreamState = (userMessage: ChatMessageEntry, assistantMessages: ChatMessageEntry[]): TurnStreamState => {
+const buildTurnStreamState = (userMessage: TranscriptMessageEntry, assistantMessages: TranscriptMessageEntry[]): TurnStreamState => {
     const startedAt = getMessageCreatedAt(userMessage);
     let completedAt: number | undefined;
     let isStreaming = false;
@@ -82,9 +61,9 @@ const buildTurnStreamState = (userMessage: ChatMessageEntry, assistantMessages: 
 };
 
 interface ProjectTurnRecordsOptions {
-    previousProjection?: TurnProjectionResult | null;
-    showTextJustificationActivity: boolean;
-    showTurnChangedFiles: boolean;
+    previousProjection?: TranscriptTurnProjectionResult | null;
+    showTextJustificationActivity?: boolean;
+    showTurnChangedFiles?: boolean;
     /**
      * When set, a turn whose user message is hidden (no visible display parts,
      * e.g. synthetic subagent-completion nudges) is merged into the previous
@@ -93,14 +72,22 @@ interface ProjectTurnRecordsOptions {
     mergeHiddenUserTurns?: { planModeEnabled: boolean };
 }
 
-const DEFAULT_OPTIONS: ProjectTurnRecordsOptions = {
+type ResolvedProjectTurnRecordsOptions = Omit<
+    ProjectTurnRecordsOptions,
+    'showTextJustificationActivity' | 'showTurnChangedFiles'
+> & {
+    showTextJustificationActivity: boolean;
+    showTurnChangedFiles: boolean;
+};
+
+const DEFAULT_OPTIONS: ResolvedProjectTurnRecordsOptions = {
     previousProjection: null,
     showTextJustificationActivity: false,
     showTurnChangedFiles: false,
     mergeHiddenUserTurns: undefined,
 };
 
-const areSameMessageRefs = (left: ChatMessageEntry[], right: ChatMessageEntry[]): boolean => {
+const areSameMessageRefs = (left: TranscriptMessageEntry[], right: TranscriptMessageEntry[]): boolean => {
     if (left === right) {
         return true;
     }
@@ -117,16 +104,16 @@ const areSameMessageRefs = (left: ChatMessageEntry[], right: ChatMessageEntry[])
     return true;
 };
 
-const canReusePreviousTurn = (previous: TurnRecord, next: TurnRecord): boolean => {
+const canReusePreviousTurn = (previous: TranscriptTurnRecord, next: TranscriptTurnRecord): boolean => {
     return previous.userMessage === next.userMessage
         && previous.headerMessageId === next.headerMessageId
         && areSameMessageRefs(previous.assistantMessages, next.assistantMessages);
 };
 
 const hydrateTurnRecord = (
-    turn: TurnRecord,
-    effectiveOptions: ProjectTurnRecordsOptions,
-): TurnRecord => {
+    turn: TranscriptTurnRecord,
+    effectiveOptions: ResolvedProjectTurnRecordsOptions,
+): TranscriptTurnRecord => {
     turn.summary = projectTurnSummary(turn.assistantMessages);
     turn.summaryText = turn.summary.text ?? getUserSummaryBody(turn.userMessage);
     turn.diffStats = projectTurnDiffStats(turn.userMessage);
@@ -154,9 +141,9 @@ const hydrateTurnRecord = (
 };
 
 const hydrateStableTurnRecords = (
-    turns: TurnRecord[],
-    effectiveOptions: ProjectTurnRecordsOptions,
-): TurnRecord[] => {
+    turns: TranscriptTurnRecord[],
+    effectiveOptions: ResolvedProjectTurnRecordsOptions,
+): TranscriptTurnRecord[] => {
     const previousProjection = effectiveOptions.previousProjection;
     if (!previousProjection || previousProjection.turns.length === 0 || turns.length === 0) {
         return turns.map((turn) => hydrateTurnRecord(turn, effectiveOptions));
@@ -186,17 +173,19 @@ const hydrateStableTurnRecords = (
     return nextTurns;
 };
 
-export const projectTurnRecords = (
-    messages: ChatMessageEntry[],
-    options?: Partial<ProjectTurnRecordsOptions>,
-): TurnProjectionResult => {
-    const effectiveOptions: ProjectTurnRecordsOptions = {
+const projectTranscriptTurnRecords = (
+    messages: TranscriptMessageEntry[],
+    options?: ProjectTurnRecordsOptions,
+): TranscriptTurnProjectionResult => {
+    const effectiveOptions: ResolvedProjectTurnRecordsOptions = {
         ...DEFAULT_OPTIONS,
         ...options,
+        showTextJustificationActivity: options?.showTextJustificationActivity ?? DEFAULT_OPTIONS.showTextJustificationActivity,
+        showTurnChangedFiles: options?.showTurnChangedFiles ?? DEFAULT_OPTIONS.showTurnChangedFiles,
     };
 
-    const turns: TurnRecord[] = [];
-    const turnByUserId = new Map<string, TurnRecord>();
+    const turns: TranscriptTurnRecord[] = [];
+    const turnByUserId = new Map<string, TranscriptTurnRecord>();
     const groupedMessageIds = new Set<string>();
 
     const mergeHiddenUserTurns = effectiveOptions.mergeHiddenUserTurns;
@@ -213,16 +202,16 @@ export const projectTurnRecords = (
             && previousTurn
             && isHiddenUserMessage(message, { planModeEnabled: mergeHiddenUserTurns.planModeEnabled })
         ) {
-            turnByUserId.set(message.info.id, previousTurn);
+            turnByUserId.set(message.id, previousTurn);
             previousTurn.messages.push(createTurnMessageRecord(message, index));
-            groupedMessageIds.add(message.info.id);
+            groupedMessageIds.add(message.id);
             return;
         }
 
-        const turnId = message.info.id;
-        const turn: TurnRecord = {
+        const turnId = message.id;
+        const turn: TranscriptTurnRecord = {
             turnId,
-            userMessageId: message.info.id,
+            userMessageId: message.id,
             userMessage: message,
             headerMessageId: undefined,
             messages: [createTurnMessageRecord(message, index)],
@@ -243,7 +232,7 @@ export const projectTurnRecords = (
         };
         turns.push(turn);
         turnByUserId.set(turn.userMessageId, turn);
-        groupedMessageIds.add(message.info.id);
+        groupedMessageIds.add(message.id);
     });
 
     messages.forEach((message, index) => {
@@ -259,12 +248,12 @@ export const projectTurnRecords = (
         }
 
         targetTurn.assistantMessages.push(message);
-        targetTurn.assistantMessageIds.push(message.info.id);
+        targetTurn.assistantMessageIds.push(message.id);
         targetTurn.messages.push(createTurnMessageRecord(message, index));
         if (!targetTurn.headerMessageId) {
-            targetTurn.headerMessageId = message.info.id;
+            targetTurn.headerMessageId = message.id;
         }
-        groupedMessageIds.add(message.info.id);
+        groupedMessageIds.add(message.id);
     });
 
     const stableTurns = hydrateStableTurnRecords(turns, effectiveOptions);
@@ -274,8 +263,8 @@ export const projectTurnRecords = (
         if (resolveMessageRole(message) === 'assistant') {
             return;
         }
-        if (!groupedMessageIds.has(message.info.id)) {
-            ungroupedMessageIds.add(message.info.id);
+        if (!groupedMessageIds.has(message.id)) {
+            ungroupedMessageIds.add(message.id);
         }
     });
 
@@ -284,3 +273,24 @@ export const projectTurnRecords = (
         ungroupedMessageIds,
     };
 };
+
+
+export function projectTurnRecords(
+    messages: TranscriptMessageEntry[],
+    options?: ProjectTurnRecordsOptions,
+): TranscriptTurnProjectionResult;
+/** @deprecated Pass TranscriptMessage values instead. Genuine OpenCode records are adapted immediately. */
+export function projectTurnRecords(
+    messages: ChatMessageEntry[],
+    options?: ProjectTurnRecordsOptions,
+): TranscriptTurnProjectionResult;
+export function projectTurnRecords(
+    messages: TranscriptMessageEntry[] | ChatMessageEntry[],
+    options: ProjectTurnRecordsOptions = {},
+): TranscriptTurnProjectionResult {
+    const first = messages[0];
+    const transcriptMessages = first && 'info' in first
+        ? adaptOpenCodeTurnMessages(messages as ChatMessageEntry[], options.mergeHiddenUserTurns?.planModeEnabled ?? false)
+        : messages as TranscriptMessageEntry[];
+    return projectTranscriptTurnRecords(transcriptMessages, options);
+}

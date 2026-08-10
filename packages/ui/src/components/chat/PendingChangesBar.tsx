@@ -3,7 +3,7 @@ import { useGitStore, useIsGitRepo } from '@/stores/useGitStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { RuntimeAPIContext } from '@/contexts/runtimeAPIContext';
 import { useMobileAppActions } from '@/apps/mobileAppContext';
-import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
+import { useVisibleChatDirectory } from '@/hooks/useVisibleChatDirectory';
 import { Icon } from "@/components/icon/Icon";
 import { cn } from '@/lib/utils';
 import {
@@ -20,13 +20,24 @@ export const PendingChangesBar: React.FC = React.memo(() => {
     const { t } = useI18n();
     const [isExpanded, setIsExpanded] = React.useState(false);
     const popoverRef = React.useRef<HTMLDivElement>(null);
-    const currentDirectory = useEffectiveDirectory() ?? null;
+    const currentDirectory = useVisibleChatDirectory() ?? null;
     const runtime = React.useContext(RuntimeAPIContext);
     const isGitRepo = useIsGitRepo(currentDirectory);
     const gitStatus = useGitStore((s) =>
         currentDirectory ? s.directories.get(currentDirectory)?.status ?? null : null,
     );
+    const ensureStatus = useGitStore((state) => state.ensureStatus);
+    const fetchStatus = useGitStore((state) => state.fetchStatus);
     const mobileActions = useMobileAppActions();
+
+    React.useEffect(() => {
+        if (!currentDirectory || !runtime) return;
+        if (gitStatus?.diffStats === undefined) {
+            void fetchStatus(currentDirectory, runtime.git, { silent: Boolean(gitStatus) });
+            return;
+        }
+        void ensureStatus(currentDirectory, runtime.git);
+    }, [currentDirectory, ensureStatus, fetchStatus, gitStatus, runtime]);
 
     // Close popover when clicking outside
     React.useEffect(() => {

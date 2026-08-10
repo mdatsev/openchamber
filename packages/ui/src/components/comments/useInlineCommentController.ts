@@ -9,7 +9,10 @@ import {
 } from '@/stores/useInlineCommentDraftStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useI18n } from '@/lib/i18n';
-import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
+import {
+  useVisibleChatDirectory,
+  useVisibleOpenCodeSessionContext,
+} from '@/hooks/useVisibleChatDirectory';
 import { getRuntimeKey } from '@/lib/runtime-switch';
 
 type LineRangeBase = {
@@ -58,9 +61,9 @@ export function useInlineCommentController<TRange extends LineRangeBase>(
   const { t } = useI18n();
   const { source, fileLabel, language, getCodeForRange, toStoreRange, fromDraftRange } = options;
 
-  const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
-  const newSessionDraftOpen = useSessionUIStore((state) => state.newSessionDraft?.open);
-  const effectiveDirectory = useEffectiveDirectory();
+  const { sessionId: currentSessionId, newSessionDraft } = useVisibleOpenCodeSessionContext();
+  const newSessionDraftOpen = newSessionDraft?.open === true;
+  const effectiveDirectory = useVisibleChatDirectory();
   const sessionDirectory = useSessionUIStore(
     React.useCallback(
       (state) => currentSessionId ? state.getDirectoryForSession(currentSessionId) : null,
@@ -164,6 +167,7 @@ export function useInlineCommentController<TRange extends LineRangeBase>(
 
   return {
     sessionKey,
+    canPersistDrafts: target !== null,
     drafts,
     selection,
     setSelection,

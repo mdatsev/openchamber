@@ -14,11 +14,12 @@
 
 import React from 'react';
 
-import { CommandAutocomplete, type CommandAutocompleteHandle, type CommandInfo } from '../../CommandAutocomplete';
 import { FileMentionAutocomplete, type FileMentionHandle } from '../../FileMentionAutocomplete';
 import { SkillAutocomplete, type SkillAutocompleteHandle } from '../../SkillAutocomplete';
 import { SnippetAutocomplete, type SnippetAutocompleteHandle } from '../../SnippetAutocomplete';
 import type { AutocompleteKind } from '../language/triggers';
+import { useComposerController } from '../controller/useComposerController';
+import type { ComposerCommandMenuHandle } from '../controller/types';
 
 export interface AutocompleteOverlayPosition {
     top: number;
@@ -61,11 +62,11 @@ export interface ComposerAutocompletePopupsProps {
     query: string;
     /** Caret placement in focus mode; null when the picker anchors itself. */
     overlayPosition: AutocompleteOverlayPosition | null;
-    commandRef: React.RefObject<CommandAutocompleteHandle | null>;
+    commandRef: React.RefObject<ComposerCommandMenuHandle | null>;
     skillRef: React.RefObject<SkillAutocompleteHandle | null>;
     snippetRef: React.RefObject<SnippetAutocompleteHandle | null>;
     mentionRef: React.RefObject<FileMentionHandle | null>;
-    onCommandSelect: (command: CommandInfo) => void;
+    onCommandSelect: (commandName: string) => void;
     onSkillSelect: (skillName: string) => void;
     onSnippetSelect: (snippet: unknown, trigger: string) => void;
     onFileSelect: (file: { name: string; path: string; relativePath?: string }) => void;
@@ -74,6 +75,7 @@ export interface ComposerAutocompletePopupsProps {
 }
 
 export function ComposerAutocompletePopups(props: ComposerAutocompletePopupsProps) {
+    const { renderCommandMenu } = useComposerController();
     const { open, query, overlayPosition, onClose } = props;
     if (!open) return null;
 
@@ -81,15 +83,13 @@ export function ComposerAutocompletePopups(props: ComposerAutocompletePopupsProp
 
     switch (open) {
         case 'command':
-            return (
-                <CommandAutocomplete
-                    ref={props.commandRef}
-                    searchQuery={query}
-                    onCommandSelect={props.onCommandSelect}
-                    onClose={onClose}
-                    style={style}
-                />
-            );
+            return renderCommandMenu({
+                handleRef: props.commandRef,
+                query,
+                onSelect: props.onCommandSelect,
+                onClose,
+                style,
+            });
         case 'skill':
             return (
                 <SkillAutocomplete

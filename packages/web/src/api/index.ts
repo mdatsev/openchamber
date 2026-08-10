@@ -16,6 +16,7 @@ import { createWebToolsAPI } from './tools';
 import { createWebPushAPI } from './push';
 import { createWebGitHubAPI } from './github';
 import { createWebClientAuthAPI } from './clientAuth';
+import { createWebPrimeAPI } from './prime';
 
 export interface WebAPIsOptions {
   urls?: RuntimeUrlResolver;
@@ -38,6 +39,7 @@ export const createWebAPIs = (options: WebAPIsOptions = {}): RuntimeAPIs => {
 
   return {
   runtime: { platform: 'web', isDesktop: false, isVSCode: false, label: 'web' },
+  prime: createWebPrimeAPI(),
   terminal: createWebTerminalAPI(),
   git: createWebGitAPI(),
   files: createWebFilesAPI({ urls: activeUrls, getDirectory: () => useDirectoryStore.getState().currentDirectory }),

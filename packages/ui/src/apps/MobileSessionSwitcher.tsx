@@ -1,5 +1,4 @@
 import React from 'react';
-import type { Session } from '@opencode-ai/sdk/v2';
 
 import { Icon } from '@/components/icon/Icon';
 import { formatSessionCompactDateLabel } from '@/components/session/sidebar/utils';
@@ -7,35 +6,39 @@ import { useSwitcherItems } from '@/components/session/sidebar/hooks/useSwitcher
 import { useTabletLayout } from '@/lib/device';
 import { useI18n } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
-import { refreshGlobalSessions, resolveGlobalSessionDirectory } from '@/stores/useGlobalSessionsStore';
+import { refreshGlobalSessions } from '@/stores/useGlobalSessionsStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
+import { useChatSelectionStore } from '@/stores/useChatSelectionStore';
 import { useSessionUnseenCount } from '@/sync/notification-store';
-import { useSessionUIStore } from '@/sync/session-ui-store';
+import { chatIdentitiesEqual } from '@/lib/chat-identity';
+import type { SessionCatalogEntry } from '@/components/session/sidebar/sessionCatalog';
 import { useGlobalSessionStatus } from '@/sync/sync-context';
+import { selectChatIdentity } from '@/sync/session-navigation';
 
 const RECENT_SESSIONS_LIMIT = 10;
 /** Matches the metadata popover's width so both header dropdowns read as a pair. */
 const TABLET_POPOVER_WIDTH = 380;
 
-const getSessionTitle = (session: Session, fallback: string): string =>
+const getSessionTitle = (session: SessionCatalogEntry, fallback: string): string =>
   session.title?.trim() || fallback;
 
 /** One switcher row: live status (busy spinner / attention dot), title,
     "project · branch", compact time. Mirrors the desktop SessionSwitcherDropdown
     indicator conventions; no subsession chevrons on mobile by design. */
 const SwitcherRow: React.FC<{
-  session: Session;
+  session: SessionCatalogEntry;
   meta: string;
   active: boolean;
   onSelect: () => void;
 }> = ({ session, meta, active, onSelect }) => {
   const { t } = useI18n();
-  const status = useGlobalSessionStatus(session.id);
-  const unseenCount = useSessionUnseenCount(session.id);
+  const connectedSessionId = session.activity === null ? session.identity.sessionId : '';
+  const status = useGlobalSessionStatus(connectedSessionId);
+  const unseenCount = useSessionUnseenCount(connectedSessionId);
   const statusType = status?.type ?? 'idle';
-  const isStreaming = statusType === 'busy' || statusType === 'retry';
+  const isStreaming = session.activity === 'working' || statusType === 'busy' || statusType === 'retry';
   const showUnreadDot = !isStreaming && unseenCount > 0 && !active;
-  const timeLabel = formatSessionCompactDateLabel(session.time?.updated ?? session.time?.created ?? 0);
+  const timeLabel = formatSessionCompactDateLabel(session.updatedAt || session.createdAt);
 
   return (
     <button
@@ -115,8 +118,7 @@ export const MobileSessionSwitcher: React.FC<{
   }, [anchorRef, isTabletLayout, open, shouldRender]);
 
   const isPopover = isTabletLayout && anchorLeft !== null;
-  const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
-  const setCurrentSession = useSessionUIStore((state) => state.setCurrentSession);
+  const visibleChatIdentity = useChatSelectionStore((state) => state.visibleChatIdentity);
   const setActiveProjectIdOnly = useProjectsStore((state) => state.setActiveProjectIdOnly);
 
   const items = useSwitcherItems(open || shouldRender, { maxParents: RECENT_SESSIONS_LIMIT });
@@ -163,10 +165,10 @@ export const MobileSessionSwitcher: React.FC<{
     return () => document.removeEventListener('pointerdown', closeIfOutside, true);
   }, [anchorRef, onClose, open]);
 
-  const handleSelect = React.useCallback((session: Session) => {
-    void setCurrentSession(session.id, resolveGlobalSessionDirectory(session));
+  const handleSelect = React.useCallback((session: SessionCatalogEntry) => {
+    selectChatIdentity(session.identity);
     onClose();
-  }, [onClose, setCurrentSession]);
+  }, [onClose]);
 
   if (!shouldRender) return null;
 
@@ -206,10 +208,10 @@ export const MobileSessionSwitcher: React.FC<{
                 .join(' · ');
               return (
                 <SwitcherRow
-                  key={session.id}
+                  key={`${session.identity.runtimeKey}:${session.identity.harness}:${session.identity.sessionId}`}
                   session={session}
                   meta={meta}
-                  active={session.id === currentSessionId}
+                  active={chatIdentitiesEqual(visibleChatIdentity, session.identity)}
                   onSelect={() => {
                     if (item.projectId) setActiveProjectIdOnly(item.projectId);
                     handleSelect(session);

@@ -1,4 +1,5 @@
 import type { MainTab } from '@/stores/useUIStore';
+import type { ChatHarness } from '@/lib/chat-identity';
 import {
   type RouteState,
   VALID_TABS,
@@ -12,9 +13,11 @@ import {
  */
 export function parseRoute(searchParams?: URLSearchParams): RouteState {
   const params = searchParams ?? getSearchParams();
+  const sessionId = parseSessionId(params);
 
   return {
-    sessionId: parseSessionId(params),
+    sessionId,
+    sessionHarness: sessionId ? parseSessionHarness(params) : null,
     tab: parseTab(params),
     settingsPath: parseSettingsPath(params),
     diffFile: parseDiffFile(params),
@@ -46,6 +49,11 @@ function parseSessionId(params: URLSearchParams): string | null {
     return null;
   }
   return value.trim();
+}
+
+function parseSessionHarness(params: URLSearchParams): ChatHarness | null {
+  const value = params.get(ROUTE_PARAMS.HARNESS)?.trim().toLowerCase();
+  return value === 'prime' || value === 'opencode' ? value : null;
 }
 
 /**

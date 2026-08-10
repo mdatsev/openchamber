@@ -14,6 +14,7 @@ import { useI18n } from '@/lib/i18n';
 import { useDeviceInfo } from '@/lib/device';
 
 import type { ToolPopupContent } from './message/types';
+import type { TranscriptFilePart } from './transcript/types';
 
 const FileAttachmentButton = memo(() => {
   const { t } = useI18n();
@@ -546,19 +547,10 @@ export const ActiveEditorFileSuggestion = memo(() => {
 
 ActiveEditorFileSuggestion.displayName = 'ActiveEditorFileSuggestion';
 
-interface FilePart {
-  type: string;
-  mime?: string;
-  url?: string;
-  filename?: string;
-  size?: number;
-  source?: Record<string, unknown>;
-}
-
 const GITHUB_ISSUE_LINK_MIME = 'application/vnd.github.issue-link';
 const GITHUB_PR_LINK_MIME = 'application/vnd.github.pull-request-link';
 
-const getGitHubLinkKind = (file: FilePart): 'issue' | 'pr' | null => {
+const getGitHubLinkKind = (file: TranscriptFilePart): 'issue' | 'pr' | null => {
   if (file.mime === GITHUB_ISSUE_LINK_MIME) {
     return 'issue';
   }
@@ -569,7 +561,7 @@ const getGitHubLinkKind = (file: FilePart): 'issue' | 'pr' | null => {
 };
 
 interface MessageFilesDisplayProps {
-  files: FilePart[];
+  files: TranscriptFilePart[];
   onShowPopup?: (content: ToolPopupContent) => void;
   compact?: boolean;
 }
@@ -577,7 +569,7 @@ interface MessageFilesDisplayProps {
 export const MessageFilesDisplay = memo(({ files, onShowPopup, compact = false }: MessageFilesDisplayProps) => {
   const { t } = useI18n();
 
-  const fileItems = files.filter(f => f.type === 'file' && (f.mime || f.url));
+  const fileItems = files.filter(f => f.kind === 'file' && (f.mime || f.url));
 
   const extractFilename = (path?: string): string => {
     if (!path) return 'Unnamed file';
@@ -589,7 +581,7 @@ export const MessageFilesDisplay = memo(({ files, onShowPopup, compact = false }
     return filename || path;
   };
 
-  const resolveDisplayName = React.useCallback((file: FilePart): string => {
+  const resolveDisplayName = React.useCallback((file: TranscriptFilePart): string => {
     const isGitHubLink = getGitHubLinkKind(file) !== null;
     if (isGitHubLink && typeof file.filename === 'string' && file.filename.trim().length > 0) {
       return file.filename.trim();

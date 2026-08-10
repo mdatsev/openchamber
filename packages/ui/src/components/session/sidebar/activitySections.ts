@@ -1,4 +1,5 @@
 import type { Session } from '@opencode-ai/sdk/v2';
+import type { CatalogSessionNode } from './types';
 
 const RECENT_SESSION_MAX_AGE_MS = 48 * 60 * 60 * 1000;
 
@@ -37,5 +38,21 @@ export const deriveRecentSessions = (
       return false;
     }
     return activeSessionIds.has(session.id) || getSessionUpdatedAt(session) >= minUpdatedAt;
+  });
+};
+
+export const deriveRecentSessionNodes = (
+  nodes: CatalogSessionNode[],
+  activeOpenCodeSessionIds: ReadonlySet<string>,
+  now = Date.now(),
+): CatalogSessionNode[] => {
+  const minUpdatedAt = now - RECENT_SESSION_MAX_AGE_MS;
+  return nodes.filter((node) => {
+    if (node.session.archivedAt !== null || node.session.parentIdentity !== null) return false;
+    const openCodeId = node.controller.getOpenCodeSessionId();
+    const isActive = openCodeId
+      ? activeOpenCodeSessionIds.has(openCodeId)
+      : node.session.activity === 'working';
+    return isActive || node.session.updatedAt >= minUpdatedAt;
   });
 };

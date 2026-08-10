@@ -16,7 +16,8 @@ import type { MainTab } from '@/stores/useUIStore';
 import { SessionFolderItem } from '../SessionFolderItem';
 import type { SortableDragHandleProps } from './sortableItems';
 import { DroppableFolderWrapper, SessionFolderDndScope } from './sessionFolderDnd';
-import type { GroupSearchData, SessionGroup, SessionNode } from './types';
+import { getSessionNodeIdentityKey, type GroupSearchData, type SessionGroup, type CatalogSessionNode } from './types';
+import { getOpenCodeSourceSession } from './openCodeSessionAdapter';
 import { isBranchDifferentFromLabel, normalizePath, renderHighlightedText } from './utils';
 import { compareSessionsByLifecycleOrder, EMPTY_SESSION_ORDER_RANKS } from '@/sync/session-ordering';
 import {
@@ -48,13 +49,13 @@ type DeleteFolderConfirm = {
 } | null;
 
 type Props = {
-  group: SessionGroup;
+  group: SessionGroup<CatalogSessionNode>;
   groupKey: string;
   projectId?: string | null;
   hideGroupLabel?: boolean;
   hasSessionSearchQuery: boolean;
   normalizedSessionSearchQuery: string;
-  groupSearchDataByGroup: WeakMap<SessionGroup, GroupSearchData>;
+  groupSearchDataByGroup: WeakMap<SessionGroup<CatalogSessionNode>, GroupSearchData<CatalogSessionNode>>;
   visibleSessionCount?: number;
   collapsedGroups: Set<string>;
   hideDirectoryControls: boolean;
@@ -65,9 +66,8 @@ type Props = {
   showDeletionDialog: boolean;
   setDeleteFolderConfirm: React.Dispatch<React.SetStateAction<DeleteFolderConfirm>>;
   renderSessionNode: (
-    node: SessionNode,
+    node: CatalogSessionNode,
     depth?: number,
-    groupDirectory?: string | null,
     projectId?: string | null,
     archivedBucket?: boolean,
     secondaryMeta?: { projectLabel?: string | null; branchLabel?: string | null } | null,
@@ -111,13 +111,13 @@ type Props = {
   scrollContainerRef?: React.RefObject<HTMLElement | null>;
 };
 
-const groupContainsSessionId = (group: SessionGroup, sessionId: string | null): boolean => {
+const groupContainsSessionId = (group: SessionGroup<CatalogSessionNode>, sessionId: string | null): boolean => {
   if (!sessionId) return false;
   return group.sessions.some((node) => nodeContainsSessionId(node, sessionId));
 };
 
 const groupHasPinnedMembershipChange = (
-  group: SessionGroup,
+  group: SessionGroup<CatalogSessionNode>,
   prevPinnedSessionIds: Set<string>,
   nextPinnedSessionIds: Set<string>,
 ): boolean => {
@@ -132,12 +132,13 @@ const groupHasPinnedMembershipChange = (
 };
 
 const groupHasSessionOrderChange = (
-  group: SessionGroup,
+  group: SessionGroup<CatalogSessionNode>,
   prevSessionOrderIndex: Map<string, number>,
   nextSessionOrderIndex: Map<string, number>,
 ): boolean => {
-  const visit = (node: SessionNode): boolean => {
-    const sessionId = node.session.id;
+  const visit = (node: CatalogSessionNode): boolean => {
+    const sessionId = node.controller.getOpenCodeSessionId();
+    if (!sessionId) return false;
     if (prevSessionOrderIndex.get(sessionId) !== nextSessionOrderIndex.get(sessionId)) return true;
     return node.children.some(visit);
   };
@@ -145,33 +146,34 @@ const groupHasSessionOrderChange = (
 };
 
 const groupHasActivityMembershipChange = (
-  group: SessionGroup,
+  group: SessionGroup<CatalogSessionNode>,
   prevSessionIds: Set<string>,
   nextSessionIds: Set<string>,
 ): boolean => {
-  const visit = (node: SessionNode): boolean => {
-    if (prevSessionIds.has(node.session.id) !== nextSessionIds.has(node.session.id)) return true;
+  const visit = (node: CatalogSessionNode): boolean => {
+    if ((() => { const id = node.controller.getOpenCodeSessionId(); return id ? prevSessionIds.has(id) !== nextSessionIds.has(id) : false; })()) return true;
     return node.children.some(visit);
   };
   return group.sessions.some(visit);
 };
 
-const groupHasAnyActivityMembership = (group: SessionGroup, sessionIds: Set<string>): boolean => {
-  const visit = (node: SessionNode): boolean => {
-    if (sessionIds.has(node.session.id)) return true;
+const groupHasAnyActivityMembership = (group: SessionGroup<CatalogSessionNode>, sessionIds: Set<string>): boolean => {
+  const visit = (node: CatalogSessionNode): boolean => {
+    const id = node.controller.getOpenCodeSessionId();
+    if ((id && sessionIds.has(id)) || node.session.activity === 'working') return true;
     return node.children.some(visit);
   };
   return group.sessions.some(visit);
 };
 
 const groupHasExpansionMembershipChange = (
-  group: SessionGroup,
+  group: SessionGroup<CatalogSessionNode>,
   prevExpandedParents: Set<string>,
   nextExpandedParents: Set<string>,
 ): boolean => {
   const bucketTag = group.isArchivedBucket ? 'archived' : 'active';
-  const visit = (node: SessionNode): boolean => {
-    const key = `project:${bucketTag}:${node.session.id}`;
+  const visit = (node: CatalogSessionNode): boolean => {
+    const key = `project:${bucketTag}:${node.controller.getOpenCodeSessionId() ?? getSessionNodeIdentityKey(node)}`;
     if (prevExpandedParents.has(key) !== nextExpandedParents.has(key)) return true;
     return node.children.some(visit);
   };
@@ -331,15 +333,27 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
     scrollContainerRef,
   } = props;
 
-  const compareSessionNodes = React.useCallback((a: SessionNode, b: SessionNode) => {
-    const aIndex = sessionOrderIndex.get(a.session.id);
-    const bIndex = sessionOrderIndex.get(b.session.id);
-    if (aIndex !== undefined || bIndex !== undefined) {
-      if (aIndex === undefined) return 1;
-      if (bIndex === undefined) return -1;
-      if (aIndex !== bIndex) return aIndex - bIndex;
+  const compareSessionNodes = React.useCallback((left: CatalogSessionNode, right: CatalogSessionNode) => {
+    const leftId = left.controller.getOpenCodeSessionId();
+    const rightId = right.controller.getOpenCodeSessionId();
+    const leftIndex = leftId ? sessionOrderIndex.get(leftId) : undefined;
+    const rightIndex = rightId ? sessionOrderIndex.get(rightId) : undefined;
+    if (leftIndex !== undefined || rightIndex !== undefined) {
+      if (leftIndex === undefined) return 1;
+      if (rightIndex === undefined) return -1;
+      if (leftIndex !== rightIndex) return leftIndex - rightIndex;
     }
-    return compareSessionsByLifecycleOrder(a.session, b.session, pinnedSessionIds, EMPTY_SESSION_ORDER_RANKS);
+    if (leftId && rightId) {
+      return compareSessionsByLifecycleOrder(
+        getOpenCodeSourceSession(left.session),
+        getOpenCodeSourceSession(right.session),
+        pinnedSessionIds,
+        EMPTY_SESSION_ORDER_RANKS,
+      );
+    }
+    return right.session.updatedAt - left.session.updatedAt
+      || right.session.createdAt - left.session.createdAt
+      || getSessionNodeIdentityKey(left).localeCompare(getSessionNodeIdentityKey(right));
   }, [pinnedSessionIds, sessionOrderIndex]);
 
   const searchData = hasSessionSearchQuery ? groupSearchDataByGroup.get(group) : null;
@@ -390,10 +404,11 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
   );
 
   const nodeBySessionId = React.useMemo(() => {
-    const map = new Map<string, SessionNode>();
-    const collectNodeLookup = (nodes: SessionNode[]) => {
+    const map = new Map<string, CatalogSessionNode>();
+    const collectNodeLookup = (nodes: CatalogSessionNode[]) => {
       nodes.forEach((node) => {
-        map.set(node.session.id, node);
+        const sessionId = node.controller.getOpenCodeSessionId();
+        if (sessionId) map.set(sessionId, node);
         if (node.children.length > 0) {
           collectNodeLookup(node.children);
         }
@@ -461,7 +476,7 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
   }, [allFoldersForGroupBase, group.isArchivedBucket, hasSessionSearchQuery, normalizedSessionSearchQuery]);
 
   const sessionIdsInFolders = React.useMemo(() => new Set(allFoldersForGroup.flatMap((f) => f.folder.sessionIds)), [allFoldersForGroup]);
-  const ungroupedSessions = React.useMemo(() => sourceGroupNodes.filter((node) => !sessionIdsInFolders.has(node.session.id)), [sourceGroupNodes, sessionIdsInFolders]);
+  const ungroupedSessions = React.useMemo(() => sourceGroupNodes.filter((node) => (() => { const id = node.controller.getOpenCodeSessionId(); return !id || !sessionIdsInFolders.has(id); })()), [sourceGroupNodes, sessionIdsInFolders]);
   const rootFolders = React.useMemo(() => allFoldersForGroup.filter(({ folder }) => !folder.parentId), [allFoldersForGroup]);
   const childFoldersByParentId = React.useMemo(() => {
     const map = new Map<string, typeof allFoldersForGroup>();
@@ -524,9 +539,9 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
     return null;
   }, [openSidebarMenuKey, sourceGroupNodes, allFoldersForGroup, group.isArchivedBucket]);
 
-  const buildNodeStructureKeyByNode = React.useCallback((nodes: SessionNode[]): WeakMap<SessionNode, string> => {
-    const map = new WeakMap<SessionNode, string>();
-    const visit = (node: SessionNode): void => {
+  const buildNodeStructureKeyByNode = React.useCallback((nodes: CatalogSessionNode[]): WeakMap<CatalogSessionNode, string> => {
+    const map = new WeakMap<CatalogSessionNode, string>();
+    const visit = (node: CatalogSessionNode): void => {
       map.set(node, computeNodeStructureKey(node));
       for (const child of node.children) {
         visit(child);
@@ -542,7 +557,7 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
   );
   const nodeStructureKeyByFolderNode = React.useMemo(
     () => {
-      const map = new WeakMap<SessionNode, string>();
+      const map = new WeakMap<CatalogSessionNode, string>();
       allFoldersForGroup.forEach(({ nodes }) => {
         nodes.forEach((node) => map.set(node, computeNodeStructureKey(node)));
       });
@@ -551,11 +566,11 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
     [allFoldersForGroup],
   );
 
-  const resolveNodeStructureKey = React.useCallback((node: SessionNode): string => {
+  const resolveNodeStructureKey = React.useCallback((node: CatalogSessionNode): string => {
     return nodeStructureKeyBySourceNode.get(node) ?? nodeStructureKeyByFolderNode.get(node) ?? '';
   }, [nodeStructureKeyBySourceNode, nodeStructureKeyByFolderNode]);
 
-  const childRenderExtrasFor = React.useCallback((child: SessionNode) => ({
+  const childRenderExtrasFor = React.useCallback((child: CatalogSessionNode) => ({
     subtreeContainsEditing,
     menuOpenSessionId,
     nodeStructureKey: resolveNodeStructureKey(child),
@@ -585,7 +600,7 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
   const bucketTag = group.isArchivedBucket ? 'archived' : 'active';
   const hasExpandedParent = shouldVirtualize && visibleSessions.some((node) => {
     if (node.children.length === 0) return false;
-    const expansionKey = `project:${bucketTag}:${node.session.id}`;
+    const expansionKey = `project:${bucketTag}:${node.controller.getOpenCodeSessionId() ?? getSessionNodeIdentityKey(node)}`;
     return expandedParents.has(expansionKey);
   });
 
@@ -688,16 +703,16 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
     // widen the window so their extra height stays covered.
     overscan: hasExpandedParent ? 20 : 8,
     scrollMargin: archivedScrollMargin,
-    getItemKey: (index) => visibleSessions[index]?.session.id ?? index,
+    getItemKey: (index) => visibleSessions[index] ? getSessionNodeIdentityKey(visibleSessions[index]) : index,
   });
 
   // Hooks below MUST stay above the search-empty early-return so they
   // fire in the same order every render — rules-of-hooks.
-  const collectGroupSessions = React.useCallback((nodes: SessionNode[]): Session[] => {
+  const collectGroupSessions = React.useCallback((nodes: CatalogSessionNode[]): Session[] => {
     const collected: Session[] = [];
-    const visit = (list: SessionNode[]) => {
+    const visit = (list: CatalogSessionNode[]) => {
       list.forEach((node) => {
-        collected.push(node.session);
+        if (node.controller.kind === 'opencode') collected.push(getOpenCodeSourceSession(node.session));
         if (node.children.length > 0) visit(node.children);
       });
     };
@@ -819,7 +834,6 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
                 childRenderExtrasFor,
               })
               : undefined}
-            groupDirectory={scopeDirectory ?? group.directory}
             projectId={projectId}
             mobileVariant={mobileVariant}
             alwaysShowActions={alwaysShowActions}
@@ -915,7 +929,7 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
             // re-renders synchronously before paint. Rendering the plain rows
             // meanwhile keeps the container's height real so the scroller
             // never collapses/clamps during the flip.
-            visibleSessions.map((node) => renderSessionNode(node, 0, group.directory, projectId, group.isArchivedBucket === true, undefined, 'project', {
+            visibleSessions.map((node) => renderSessionNode(node, 0, projectId, group.isArchivedBucket === true, undefined, 'project', {
               subtreeContainsEditing,
               menuOpenSessionId,
               nodeStructureKey: resolveNodeStructureKey(node),
@@ -933,7 +947,7 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
               if (!node) return null;
               return (
                 <div
-                  key={node.session.id}
+                  key={getSessionNodeIdentityKey(node)}
                   data-index={item.index}
                   ref={sessionVirtualizer.measureElement}
                   // Rows carry my-0.5 (2px), which COLLAPSES to 2px between
@@ -953,7 +967,7 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
                     transform: `translateY(${item.start - archivedScrollMargin}px)`,
                   }}
                 >
-                  {renderSessionNode(node, 0, group.directory, projectId, group.isArchivedBucket === true, undefined, 'project', {
+                  {renderSessionNode(node, 0, projectId, group.isArchivedBucket === true, undefined, 'project', {
                     subtreeContainsEditing,
                     menuOpenSessionId,
                     nodeStructureKey: resolveNodeStructureKey(node),
@@ -966,7 +980,7 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
           )}
         </div>
       ) : (
-        visibleSessions.map((node) => renderSessionNode(node, 0, group.directory, projectId, group.isArchivedBucket === true, undefined, 'project', {
+        visibleSessions.map((node) => renderSessionNode(node, 0, projectId, group.isArchivedBucket === true, undefined, 'project', {
           subtreeContainsEditing,
           menuOpenSessionId,
           nodeStructureKey: resolveNodeStructureKey(node),

@@ -6,6 +6,7 @@ export type DiffPatchEntry = {
     filePath?: string;
     patch: string;
     renderMode: 'diff' | 'text';
+    openable?: boolean;
 };
 
 const APPLY_PATCH_ENVELOPE_PATTERN = /^\*\*\*\s+(?:Begin Patch|End Patch|Add File:|Update File:|Delete File:|Move to:)/m;
@@ -477,7 +478,7 @@ const getPatchEntriesFromText = (
     }];
 };
 
-const getFilePatch = (file: unknown): { filePath?: string; patch: string; title: string } | null => {
+const getFilePatch = (file: unknown): { filePath?: string; patch: string; title: string; openable?: boolean } | null => {
     if (!isRecord(file)) {
         return null;
     }
@@ -497,6 +498,7 @@ const getFilePatch = (file: unknown): { filePath?: string; patch: string; title:
         filePath: getApplyPatchFilePath(file) ?? undefined,
         patch,
         title: rawPath,
+        openable: typeof file.openable === 'boolean' ? file.openable : undefined,
     };
 };
 
@@ -516,7 +518,11 @@ export const getDiffPatchEntries = (
             filePatch.title || `File ${index + 1}`,
             `file-${index}`,
             resolveTitle,
-        ).map((entry) => ({ ...entry, filePath: filePatch.filePath }));
+        ).map((entry) => ({
+            ...entry,
+            filePath: filePatch.filePath,
+            openable: filePatch.openable,
+        }));
     });
 
     if (fileEntries.length > 0) {

@@ -8,6 +8,8 @@ import { registerGitRoutes } from '../git/routes.js';
 import { registerMagicPromptRoutes } from '../magic-prompts/routes.js';
 import { registerSessionFoldersRoutes } from '../session-folders/routes.js';
 import { registerSideChatRoutes } from '../side-chats/routes.js';
+import { registerPrimeRoutes } from '../prime/routes.js';
+import { createPrimeService } from '../prime/service.js';
 import { registerPermissionAutoAcceptRoutes } from '../permission-auto-accept/runtime.js';
 import { registerConfigEntityRoutes } from './config-entity-routes.js';
 import { registerSettingsUtilityRoutes } from './core-routes.js';
@@ -53,6 +55,7 @@ export const createFeatureRoutesRuntime = (dependencies) => {
     clientReloadDelayMs,
   } = dependencies;
 
+  let primeService = null;
   let quotaProviders = null;
   const getQuotaProviders = async () => {
     if (!quotaProviders) {
@@ -133,6 +136,13 @@ export const createFeatureRoutesRuntime = (dependencies) => {
     });
 
     registerPermissionAutoAcceptRoutes(app, permissionAutoAcceptRuntime);
+    await primeService?.dispose();
+    primeService = createPrimeService({ buildAugmentedPath });
+    registerPrimeRoutes(app, {
+      primeService,
+      isRequestOriginAllowed,
+      jsonParser: express.json({ limit: '300kb' }),
+    });
 
     registerOpenCodeRoutes(app, {
       crypto,
@@ -318,7 +328,14 @@ export const createFeatureRoutesRuntime = (dependencies) => {
     });
   };
 
+  const dispose = async () => {
+    const service = primeService;
+    primeService = null;
+    await service?.dispose();
+  };
+
   return {
     registerRoutes,
+    dispose,
   };
 };

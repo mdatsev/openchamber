@@ -29,6 +29,7 @@ Use this doc when you ask an agent to change tool/header/description behavior.
   - Owns Task metadata parsing and child-session summary projection.
   - `part.state.metadata.sessionId` is the only live identity contract between a Task and its child session.
   - A running Task may briefly have no `sessionId`; render it as waiting until the authoritative part update arrives. Never match parallel children by order, title, timestamp, or status.
+  - Mount the directory-scoped child-session subscription only for a Task with both an authoritative child `sessionId` and a validated visible directory. Ordinary tools and directory-unresolved Prime views must not call OpenCode child-store hooks or borrow a stale OpenCode directory.
   - Part-level metadata and output parsing exist only for older persisted records and never override state metadata.
   - Background Task calls made by a subagent remain in that parent Task's child-session summary; ordinary nested foreground Tasks and todo bookkeeping remain hidden.
 
@@ -60,6 +61,7 @@ Use this doc when you ask an agent to change tool/header/description behavior.
 - Every other tool, including search/fetch, OpenCode built-ins, custom tools, plugins, and MCP tools, is **expandable** and renders through `ToolPart`.
 - The managed `openchamber` plugin tool uses the expandable path and hides its broad protocol input. The plugin supplies the selected action's human description as the native tool title; the UI renders that metadata without owning an action map. The full versioned result envelope renders through the same neutral JSON summary/tree/raw views as other tools, without a tool-specific output card.
 - `ToolPart` defers expanded content after a user toggle, preventing large tool input/output payloads from mounting during the initial chat render.
+- Expandable IPython rows scan a bounded source prefix and prefer a meaningful file operation, subprocess, mutating call, or assignment-to-call over setup data and reads for the single-line collapsed preview. A first-content-line `%%bash` cell magic labels the row `Bash`, skips setup commands and scores command chains for a meaningful shell preview, and selects Bash highlighting for the expanded input while preserving the original cell text. Completed rows show bounded nonblank input/output line counts and duration; edit-result metadata may add grouped per-file `+A -R` summaries and expanded shared diff views, with an explicit count when bounded entries were omitted. These are display-only snippet diffs because the daemon does not provide complete file-line context; safe in-workspace paths expose only file navigation, while basename-only outside-workspace entries expose no file action. Exact redundant `Edited <path>` output is suppressed only when every bounded diff was projected.
 - Running bash output falls back to `state.metadata.output` until canonical `state.output` arrives. Its fixed-height output viewport follows new output until the user scrolls up, then resumes following when the user returns to the bottom. Live output appends or replaces rewritten snapshots as plain text without worker highlighting; finalized output normalizes ANSI terminal controls with a bounded synthetic-cell budget, bypasses the throttle, and receives the normal one-time highlighted rendering.
 - Thinking/Justification duration is hidden in `sorted` mode (handled in `ReasoningPart.tsx` + `JustificationBlock.tsx`).
 
@@ -98,3 +100,8 @@ Why: only navigation tools use the compact static path; all other tools need obs
 - Reasoning/justification: `ReasoningPart.tsx`, `JustificationBlock.tsx`
 - Status/placeholders: `WorkingPlaceholder.tsx`, `SessionActiveSpinner.tsx`, `MigratingPart.tsx`, `BusyDots.tsx`
 - Utility renderers: `VirtualizedCodeBlock.tsx`, `MinDurationShineText.tsx`
+
+## Transcript inputs
+
+Message-part renderers consume the SDK-neutral models in `../../transcript/types.ts`. OpenCode SDK records and compatibility payload normalization stop at `../../transcript/openCodeTranscriptAdapter.ts`; leaf renderers use neutral `kind` discriminants and normalized tool state only. Do not cast neutral parts back to SDK `Part` values.
+

@@ -20,6 +20,7 @@ import { useUIStore, type ContextPanelMode, type MainTab } from '@/stores/useUIS
 import { requestContextPanelClose } from './contextPanelCloseRequest';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
+import { getVisibleOpenCodeSessionId } from '@/sync/opencode-chat-selection';
 import { useSessionWorktreeStore } from '@/sync/session-worktree-store';
 import { formatSessionWorktreeBadge } from '@/sync/session-worktree-contract';
 import { buildSessionMessageRecordsSnapshot, useDirectoryStore, useGlobalSessionStatus, useSessionMessagesResolved } from '@/sync/sync-context';
@@ -69,13 +70,17 @@ import { OpenInAppButton } from '@/components/desktop/OpenInAppButton';
 import { useTerminalStore } from '@/stores/useTerminalStore';
 import { ProjectActionsButton } from '@/components/layout/ProjectActionsButton';
 import { SessionSwitcherDropdown } from '@/components/session/SessionSwitcherDropdown';
+import { ChatHarnessMarker } from '@/components/session/ChatHarnessMarker';
 import { canUseElectronDesktopIPC, invokeDesktop, isDesktopLocalOriginActive, isDesktopShell, isVSCodeRuntime, startDesktopWindowDrag, type UpdateInfo } from '@/lib/desktop';
 import { desktopHostsGet, getDesktopHostApiUrl, locationMatchesHost, redactSensitiveUrl } from '@/lib/desktopHosts';
 import { Icon } from "@/components/icon/Icon";
 import { useI18n } from '@/lib/i18n';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { getRuntimeBearerTokenSync } from '@/lib/runtime-auth';
-import { getRuntimeApiBaseUrl } from '@/lib/runtime-switch';
+import { getRuntimeApiBaseUrl, getRuntimeKey } from '@/lib/runtime-switch';
+import { useChatSelectionStore } from '@/stores/useChatSelectionStore';
+import { ensurePrimeCatalog, usePrimeCatalogRecord } from '@/stores/usePrimeCatalogStore';
+import { getPrimeTranscriptKey, usePrimeTranscriptStore } from '@/stores/usePrimeTranscriptStore';
 import { useShallow } from 'zustand/react/shallow';
 import type { IconName } from "@/components/icon/icons";
 import { toast } from '@/components/ui';
@@ -745,7 +750,18 @@ export const Header: React.FC<HeaderProps> = ({
 
   const getContextUsage = useSessionUIStore((state) => state.getContextUsage);
   const isNewSessionDraftOpen = useSessionUIStore((state) => Boolean(state.newSessionDraft?.open));
-  const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
+  const newSessionDraftHarness = useSessionUIStore((state) => state.newSessionDraft.harness ?? 'opencode');
+  const visibleChatIdentity = useChatSelectionStore((state) => state.visibleChatIdentity);
+  const currentSessionId = getVisibleOpenCodeSessionId(visibleChatIdentity, getRuntimeKey());
+  const passiveCatalogRecord = usePrimeCatalogRecord(visibleChatIdentity);
+  const passiveContextSnapshot = usePrimeTranscriptStore((state) => {
+    if (visibleChatIdentity?.harness !== 'prime') return null;
+    return state.byKey.get(getPrimeTranscriptKey(visibleChatIdentity)) ?? null;
+  });
+  React.useEffect(() => {
+    if (visibleChatIdentity?.harness !== 'prime') return;
+    void ensurePrimeCatalog(visibleChatIdentity.runtimeKey, runtimeApis);
+  }, [runtimeApis, visibleChatIdentity]);
   const currentSessionMessagesResolved = useSessionMessagesResolved(currentSessionId ?? '');
   const currentSessionStatus = useGlobalSessionStatus(currentSessionId ?? '');
   const isCurrentSessionMovingToWorktree = useIsSessionWorktreeMovePending(currentSessionId ?? '');
@@ -879,6 +895,24 @@ export const Header: React.FC<HeaderProps> = ({
       setStableDesktopContextUsage((prev) => (prev === null ? prev : null));
     }
   }, [contextUsage, currentSessionId, isContextUsageResolvedForSession]);
+  const passiveHeaderContextUsage = React.useMemo(() => {
+    if (passiveContextSnapshot?.contextAvailability !== 'ready'
+      || !passiveContextSnapshot.context
+      || passiveContextSnapshot.context.truncated
+      || typeof passiveContextSnapshot.context.window?.used !== 'number') {
+      return null;
+    }
+    return {
+      totalTokens: passiveContextSnapshot.context.window.used,
+      percentage: null,
+      contextLimit: null,
+      outputLimit: null,
+      colorPercentage: null,
+    };
+  }, [passiveContextSnapshot]);
+  const desktopHeaderContextUsage = visibleChatIdentity?.harness === 'prime'
+    ? passiveHeaderContextUsage
+    : stableDesktopContextUsage;
 
   const isSessionSwitcherOpen = useUIStore((state) => state.isSessionSwitcherOpen);
   const githubAvatarUrl = githubAuthStatus?.connected ? (githubAuthStatus.user?.avatarUrl ?? null) : null;
@@ -906,10 +940,14 @@ export const Header: React.FC<HeaderProps> = ({
   }, [desktopServicesTab, isDesktopApp]);
 
   const isVSCode = React.useMemo(() => isVSCodeRuntime(), []);
-  const showDesktopHeaderContextUsage = !isVSCode && activeMainTab === 'chat' && !!stableDesktopContextUsage && stableDesktopContextUsage.totalTokens > 0;
-  const desktopHeaderDisplayPercentage = stableDesktopContextUsage && stableDesktopContextUsage.contextLimit > 0
-    ? Math.min(999, (stableDesktopContextUsage.totalTokens / stableDesktopContextUsage.contextLimit) * 100)
-    : 0;
+  const showDesktopHeaderContextUsage = !isVSCode
+    && activeMainTab === 'chat'
+    && Boolean(desktopHeaderContextUsage && desktopHeaderContextUsage.totalTokens > 0);
+  const desktopHeaderDisplayPercentage = desktopHeaderContextUsage
+    && typeof desktopHeaderContextUsage.contextLimit === 'number'
+    && desktopHeaderContextUsage.contextLimit > 0
+      ? Math.min(999, (desktopHeaderContextUsage.totalTokens / desktopHeaderContextUsage.contextLimit) * 100)
+      : null;
 
   const refreshCurrentInstanceLabel = React.useCallback(async () => {
     if (typeof window === 'undefined' || !isDesktopApp) {
@@ -1308,12 +1346,14 @@ export const Header: React.FC<HeaderProps> = ({
   const currentBranchLabel = gitBranchForDirectory || currentSessionWorktreeBranch || catalogWorktreeBranch;
 
   const currentSessionTitle = React.useMemo(() => {
+    const passiveTitle = passiveCatalogRecord?.title.trim();
+    if (passiveTitle) return passiveTitle;
     if (!currentSessionId) {
       return activeProjectLabel ?? 'OpenChamber';
     }
     const trimmedTitle = currentSession?.title?.trim();
     return trimmedTitle && trimmedTitle.length > 0 ? trimmedTitle : 'Untitled Session';
-  }, [activeProjectLabel, currentSession?.title, currentSessionId]);
+  }, [activeProjectLabel, currentSession?.title, currentSessionId, passiveCatalogRecord?.title]);
   const headerDirectoryStore = useDirectoryStore(openDirectory || undefined, { bootstrap: false });
   const sync = useSync();
   const updateSessionTitle = useSessionUIStore((state) => state.updateSessionTitle);
@@ -2220,6 +2260,9 @@ export const Header: React.FC<HeaderProps> = ({
   );
 
   const showMiniChatHeaderAction = hasElectronDesktopIPC && (isNewSessionDraftOpen || Boolean(currentSessionId));
+  const visibleHeaderHarness = isNewSessionDraftOpen
+    ? newSessionDraftHarness
+    : visibleChatIdentity?.harness;
 
   const renderDesktop = () => (
     <div
@@ -2317,9 +2360,18 @@ export const Header: React.FC<HeaderProps> = ({
                   </button>
                 </form>
               ) : (
-                <span className="truncate typography-ui-label text-[14px] font-normal leading-tight text-foreground max-w-full">
-                  {isNewSessionDraftOpen ? t('sessions.switcher.draftTitle') : currentSessionTitle}
-                </span>
+                <div className="flex min-w-0 max-w-full items-center gap-1.5">
+                  <span className="min-w-0 truncate typography-ui-label text-[14px] font-normal leading-tight text-foreground">
+                    {isNewSessionDraftOpen ? t('sessions.switcher.draftTitle') : currentSessionTitle}
+                  </span>
+                  {visibleHeaderHarness ? (
+                    <ChatHarnessMarker
+                      harness={visibleHeaderHarness}
+                      compact
+                      className="max-w-28 overflow-hidden py-0 text-ellipsis leading-4 whitespace-nowrap"
+                    />
+                  ) : null}
+                </div>
               )}
               {(activeProjectLabel || currentBranchLabel || (!isNewSessionDraftOpen && worktreeBadgeKind)) ? (
                 <span className="flex min-w-0 max-w-full items-center gap-1.5 truncate typography-micro text-[10.5px] font-normal leading-tight text-muted-foreground/75">
@@ -2414,18 +2466,20 @@ export const Header: React.FC<HeaderProps> = ({
         <div className="flex-1" />
 
         <div className="flex shrink-0 items-center gap-1">
-          {showDesktopHeaderContextUsage && stableDesktopContextUsage ? (
+          {showDesktopHeaderContextUsage && desktopHeaderContextUsage ? (
             <ContextUsageDisplay
-              totalTokens={stableDesktopContextUsage.totalTokens}
+              totalTokens={desktopHeaderContextUsage.totalTokens}
               percentage={desktopHeaderDisplayPercentage}
-              colorPercentage={stableDesktopContextUsage.percentage}
-              contextLimit={stableDesktopContextUsage.contextLimit}
-              outputLimit={stableDesktopContextUsage.outputLimit ?? 0}
+              colorPercentage={'colorPercentage' in desktopHeaderContextUsage
+                ? desktopHeaderContextUsage.colorPercentage
+                : desktopHeaderContextUsage.percentage}
+              contextLimit={desktopHeaderContextUsage.contextLimit}
+              outputLimit={desktopHeaderContextUsage.outputLimit ?? undefined}
               size="compact"
               hideIcon
               showPercentIcon
-              onClick={handleOpenContextPanel}
-              pressed={isContextPanelActive}
+              onClick={visibleChatIdentity?.harness === 'prime' ? undefined : handleOpenContextPanel}
+              pressed={visibleChatIdentity?.harness === 'prime' ? false : isContextPanelActive}
               className={!showMiniChatHeaderAction ? 'mr-3.5' : ''}
               valueClassName="typography-ui-label font-medium leading-none text-foreground"
               percentIconClassName="h-4.5 w-4.5"

@@ -1,4 +1,3 @@
-import type { ToolPart } from '@opencode-ai/sdk/v2';
 import { getRelativeFilePath, toAbsoluteFilePath } from '@/lib/path-utils';
 
 export interface ChangedFile {
@@ -42,12 +41,22 @@ const parsePatchStats = (patch: string): { added: number; removed: number } => {
     return { added, removed };
 };
 
-export const extractChangedFiles = (parts: ToolPart[]): ChangedFile[] => {
+export interface ChangedFilesToolPart {
+    kind?: 'tool';
+    type?: 'tool';
+    tool: string;
+    id: string;
+    messageId?: string;
+    messageID?: string;
+    state: { metadata?: Record<string, unknown>; input?: Record<string, unknown>; status?: string };
+}
+
+export const extractChangedFiles = (parts: ChangedFilesToolPart[]): ChangedFile[] => {
     const files: ChangedFile[] = [];
     const seen = new Set<string>();
 
     for (const part of parts) {
-        if (part.type !== 'tool') continue;
+        if (part.kind !== 'tool' && part.type !== 'tool') continue;
         if (!FILE_EDIT_TOOLS.has(part.tool)) continue;
 
         const state = part.state as { metadata?: Record<string, unknown>; input?: Record<string, unknown>; status?: string };
@@ -67,7 +76,7 @@ export const extractChangedFiles = (parts: ToolPart[]): ChangedFile[] => {
                 path: rawPath,
                 tool: part.tool,
                 partId: part.id,
-                messageID: part.messageID,
+                messageID: part.messageId ?? part.messageID ?? '',
                 additions: parseCount(record.additions) ?? undefined,
                 deletions: parseCount(record.deletions) ?? undefined,
                 patch: typeof record.patch === 'string' ? record.patch : undefined,
@@ -83,7 +92,7 @@ export const extractChangedFiles = (parts: ToolPart[]): ChangedFile[] => {
                     path: rawPath,
                     tool: part.tool,
                     partId: part.id,
-                    messageID: part.messageID,
+                    messageID: part.messageId ?? part.messageID ?? '',
                     additions: parseCount(fd.additions) ?? undefined,
                     deletions: parseCount(fd.deletions) ?? undefined,
                     patch: typeof fd.patch === 'string' ? fd.patch : undefined,
@@ -103,7 +112,7 @@ export const extractChangedFiles = (parts: ToolPart[]): ChangedFile[] => {
                     path: rawPath,
                     tool: part.tool,
                     partId: part.id,
-                    messageID: part.messageID,
+                    messageID: part.messageId ?? part.messageID ?? '',
                     additions: parseCount(fd.additions) ?? undefined,
                     deletions: parseCount(fd.deletions) ?? undefined,
                     patch: typeof fd.patch === 'string' ? fd.patch : undefined,
@@ -123,7 +132,7 @@ export const extractChangedFiles = (parts: ToolPart[]): ChangedFile[] => {
                     path: filePath,
                     tool: part.tool,
                     partId: part.id,
-                    messageID: part.messageID,
+                    messageID: part.messageId ?? part.messageID ?? '',
                 });
             }
         }
@@ -138,7 +147,7 @@ export const extractChangedFiles = (parts: ToolPart[]): ChangedFile[] => {
                     path: 'Diff',
                     tool: part.tool,
                     partId: part.id,
-                    messageID: part.messageID,
+                    messageID: part.messageId ?? part.messageID ?? '',
                     additions: parsed.added,
                     deletions: parsed.removed,
                 });

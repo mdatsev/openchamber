@@ -1,10 +1,8 @@
 import React from 'react';
-import type { Part } from '@opencode-ai/sdk/v2';
+import type { TranscriptTextPart } from '../../transcript/types';
 import type { ContentChangeReason } from '@/hooks/useChatAutoFollow';
 import { useUIStore } from '@/stores/useUIStore';
 import { ReasoningTimelineBlock } from './ReasoningPart';
-
-type PartWithText = Part & { text?: string; content?: string; time?: { start?: number; end?: number } };
 
 const cleanJustificationText = (text: string): string => {
     if (typeof text !== 'string' || text.trim().length === 0) {
@@ -20,7 +18,7 @@ const cleanJustificationText = (text: string): string => {
 };
 
 interface JustificationBlockProps {
-    part: Part;
+    part: TranscriptTextPart;
     messageId: string;
     onContentChange?: (reason?: ContentChangeReason) => void;
     actions?: React.ReactNode;
@@ -33,10 +31,9 @@ const JustificationBlock: React.FC<JustificationBlockProps> = ({
     actions,
 }) => {
     const chatRenderMode = useUIStore((state) => state.chatRenderMode);
-    const partWithText = part as PartWithText;
-    const rawText = partWithText.text || partWithText.content || '';
+    const rawText = part.text;
     const textContent = React.useMemo(() => cleanJustificationText(rawText), [rawText]);
-    const time = partWithText.time;
+    const time = part.time;
 
     // Don't render if there's no text content
     if (!textContent || textContent.trim().length === 0) {

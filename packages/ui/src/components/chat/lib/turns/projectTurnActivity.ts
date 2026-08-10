@@ -1,6 +1,6 @@
 import { ACTIVITY_STANDALONE_TOOL_NAMES } from './constants';
 import type {
-    ChatMessageEntry,
+    TranscriptMessageEntry,
     TurnActivityGroup,
     TurnActivityRecord,
     TurnPartRecord,
@@ -10,44 +10,27 @@ const isStandaloneTool = (toolName: unknown): boolean => {
     return typeof toolName === 'string' && ACTIVITY_STANDALONE_TOOL_NAMES.has(toolName.toLowerCase());
 };
 
-const getPartEndTime = (part: unknown): number | undefined => {
-    const stateEnd = (part as { state?: { time?: { end?: unknown } } }).state?.time?.end;
-    if (typeof stateEnd === 'number') {
-        return stateEnd;
-    }
-    const timeEnd = (part as { time?: { end?: unknown } }).time?.end;
-    return typeof timeEnd === 'number' ? timeEnd : undefined;
+const getPartEndTime = (part: TranscriptMessageEntry['parts'][number]): number | undefined => {
+    if (part.kind === 'tool') return part.state.time?.end;
+    return part.time?.end;
 };
 
-const getPartText = (part: unknown): string | undefined => {
-    const text = (part as { text?: unknown }).text;
-    if (typeof text === 'string' && text.trim().length > 0) {
-        return text;
-    }
-    const content = (part as { content?: unknown }).content;
-    if (typeof content === 'string' && content.trim().length > 0) {
-        return content;
-    }
-    return undefined;
-};
+const getPartText = (part: TranscriptMessageEntry['parts'][number]): string | undefined => (
+    (part.kind === 'text' || part.kind === 'reasoning') && part.text.trim().length > 0 ? part.text : undefined
+);
 
-const getMessageFinish = (message: ChatMessageEntry): string | undefined => {
-    const finish = (message.info as { finish?: unknown }).finish;
-    return typeof finish === 'string' ? finish : undefined;
-};
+const getMessageFinish = (message: TranscriptMessageEntry): string | undefined => message.finish;
 
-const isCompactionSummaryMessage = (message: ChatMessageEntry): boolean => {
-    return (message.info as { summary?: unknown }).summary === true;
-};
+const isCompactionSummaryMessage = (message: TranscriptMessageEntry): boolean => message.isCompactionSummary === true;
 
 const buildTurnPartRecord = (
     turnId: string,
     messageId: string,
-    part: ChatMessageEntry['parts'][number],
+    part: TranscriptMessageEntry['parts'][number],
     partIndex: number,
 ): TurnPartRecord => {
     return {
-        id: part.id ?? `${messageId}-part-${partIndex}-${part.type}`,
+        id: part.id ?? `${messageId}-part-${partIndex}-${part.kind}`,
         turnId,
         messageId,
         part,
@@ -58,7 +41,7 @@ const buildTurnPartRecord = (
 
 interface ProjectActivityInput {
     turnId: string;
-    assistantMessages: ChatMessageEntry[];
+    assistantMessages: TranscriptMessageEntry[];
     summarySourceMessageId?: string;
     summarySourcePartId?: string;
     showTextJustificationActivity: boolean;
@@ -78,12 +61,12 @@ export const projectTurnActivity = (input: ProjectActivityInput): ProjectActivit
 
     input.assistantMessages.forEach((message) => {
         message.parts.forEach((part) => {
-            if (part.type === 'tool') {
+            if (part.kind === 'tool') {
                 hasTools = true;
                 return;
             }
 
-            if (part.type === 'reasoning' && getPartText(part)) {
+            if (part.kind === 'reasoning' && getPartText(part)) {
                 hasReasoning = true;
             }
         });
@@ -96,46 +79,46 @@ export const projectTurnActivity = (input: ProjectActivityInput): ProjectActivit
 
     input.assistantMessages.forEach((message) => {
         const finish = getMessageFinish(message);
-        const messageHasTool = message.parts.some((part) => part.type === 'tool');
+        const messageHasTool = message.parts.some((part) => part.kind === 'tool');
         const messageIsCompactionSummary = isCompactionSummaryMessage(message);
 
         message.parts.forEach((part, partIndex) => {
-            const isTool = part.type === 'tool';
+            const isTool = part.kind === 'tool';
 
-            const text = part.type === 'reasoning' || part.type === 'text'
+            const text = part.kind === 'reasoning' || part.kind === 'text'
                 ? getPartText(part)
                 : undefined;
-            const partId = part.id ?? `${message.info.id}-part-${partIndex}-${part.type}`;
+            const partId = part.id ?? `${message.id}-part-${partIndex}-${part.kind}`;
 
             const toolName = isTool
-                ? (part as { tool?: unknown }).tool
+                ? part.kind === 'tool' ? part.tool : undefined
                 : undefined;
             const standaloneTool = isTool && isStandaloneTool(toolName);
             if (standaloneTool) {
                 const toolPartId = partId;
                 if (!taskMessageById.has(toolPartId)) {
-                    taskMessageById.set(toolPartId, message.info.id);
+                    taskMessageById.set(toolPartId, message.id);
                     taskOrder.push(toolPartId);
                 }
                 currentAfterToolPartId = toolPartId;
             }
 
-            const isConfirmedSummaryText = part.type === 'text'
+            const isConfirmedSummaryText = part.kind === 'text'
                 && typeof text === 'string'
                 && finish === 'stop'
-                && input.summarySourceMessageId === message.info.id
+                && input.summarySourceMessageId === message.id
                 && input.summarySourcePartId === partId;
 
             let kind: TurnActivityRecord['kind'] | null = null;
             if (isTool) {
                 kind = 'tool';
-            } else if (part.type === 'reasoning') {
+            } else if (part.kind === 'reasoning') {
                 if (text) {
                     kind = 'reasoning';
                 }
             } else if (
                 input.showTextJustificationActivity
-                && part.type === 'text'
+                && part.kind === 'text'
                 && text
                 && (
                     messageIsCompactionSummary
@@ -153,7 +136,7 @@ export const projectTurnActivity = (input: ProjectActivityInput): ProjectActivit
             }
 
             const activity: TurnActivityRecord = {
-                ...buildTurnPartRecord(input.turnId, message.info.id, part, partIndex),
+                ...buildTurnPartRecord(input.turnId, message.id, part, partIndex),
                 kind,
             };
             activityParts.push(activity);
@@ -182,9 +165,9 @@ export const projectTurnActivity = (input: ProjectActivityInput): ProjectActivit
 
         let firstWithAny: string | undefined;
         for (const message of input.assistantMessages) {
-            const count = countByMessage.get(message.info.id) ?? 0;
+            const count = countByMessage.get(message.id) ?? 0;
             if (count > 0 && !firstWithAny) {
-                firstWithAny = message.info.id;
+                firstWithAny = message.id;
             }
         }
 

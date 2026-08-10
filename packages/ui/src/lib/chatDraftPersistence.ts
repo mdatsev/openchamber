@@ -1,9 +1,11 @@
+import type { ChatHarness } from '@/lib/chat-identity';
 import { normalizePath } from '@/lib/pathNormalization';
 import { getDeferredSafeStorage } from '@/stores/utils/safeStorage';
 import { countSyncPersistenceSerialization } from '@/sync/performance-diagnostics';
 
 export type ChatDraftIdentity = {
   runtimeKey: string;
+  harness: ChatHarness;
   directory: string;
   sessionId: string | null;
 };
@@ -20,7 +22,7 @@ type PersistedChatDraft = {
 };
 
 type PersistedChatDraftEnvelope = {
-  version: 2;
+  version: 3;
   drafts: Record<string, PersistedChatDraft>;
 };
 
@@ -35,30 +37,50 @@ export const createChatDraftIdentity = (
   runtimeKey: string,
   directory: string | null | undefined,
   sessionId: string | null,
+  harness: ChatHarness = 'opencode',
 ): ChatDraftIdentity | null => {
   const normalizedDirectory = normalizePath(directory);
   if (!runtimeKey || !normalizedDirectory) return null;
-  return { runtimeKey, directory: normalizedDirectory, sessionId };
+  return { runtimeKey, harness, directory: normalizedDirectory, sessionId };
 };
 
 export const getChatDraftIdentityKey = (identity: ChatDraftIdentity): string =>
-  JSON.stringify([identity.runtimeKey, identity.directory, identity.sessionId]);
+  JSON.stringify([identity.runtimeKey, identity.harness, identity.directory, identity.sessionId]);
+
+const upgradeLegacyIdentityKey = (key: string): string | null => {
+  try {
+    const identity = JSON.parse(key) as unknown;
+    if (!Array.isArray(identity)
+      || identity.length !== 3
+      || typeof identity[0] !== 'string'
+      || typeof identity[1] !== 'string'
+      || (identity[2] !== null && typeof identity[2] !== 'string')) return null;
+    return JSON.stringify([identity[0], 'opencode', identity[1], identity[2]]);
+  } catch {
+    return null;
+  }
+};
 
 const readEnvelope = (): PersistedChatDraftEnvelope => {
   const raw = storage.getItem(STORAGE_KEY);
   if (raw === cachedRawEnvelope && cachedEnvelope) return cachedEnvelope;
   try {
-    const parsed = JSON.parse(raw ?? '') as Partial<PersistedChatDraftEnvelope>;
-    if (parsed.version !== 2 || !parsed.drafts || typeof parsed.drafts !== 'object' || Array.isArray(parsed.drafts)) {
+    const parsed = JSON.parse(raw ?? '') as { version?: unknown; drafts?: unknown };
+    if ((parsed.version !== 2 && parsed.version !== 3)
+      || !parsed.drafts
+      || typeof parsed.drafts !== 'object'
+      || Array.isArray(parsed.drafts)) {
       cachedRawEnvelope = raw;
-      cachedEnvelope = { version: 2, drafts: {} };
+      cachedEnvelope = { version: 3, drafts: {} };
       return cachedEnvelope;
     }
     const drafts: Record<string, PersistedChatDraft> = {};
-    for (const [key, value] of Object.entries(parsed.drafts)) {
+    for (const [storedKey, value] of Object.entries(parsed.drafts)) {
       if (!value || typeof value !== 'object') continue;
       const draft = value as Partial<PersistedChatDraft>;
       if (typeof draft.text !== 'string' || !Array.isArray(draft.confirmedMentions) || typeof draft.touchedAt !== 'number') continue;
+      const key = parsed.version === 2 ? upgradeLegacyIdentityKey(storedKey) : storedKey;
+      if (!key || (drafts[key]?.touchedAt ?? -1) > draft.touchedAt) continue;
       drafts[key] = {
         text: draft.text,
         confirmedMentions: draft.confirmedMentions.filter((mention): mention is string => typeof mention === 'string'),
@@ -66,12 +88,12 @@ const readEnvelope = (): PersistedChatDraftEnvelope => {
       };
     }
     cachedRawEnvelope = raw;
-    cachedEnvelope = { version: 2, drafts };
+    cachedEnvelope = { version: 3, drafts };
     return cachedEnvelope;
   } catch {
     storage.removeItem(STORAGE_KEY);
     cachedRawEnvelope = null;
-    cachedEnvelope = { version: 2, drafts: {} };
+    cachedEnvelope = { version: 3, drafts: {} };
     return cachedEnvelope;
   }
 };
@@ -111,7 +133,7 @@ export const writeChatDraft = (
   const retained = Object.entries(envelope.drafts)
     .sort((left, right) => right[1].touchedAt - left[1].touchedAt)
     .slice(0, MAX_DRAFTS);
-  writeEnvelope({ version: 2, drafts: Object.fromEntries(retained) });
+  writeEnvelope({ version: 3, drafts: Object.fromEntries(retained) });
 };
 
 export const clearChatDraft = (identity: ChatDraftIdentity, notify = false): void => {

@@ -19,7 +19,7 @@ import { CSS } from '@dnd-kit/utilities';
 import { Icon } from '@/components/icon/Icon';
 import { DiffViewIcon } from '@/components/icons/DiffIcon';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
+import { useVisibleChatDirectory } from '@/hooks/useVisibleChatDirectory';
 import { useDeviceInfo } from '@/lib/device';
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { useI18n } from '@/lib/i18n';
@@ -107,7 +107,7 @@ const ContextPanelRailItem: React.FC<RailItemProps> = ({
 
 export const ContextPanelRail: React.FC = () => {
   const { t } = useI18n();
-  const effectiveDirectory = useEffectiveDirectory();
+  const effectiveDirectory = useVisibleChatDirectory();
   const directoryKey = effectiveDirectory ? normalizeContextPanelDirectoryKey(effectiveDirectory) : '';
 
   const panelState = useUIStore((state) => (directoryKey ? state.contextPanelByDirectory[directoryKey] : undefined));

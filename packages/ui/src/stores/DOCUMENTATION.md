@@ -34,11 +34,12 @@ These stores act like centralized keyed caches. UI should consume narrow slices 
 Examples:
 
 - `useUIStore.ts`
+- `useChatSelectionStore.ts`
 - `useDirectoryStore.ts`
 - `useFeatureFlagsStore.ts`
 - `useUpdateStore.ts`
 
-These stores coordinate visible app state, navigation, selected tabs, dialogs, and lightweight feature flags.
+These stores coordinate visible app state, navigation, selected tabs, dialogs, and lightweight feature flags. `useChatSelectionStore.ts` is the single source for the visible chat identity used by session rows and headers; harness adapters project their private session state into `{ runtimeKey, harness, sessionId }`.
 
 ### Session / project coordination stores
 
@@ -86,7 +87,7 @@ Session folders persist in runtime-specific v2 browser keys without silently evi
 
 Persisted session todos use a bounded composite key of runtime, normalized directory, and session ID. Ambiguous legacy todo entries are discarded rather than claimed by whichever runtime starts first. Authoritative deletion uses an explicit runtime identity, and session-folder deletion scans every scope in the active runtime so archived assignments cannot survive after their session is gone.
 
-Chat composer drafts, confirmed mentions, inline-comment drafts, and pinned sessions use the same runtime/directory/session ownership rule. Chat drafts use a bounded shared envelope and notify mounted composers when authoritative deletion clears their identity, preventing unmount autosave from resurrecting deleted text. Inline drafts enforce per-session, global-session, and serialized-byte bounds. Pins retain every valid composite key across runtimes without silent age/count eviction and are never pruned from the first startup list. Confirmed local deletion and routed deletion events clear immediately; after an authoritative baseline exists, a later complete omission also cleans persisted state. Ambiguous session-only legacy drafts and pins are not claimed.
+Chat composer drafts and confirmed mentions use runtime/harness/directory/session ownership; legacy runtime/directory/session draft keys migrate to the `opencode` harness. Inline-comment drafts and pinned sessions use runtime/directory/session ownership. Chat drafts use a bounded shared envelope and notify mounted composers when authoritative deletion clears their identity, preventing unmount autosave from resurrecting deleted text. Inline drafts enforce per-session, global-session, and serialized-byte bounds. Pins retain every valid composite key across runtimes without silent age/count eviction and are never pruned from the first startup list. Confirmed local deletion and routed deletion events clear immediately; after an authoritative baseline exists, a later complete omission also cleans persisted state. Ambiguous session-only legacy drafts and pins are not claimed.
 
 Composer draft edits remain immediate in memory and use a trailing durable-write debounce. Pending text and confirmed mentions flush synchronously when the document becomes hidden, freezes, receives `pagehide`, switches identity, or unmounts; authoritative deletion cancels pending work before any lifecycle flush can run. The shared chat-draft envelope reuses its parsed snapshot until the storage value changes. Inline-comment draft byte accounting indexes serialized buckets and recalculates only the changed session bucket during normal edits; deferred storage still performs the final full-envelope serialization and lifecycle flush.
 
@@ -307,3 +308,116 @@ After meaningful Git/PR store changes, verify manually:
 4. Worktree sessions still show branch labels in header.
 5. Expanded sidebar projects/worktrees can show PR state without requiring prior selection.
 6. Hidden surfaces do not reintroduce live background work.
+
+
+## Passive Prime stores
+
+`usePrimeCatalogStore.ts` and `usePrimeTranscriptStore.ts` are runtime-keyed,
+read-only caches separate from OpenCode session stores, reducers, live channels,
+and current-directory state. Catalog status distinguishes unresolved, loading,
+ready, unavailable, and unsupported. Failed authoritative reads retain the prior
+records, set `complete: false`, and publish issue codes rather than committing an
+empty success. The catalog controller never launches, attaches, reopens, or
+acquires an alias.
+
+Raw catalog working directories live only in an adapter-private runtime map.
+After root ownership is resolved they are stripped; neutral records and graphs
+contain only complete `ChatIdentity`, opaque project ownership, title, ancestry,
+timestamps, availability, and residency. Only valid roots receive ownership;
+descendants inherit it through closed ancestry, while missing, cyclic, or
+root-inconsistent records are omitted. Visible-chat directory surfaces resolve through one focused hook: Git, pull
+requests, Changes and diff-backed walkthroughs, file trees/editors, the context
+panel directory namespace, mobile Changes/Files, visible transcript file links,
+and the workspace-change summary all use the selected Prime record's private
+placement. Missing placement resolves to no directory instead of reusing stale
+OpenCode session state. The projection does not write OpenCode session or
+directory stores. SDK-session-only state is masked while Prime is visible, so
+worktree attachments, last-turn diffs, review flows, inline-comment drafts, and
+other OpenCode semantics are neither borrowed nor fabricated. Prime Context
+usage reads the independently authoritative Prime context snapshot rather than
+an SDK session or directory cache.
+
+Transcript and context requests are independently authoritative. A failure in
+one channel retains its prior value and does not masquerade as empty data in the
+other. Earlier pages prepend through a controller-private opaque cursor;
+revision/session mismatches, truncation, and oversized omissions remain explicit.
+Caches are bounded to eight runtime catalogs and twelve recent transcripts.
+
+## Prime new-root drafts
+
+The focused new-session draft selects an `opencode` or `prime` harness and defaults
+to OpenCode. Prime first-prompt text is bounded and keyed by runtime, harness, and
+normalized target working directory, so changing either harness or target preserves
+the outgoing draft without leaking the path into neutral selection/catalog state.
+The draft's local Prime configuration catalog is initialized only from an actually
+fresh retained Prime live snapshot chosen for that full draft identity. Its
+sanitized model/thinking catalog and source public fence stay in the bounded Prime
+adapter store; choosing them never mutates the source session. A newer fresh
+snapshot from that same source replaces an unconfigured/default catalog on
+remount, while an explicit model selection pins its captured catalog until the
+user resets it. Every unconfigured Prime draft exposes a localized Load Prime
+options control. Only its direct click refreshes the passive catalog, then chooses
+an adapter-private ready source: the most recently updated session in the draft's
+normalized working directory, otherwise the most recently updated ready session
+in the runtime. It explicitly activates that exact source without changing visible
+selection; opening or rendering a draft never activates it. The chosen identity,
+loading state, and authoritative no-source result are full-draft keyed and bounded
+to fifty entries. Protocol v7/schema 13 has no pre-session model catalog: when a
+complete ready catalog has no ready session, the control remains retriable and the
+UI explains that Prime options require an existing Prime session. Failed or
+incomplete catalog reads never turn retained records into authoritative absence.
+The explicit initial selection is `Prime defaults` with no selected model or
+thinking level, so untouched
+controls honestly omit configuration. Selecting any catalog model, including the source current model,
+creates an override; resetting Prime defaults clears both overrides. Thinking
+starts as its own explicit Prime-default/null selection and becomes configurable
+only after the source current model is explicitly selected. A customized submit
+passively refreshes the source snapshot immediately before create and fails with
+the draft retained if the source/catalog is no longer
+authoritative. Thinking is selectable only while the selected model is the source
+snapshot's current model; another model shows and uses Prime default thinking.
+
+One in-flight create is allowed per draft key. An accepted response clears only the
+captured text when it is still unchanged; failures, edits made while pending, and
+`prime_creation_uncertain` retain the draft. Creation never retries automatically.
+After acceptance the controller forces a catalog refresh (retaining the prior stale
+catalog if that refresh fails), closes the draft, selects the returned Prime
+`ChatIdentity`, and uses the explicit Prime selection flow to activate its
+transcript/composer. A lost or structurally invalid HTTP response is presented as
+`prime_creation_uncertain` because the one-shot create may already have succeeded.
+
+## Explicit Prime live state
+
+`usePrimeLiveStore.ts` is the only Prime activation and live-transport
+controller. Explicit activation has three direct-user entry points: Prime identity
+selection (or accepted creation) through `usePrimeSessionSelection()`, the retained
+transcript's Enable/Reconnect control, and the draft's Load Prime options control.
+The latter two call the same core activation function without changing the visible
+identity. The draft action first chooses its source from a refreshed passive
+catalog, then crosses the activation boundary only for that exact source. Deep
+links, catalog refresh, source ranking, and generic `selectChatIdentity` remain
+passive. Concurrent
+selections share the in-flight activation, while a desired, nonterminal live
+pipeline makes later clicks no-ops. Terminal, inactive, and unavailable state
+may be explicitly activated again. A graceful `closed` event or an authoritative
+`prime_runtime_not_activated` snapshot response after a server restart clears
+desired activation and returns the retained transcript to that read-only
+reconnect state; it never schedules an activation POST.
+
+Each pipeline is runtime+harness+session keyed and owns its abort controllers,
+generation/revision cursor, snapshot request, retry timer, and desired-activation
+state. Events advance only contiguously. A same-generation event at or below an
+already accepted full-snapshot revision is ignored as covered authority; this
+prevents snapshot catch-up from turning its own buffered SSE event into a false
+gap. Forward gaps, generation mismatches, disconnects, malformed transport, or
+stale freshness still revoke authority; bounded retry/backoff and online/visibility
+wake-up request a full snapshot before accepting fresh authority again. Runtime
+switch and deactivation abort the stream and clean timers/readers. Failed live
+recovery retains the last transcript and marks it stale rather than committing
+an authoritative empty state.
+
+Live snapshots project into `usePrimeTranscriptStore` without writing OpenCode
+stores. Per-tool running state is retained for the active streaming record;
+historical/result-paired calls are finalized. Passive paging and live snapshot
+projection use the same deterministic turn linking and tool-result pairing.
+

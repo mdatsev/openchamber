@@ -1,7 +1,6 @@
 import React from 'react';
 import morphdom from 'morphdom';
 import { renderMermaidASCII, renderMermaidSVG } from 'beautiful-mermaid';
-import type { Part } from '@opencode-ai/sdk/v2';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/lib/i18n';
 import { runtimeFetch } from '@/lib/runtime-fetch';
@@ -12,7 +11,7 @@ import type { Theme } from '@/types/theme';
 import type { ToolPopupContent } from './message/types';
 import { FadeInOnReveal } from './message/FadeInOnReveal';
 import { useUIStore } from '@/stores/useUIStore';
-import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
+import { useVisibleChatDirectory } from '@/hooks/useVisibleChatDirectory';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
 import type { EditorAPI } from '@/lib/api/types';
 import { isDesktopLocalOriginActive, isDesktopShell, isVSCodeRuntime } from '@/lib/desktop';
@@ -129,7 +128,7 @@ export type MarkdownVariant = 'assistant' | 'tool' | 'reasoning';
 
 interface MarkdownRendererProps {
   content: string;
-  part?: Part;
+  part?: { id: string };
   messageId: string;
   isAnimated?: boolean;
   skipFadeIn?: boolean;
@@ -1005,7 +1004,7 @@ const MarkdownRendererImpl: React.FC<MarkdownRendererProps> = ({
   const currentTheme = useCurrentMermaidTheme();
   const { editor, runtime } = useRuntimeAPIs();
   const containerRef = React.useRef<HTMLDivElement>(null);
-  const effectiveDirectory = useEffectiveDirectory() ?? '';
+  const effectiveDirectory = useVisibleChatDirectory() ?? '';
   const openContextPreview = useUIStore((state) => state.openContextPreview);
 
   const handlePreviewLoopback = React.useCallback((url: string) => {
@@ -1091,7 +1090,7 @@ const SimpleMarkdownRendererImpl: React.FC<{
   const { editor, runtime } = useRuntimeAPIs();
   const currentTheme = useCurrentMermaidTheme();
   const containerRef = React.useRef<HTMLDivElement>(null);
-  const effectiveDirectory = useEffectiveDirectory() ?? '';
+  const effectiveDirectory = useVisibleChatDirectory() ?? '';
 
   const renderedContent = React.useMemo(
     () => (stripFrontmatter ? stripLeadingFrontmatter(content) : content),

@@ -1,7 +1,6 @@
 import React from 'react';
-import type { Session } from '@opencode-ai/sdk/v2';
-import type { SessionGroup, SessionNode, GroupSearchData } from '../types';
-import { dedupeSessionsById, normalizePath } from '../utils';
+import type { SessionGroup, CatalogSessionNode, GroupSearchData } from '../types';
+import { normalizePath } from '../utils';
 import type { WorktreeMetadata } from '@/types/worktree';
 import type { SessionFoldersMap } from '@/stores/useSessionFoldersStore';
 import { streamPerfCount } from '@/stores/utils/streamDebug';
@@ -19,13 +18,12 @@ type ProjectItem = {
 
 type ProjectSection = {
   project: ProjectItem;
-  groups: SessionGroup[];
+  groups: SessionGroup<CatalogSessionNode>[];
 };
 
 type ProjectSectionCacheEntry = {
   project: ProjectItem;
-  activeSessions: Session[];
-  archivedSessions: Session[];
+  nodes: CatalogSessionNode[];
   availableWorktrees: WorktreeMetadata[];
   rootBranch: string | null;
   isRepo: boolean;
@@ -34,34 +32,33 @@ type ProjectSectionCacheEntry = {
 };
 
 const EMPTY_WORKTREES: WorktreeMetadata[] = [];
+const EMPTY_NODES_BY_PROJECT = new Map<string, CatalogSessionNode[]>();
 
 type Args = {
   normalizedProjects: ProjectItem[];
-  getSessionsForProject: (projectId: string) => Session[];
-  getArchivedSessionsForProject: (projectId: string) => Session[];
+  nodesByProject: ReadonlyMap<string, CatalogSessionNode[]>;
   availableWorktreesByProject: Map<string, WorktreeMetadata[]>;
   projectRepoStatus: Map<string, boolean | null>;
   projectRootBranches: Map<string, string | null>;
   lastRepoStatus: boolean;
   buildGroupedSessions: (
-    sessions: Session[],
+    nodes: CatalogSessionNode[],
     projectRoot: string,
     availableWorktrees: WorktreeMetadata[],
     rootBranch: string | null,
     isRepo: boolean,
-  ) => SessionGroup[];
+  ) => SessionGroup<CatalogSessionNode>[];
   hasSessionSearchQuery: boolean;
   normalizedSessionSearchQuery: string;
-  filterSessionNodesForSearch: (nodes: SessionNode[], query: string) => SessionNode[];
-  buildGroupSearchText: (group: SessionGroup) => string;
+  filterSessionNodesForSearch: (nodes: CatalogSessionNode[], query: string) => CatalogSessionNode[];
+  buildGroupSearchText: (group: SessionGroup<CatalogSessionNode>) => string;
   foldersMap: SessionFoldersMap;
 };
 
 export const useSessionSidebarSections = (args: Args) => {
   const {
     normalizedProjects,
-    getSessionsForProject,
-    getArchivedSessionsForProject,
+    nodesByProject = EMPTY_NODES_BY_PROJECT,
     availableWorktreesByProject,
     projectRepoStatus,
     projectRootBranches,
@@ -80,13 +77,8 @@ export const useSessionSidebarSections = (args: Args) => {
     const nextCache = new Map<string, ProjectSectionCacheEntry>();
     let reusedSections = 0;
     let rebuiltSections = 0;
-    const sameSessions = (left: Session[], right: Session[]): boolean => (
-      left.length === right.length && left.every((session, index) => session === right[index])
-    );
-
     const sections = normalizedProjects.map((project) => {
-      const activeSessions = getSessionsForProject(project.id);
-      const archivedSessions = getArchivedSessionsForProject(project.id);
+      const nodes = nodesByProject.get(project.id) ?? [];
       const worktreesForProject = availableWorktreesByProject.get(project.normalizedPath) ?? EMPTY_WORKTREES;
       const isRepo = projectRepoStatus.has(project.id)
         ? Boolean(projectRepoStatus.get(project.id))
@@ -96,8 +88,7 @@ export const useSessionSidebarSections = (args: Args) => {
       if (
         cached
         && cached.project === project
-        && sameSessions(cached.activeSessions, activeSessions)
-        && sameSessions(cached.archivedSessions, archivedSessions)
+        && cached.nodes === nodes
         && cached.availableWorktrees === worktreesForProject
         && cached.rootBranch === rootBranch
         && cached.isRepo === isRepo
@@ -109,9 +100,8 @@ export const useSessionSidebarSections = (args: Args) => {
       }
 
       rebuiltSections += 1;
-      const projectSessions = dedupeSessionsById([...activeSessions, ...archivedSessions]);
       const groups = buildGroupedSessions(
-        projectSessions,
+        nodes,
         project.normalizedPath,
         worktreesForProject,
         rootBranch,
@@ -120,8 +110,7 @@ export const useSessionSidebarSections = (args: Args) => {
       const section = { project, groups };
       nextCache.set(project.id, {
         project,
-        activeSessions,
-        archivedSessions,
+        nodes,
         availableWorktrees: worktreesForProject,
         rootBranch,
         isRepo,
@@ -136,8 +125,7 @@ export const useSessionSidebarSections = (args: Args) => {
     return sections;
   }, [
     normalizedProjects,
-    getSessionsForProject,
-    getArchivedSessionsForProject,
+    nodesByProject,
     availableWorktreesByProject,
     projectRepoStatus,
     lastRepoStatus,
@@ -150,12 +138,12 @@ export const useSessionSidebarSections = (args: Args) => {
   }, [projectSections]);
 
   const groupSearchDataByGroup = React.useMemo(() => {
-    const result = new WeakMap<SessionGroup, GroupSearchData>();
+    const result = new WeakMap<SessionGroup<CatalogSessionNode>, GroupSearchData<CatalogSessionNode>>();
     if (!hasSessionSearchQuery) {
       return result;
     }
 
-    const countNodes = (nodes: SessionNode[]): number => nodes.reduce((total, node) => total + 1 + countNodes(node.children), 0);
+    const countNodes = (nodes: CatalogSessionNode[]): number => nodes.reduce((total, node) => total + 1 + countNodes(node.children), 0);
 
     visibleProjectSections.forEach((section) => {
       section.groups.forEach((group) => {
@@ -229,7 +217,7 @@ export const useSessionSidebarSections = (args: Args) => {
         .filter((scope): scope is { scopeKey: string; directory: string | null } => Boolean(scope.scopeKey));
       const rootGroup = nonArchivedGroups.find((group) => group.isMain) ?? null;
 
-      const flatGroup: SessionGroup = {
+      const flatGroup: SessionGroup<CatalogSessionNode> = {
         id: 'flat',
         label: rootGroup?.label ?? '',
         branch: rootGroup?.branch ?? null,
@@ -246,7 +234,7 @@ export const useSessionSidebarSections = (args: Args) => {
       if (hasSessionSearchQuery) {
         const merged = nonArchivedGroups
           .map((group) => groupSearchDataByGroup.get(group))
-          .filter((data): data is GroupSearchData => Boolean(data));
+          .filter((data): data is GroupSearchData<CatalogSessionNode> => Boolean(data));
         groupSearchDataByGroup.set(flatGroup, {
           filteredNodes: sessions,
           matchedSessionCount: merged.reduce((total, data) => total + data.matchedSessionCount, 0),

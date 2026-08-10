@@ -1260,6 +1260,7 @@ const gracefulShutdownRuntime = createGracefulShutdownRuntime({
   },
   tunnelAuthController,
   scheduledTasksRuntime,
+  featureRoutesRuntime,
 });
 
 const gracefulShutdown = (...args) => gracefulShutdownRuntime.gracefulShutdown(...args);
@@ -1660,6 +1661,9 @@ async function main(options = {}) {
     writeSseEvent,
     permissionAutoAcceptRuntime,
     express,
+  });
+  server.once('close', () => {
+    void featureRoutesRuntime.dispose().catch(() => {});
   });
 
   const previewProxyRuntime = createPreviewProxyRuntime({

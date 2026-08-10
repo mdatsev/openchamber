@@ -1,6 +1,6 @@
 import React from 'react';
 import { cn } from '@/lib/utils';
-import type { SessionNode } from './types';
+import type { CatalogSessionNode } from './types';
 import { useI18n } from '@/lib/i18n';
 import { useSessionDisplayStore } from '@/stores/useSessionDisplayStore';
 import { Icon } from "@/components/icon/Icon";
@@ -12,9 +12,8 @@ import {
 import type { SessionNodeRenderExtras } from './sessionNodeItemUtils';
 
 type ActivityItem = {
-  node: SessionNode;
+  node: CatalogSessionNode;
   projectId: string | null;
-  groupDirectory: string | null;
   secondaryMeta: {
     projectLabel?: string | null;
     branchLabel?: string | null;
@@ -30,9 +29,8 @@ type ActivitySection = {
 type Props = {
   sections: ActivitySection[];
   renderSessionNode: (
-    node: SessionNode,
+    node: CatalogSessionNode,
     depth?: number,
-    groupDirectory?: string | null,
     projectId?: string | null,
     archivedBucket?: boolean,
     secondaryMeta?: { projectLabel?: string | null; branchLabel?: string | null } | null,
@@ -103,25 +101,25 @@ export function SidebarActivitySections(props: Props): React.ReactNode {
     });
   }, [batchSize]);
 
-  const buildRenderExtras = React.useCallback((nodes: SessionNode[]) => {
+  const buildRenderExtras = React.useCallback((nodes: CatalogSessionNode[]) => {
     const subtreeContainsEditing = new Set<string>();
     collectSubtreeContainingId(nodes, editingId, subtreeContainsEditing);
     const menuOpenSessionId = resolveMenuOpenSessionId(nodes, openSidebarMenuKey, 'recent', false);
-    const nodeStructureKeyByNode = new WeakMap<SessionNode, string>();
-    const visit = (node: SessionNode): void => {
+    const nodeStructureKeyByNode = new WeakMap<CatalogSessionNode, string>();
+    const visit = (node: CatalogSessionNode): void => {
       nodeStructureKeyByNode.set(node, computeNodeStructureKey(node));
       node.children.forEach(visit);
     };
     nodes.forEach(visit);
 
-    const childRenderExtrasFor = (child: SessionNode): RenderExtras => ({
+    const childRenderExtrasFor = (child: CatalogSessionNode): RenderExtras => ({
       subtreeContainsEditing,
       menuOpenSessionId,
       nodeStructureKey: nodeStructureKeyByNode.get(child) ?? '',
       childRenderExtrasFor,
     });
 
-    return (node: SessionNode): RenderExtras => ({
+    return (node: CatalogSessionNode): RenderExtras => ({
       subtreeContainsEditing,
       menuOpenSessionId,
       nodeStructureKey: nodeStructureKeyByNode.get(node) ?? '',
@@ -151,7 +149,6 @@ export function SidebarActivitySections(props: Props): React.ReactNode {
         const renderItem = (item: ActivityItem) => renderSessionNode(
           item.node,
           0,
-          item.groupDirectory,
           item.projectId,
           false,
           item.secondaryMeta,

@@ -8,9 +8,9 @@ import { clampPercent, resolveUsageTone } from '@/lib/quota';
 
 interface ContextUsageDisplayProps {
   totalTokens: number;
-  percentage: number;
-  colorPercentage?: number;
-  contextLimit: number;
+  percentage: number | null;
+  colorPercentage?: number | null;
+  contextLimit: number | null;
   outputLimit?: number;
   size?: 'default' | 'compact';
   isMobile?: boolean;
@@ -41,8 +41,11 @@ export const ContextUsageDisplay: React.FC<ContextUsageDisplayProps> = ({
 }) => {
   const { t } = useI18n();
   const [mobileTooltipOpen, setMobileTooltipOpen] = React.useState(false);
-  const colorPct = typeof colorPercentage === 'number' ? colorPercentage : percentage;
-  const progressPct = clampPercent(percentage) ?? 0;
+  const hasKnownPercentage = typeof percentage === 'number' && Number.isFinite(percentage);
+  const colorPct = typeof colorPercentage === 'number'
+    ? colorPercentage
+    : hasKnownPercentage ? percentage : 0;
+  const progressPct = clampPercent(hasKnownPercentage ? percentage : null) ?? 0;
   const progressTone = resolveUsageTone(colorPct);
   const progressColor = progressTone === 'critical'
     ? 'var(--status-error)'
@@ -75,8 +78,12 @@ export const ContextUsageDisplay: React.FC<ContextUsageDisplayProps> = ({
   const safeOutputLimit = typeof outputLimit === 'number' ? Math.max(outputLimit, 0) : 0;
   const tooltipLines = [
     t('contextUsage.tooltip.usedTokens', { tokens: formatTokens(totalTokens) }),
-    t('contextUsage.tooltip.contextLimit', { tokens: formatTokens(contextLimit) }),
-    t('contextUsage.tooltip.outputLimit', { tokens: formatTokens(safeOutputLimit) }),
+    ...(typeof contextLimit === 'number'
+      ? [t('contextUsage.tooltip.contextLimit', { tokens: formatTokens(contextLimit) })]
+      : []),
+    ...(typeof outputLimit === 'number'
+      ? [t('contextUsage.tooltip.outputLimit', { tokens: formatTokens(safeOutputLimit) })]
+      : []),
   ];
 
   const isInteractive = !isMobile && typeof onClick === 'function';
@@ -85,7 +92,9 @@ export const ContextUsageDisplay: React.FC<ContextUsageDisplayProps> = ({
     <>
       {!isMobile && !hideIcon && <Icon name="donut-chart" className="h-4 w-4 flex-shrink-0" />}
       <span className={cn('font-medium inline-flex items-center gap-1.5', valueClassName)}>
-        {showPercentIcon ? (
+        {!hasKnownPercentage ? (
+          <span className="text-foreground">{formatTokens(totalTokens)}</span>
+        ) : showPercentIcon ? (
           <>
             <svg
               viewBox={`0 0 ${circularProgressSize} ${circularProgressSize}`}
@@ -175,20 +184,26 @@ export const ContextUsageDisplay: React.FC<ContextUsageDisplayProps> = ({
                 <span className="typography-meta text-muted-foreground">{t('contextUsage.mobile.usedTokens')}</span>
                 <span className="typography-meta text-foreground font-medium">{formatTokens(totalTokens)}</span>
               </div>
-              <div className="flex justify-between items-center">
-                <span className="typography-meta text-muted-foreground">{t('contextUsage.mobile.contextLimit')}</span>
-                <span className="typography-meta text-foreground font-medium">{formatTokens(contextLimit)}</span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="typography-meta text-muted-foreground">{t('contextUsage.mobile.outputLimit')}</span>
-                <span className="typography-meta text-foreground font-medium">{formatTokens(safeOutputLimit)}</span>
-              </div>
-              <div className="flex justify-between items-center pt-1 border-t border-border/40">
-                <span className="typography-meta text-muted-foreground">{t('contextUsage.mobile.usage')}</span>
-                <span className={cn('typography-meta font-semibold', getPercentageColor(colorPct))}>
-                  {Math.min(percentage, 999).toFixed(1)}%
-                </span>
-              </div>
+              {typeof contextLimit === 'number' ? (
+                <div className="flex justify-between items-center">
+                  <span className="typography-meta text-muted-foreground">{t('contextUsage.mobile.contextLimit')}</span>
+                  <span className="typography-meta text-foreground font-medium">{formatTokens(contextLimit)}</span>
+                </div>
+              ) : null}
+              {typeof outputLimit === 'number' ? (
+                <div className="flex justify-between items-center">
+                  <span className="typography-meta text-muted-foreground">{t('contextUsage.mobile.outputLimit')}</span>
+                  <span className="typography-meta text-foreground font-medium">{formatTokens(safeOutputLimit)}</span>
+                </div>
+              ) : null}
+              {hasKnownPercentage ? (
+                <div className="flex justify-between items-center pt-1 border-t border-border/40">
+                  <span className="typography-meta text-muted-foreground">{t('contextUsage.mobile.usage')}</span>
+                  <span className={cn('typography-meta font-semibold', getPercentageColor(colorPct))}>
+                    {Math.min(percentage, 999).toFixed(1)}%
+                  </span>
+                </div>
+              ) : null}
             </div>
           </div>
         </MobileOverlayPanel>

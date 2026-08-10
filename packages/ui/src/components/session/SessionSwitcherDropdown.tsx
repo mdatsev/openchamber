@@ -1,6 +1,5 @@
 import React from 'react';
 import { Menu as BaseMenu } from '@base-ui/react/menu';
-import type { Session } from '@opencode-ai/sdk/v2';
 
 import {
   DropdownMenu,
@@ -9,15 +8,18 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Icon } from '@/components/icon/Icon';
 import { useSessionUIStore } from '@/sync/session-ui-store';
+import { chatIdentitiesEqual } from '@/lib/chat-identity';
 import { useGlobalSessionStatus, useSessionQuestions } from '@/sync/sync-context';
 import { useSessionUnseenCount } from '@/sync/notification-store';
 import { useSwitcherItems, type SwitcherItem } from '@/components/session/sidebar/hooks/useSwitcherItems';
 import { useUIStore } from '@/stores/useUIStore';
-import { resolveGlobalSessionDirectory } from '@/stores/useGlobalSessionsStore';
 import { formatSessionCompactDateLabel } from './sidebar/utils';
-import type { SessionNode } from './sidebar/types';
+import type { SessionCatalogEntry, SessionCatalogNode } from './sidebar/sessionCatalog';
 import { useI18n } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
+import { useChatSelectionStore } from '@/stores/useChatSelectionStore';
+import { useProjectsStore } from '@/stores/useProjectsStore';
+import { selectChatIdentity } from '@/sync/session-navigation';
 
 type SecondaryMeta = SwitcherItem['secondaryMeta'];
 
@@ -115,7 +117,7 @@ function SwitcherContent({ onSelect, variant, scopeProjectId }: SwitcherContentP
         ) : (
           items.map((item) => (
             <SwitcherNode
-              key={item.node.session.id}
+              key={`${item.node.session.identity.runtimeKey}:${item.node.session.identity.harness}:${item.node.session.identity.sessionId}`}
               item={item}
               depth={0}
               variant={variant}
@@ -131,7 +133,7 @@ function SwitcherContent({ onSelect, variant, scopeProjectId }: SwitcherContentP
 }
 
 type SwitcherNodeProps = {
-  item: { node: SessionNode; projectId: string | null; groupDirectory: string | null; secondaryMeta: SecondaryMeta };
+  item: { node: SessionCatalogNode; projectId: string; secondaryMeta: SecondaryMeta };
   depth: number;
   variant: SwitcherVariant;
   expandedParents: Set<string>;
@@ -143,25 +145,26 @@ function SwitcherNode({ item, depth, variant, expandedParents, toggleParent, clo
   const { node, secondaryMeta } = item;
   const session = node.session;
   const hasChildren = node.children.length > 0;
-  const isExpanded = expandedParents.has(session.id);
+  const isExpanded = expandedParents.has(session.identity.sessionId);
 
   return (
     <>
       <SwitcherRow
         session={session}
+        projectId={item.projectId}
         depth={depth}
         variant={variant}
         secondaryMeta={secondaryMeta}
         hasChildren={hasChildren}
         isExpanded={isExpanded}
-        onToggleExpand={hasChildren ? () => toggleParent(session.id) : undefined}
+        onToggleExpand={hasChildren ? () => toggleParent(session.identity.sessionId) : undefined}
         closeDropdown={closeDropdown}
       />
       {hasChildren && isExpanded
         ? node.children.map((childNode) => (
             <SwitcherNode
-              key={childNode.session.id}
-              item={{ node: childNode, projectId: item.projectId, groupDirectory: item.groupDirectory, secondaryMeta }}
+              key={`${childNode.session.identity.runtimeKey}:${childNode.session.identity.harness}:${childNode.session.identity.sessionId}`}
+              item={{ node: childNode, projectId: item.projectId, secondaryMeta }}
               depth={depth + 1}
               variant={variant}
               expandedParents={expandedParents}
@@ -175,7 +178,8 @@ function SwitcherNode({ item, depth, variant, expandedParents, toggleParent, clo
 }
 
 type SwitcherRowProps = {
-  session: Session;
+  session: SessionCatalogEntry;
+  projectId: string;
   depth: number;
   variant: SwitcherVariant;
   secondaryMeta: SecondaryMeta;
@@ -185,27 +189,28 @@ type SwitcherRowProps = {
   closeDropdown: () => void;
 };
 
-function SwitcherRow({ session, depth, variant, secondaryMeta, hasChildren, isExpanded, onToggleExpand, closeDropdown }: SwitcherRowProps): React.ReactElement {
+function SwitcherRow({ session, projectId, depth, variant, secondaryMeta, hasChildren, isExpanded, onToggleExpand, closeDropdown }: SwitcherRowProps): React.ReactElement {
   const { t } = useI18n();
-  const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
-  const setCurrentSession = useSessionUIStore((state) => state.setCurrentSession);
+  const isActive = useChatSelectionStore((state) =>
+    chatIdentitiesEqual(state.visibleChatIdentity, session.identity),
+  );
   const notifyOnSubtasks = useUIStore((state) => state.notifyOnSubtasks);
+  const setActiveProjectIdOnly = useProjectsStore((state) => state.setActiveProjectIdOnly);
 
-  const sessionStatus = useGlobalSessionStatus(session.id);
-  const sessionDirectory = resolveGlobalSessionDirectory(session) ?? undefined;
-  const sessionQuestions = useSessionQuestions(session.id, sessionDirectory, { bootstrap: false });
-  const unseenCount = useSessionUnseenCount(session.id);
+  const connectedSessionId = session.activity === null ? session.identity.sessionId : '';
+  const sessionStatus = useGlobalSessionStatus(connectedSessionId);
+  const sessionQuestions = useSessionQuestions(connectedSessionId, undefined, { bootstrap: false });
+  const unseenCount = useSessionUnseenCount(connectedSessionId);
 
-  const isActive = currentSessionId === session.id;
   const sessionTitle = session.title?.trim() || t('sessions.sidebar.session.untitled');
-  const isSubtask = Boolean((session as Session & { parentID?: string | null }).parentID);
+  const isSubtask = session.parentIdentity !== null;
   const needsAttention = unseenCount > 0 && (!isSubtask || notifyOnSubtasks);
   const statusType = sessionStatus?.type ?? 'idle';
   const hasPendingQuestion = sessionQuestions.length > 0;
-  const isStreaming = !hasPendingQuestion && (statusType === 'busy' || statusType === 'retry');
+  const isStreaming = !hasPendingQuestion && (session.activity === 'working' || statusType === 'busy' || statusType === 'retry');
   const showUnreadDot = !isStreaming && !hasPendingQuestion && needsAttention && !isActive;
 
-  const timestamp = session.time?.updated || session.time?.created || Date.now();
+  const timestamp = session.updatedAt || session.createdAt || Date.now();
   const timeLabel = formatSessionCompactDateLabel(timestamp);
 
   const projectLabel = secondaryMeta?.projectLabel?.trim() || null;
@@ -217,10 +222,10 @@ function SwitcherRow({ session, depth, variant, secondaryMeta, hasChildren, isEx
       closeDropdown();
       return;
     }
-    const directory = resolveGlobalSessionDirectory(session);
-    setCurrentSession(session.id, directory ?? null);
+    setActiveProjectIdOnly(projectId);
+    selectChatIdentity(session.identity);
     closeDropdown();
-  }, [closeDropdown, isActive, session, setCurrentSession]);
+  }, [closeDropdown, isActive, projectId, session, setActiveProjectIdOnly]);
 
   return (
     <BaseMenu.Item

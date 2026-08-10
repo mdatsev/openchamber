@@ -1,8 +1,8 @@
 /**
  * Per-session draft persistence for the composer.
  *
- * A draft belongs to a (runtime, directory, session) identity. Switching any
- * of those saves the outgoing draft and restores the incoming one, so moving
+ * A draft belongs to a (runtime, harness, directory, session) identity. Switching
+ * any of those saves the outgoing draft and restores the incoming one, so moving
  * between sessions never loses typed text and never leaks it into the wrong
  * conversation.
  *

@@ -7,11 +7,11 @@ import { cn } from '@/lib/utils';
 import { SimpleMarkdownRenderer } from '../../MarkdownRenderer';
 import { MessageFilesDisplay } from '../../FileAttachment';
 import { getToolMetadata } from '@/lib/toolHelpers';
-import type { ToolPart as ToolPartType, ToolState as ToolStateUnion, FilePart } from '@opencode-ai/sdk/v2';
+import type { TranscriptFilePart, TranscriptToolPart, TranscriptToolState } from '../../transcript/types';
 import { toolDisplayStyles } from '@/lib/typography';
 import { WorkerHighlightedCode } from '@/components/code/WorkerHighlightedCode';
 import { useOptionalThemeSystem } from '@/contexts/useThemeSystem';
-import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
+import { useVisibleChatDirectory } from '@/hooks/useVisibleChatDirectory';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSessionMessageRecords, useEnsureSessionMessages } from '@/sync/sync-context';
 import { useUIStore } from '@/stores/useUIStore';
@@ -76,10 +76,10 @@ const TOOL_ROW_TEXT_CLASS = '!text-[length:var(--text-meta)] !leading-5 sm:!lead
 const TOOL_ROW_TITLE_CLASS = cn('typography-meta font-medium', TOOL_ROW_TEXT_CLASS);
 const TOOL_ROW_DESCRIPTION_CLASS = cn('typography-meta', TOOL_ROW_TEXT_CLASS);
 
-type ToolStateWithMetadata = ToolStateUnion & { metadata?: Record<string, unknown>; input?: Record<string, unknown>; output?: string; error?: string; time?: { start: number; end?: number }; attachments?: Array<FilePart> };
+type ToolStateWithMetadata = TranscriptToolState & { metadata?: Record<string, unknown>; input?: Record<string, unknown>; output?: string; error?: string; time?: { start: number; end?: number }; attachments?: Array<TranscriptFilePart> };
 
 interface ToolPartProps {
-    part: ToolPartType;
+    part: TranscriptToolPart;
     isExpanded: boolean;
     onToggle: (toolId: string) => void;
     isMobile: boolean;
@@ -106,6 +106,218 @@ const normalizeToolName = (toolName: string | undefined | null): string => {
     }
 
     return trimmed;
+};
+
+const IPYTHON_INPUT_SCAN_LENGTH = 4096;
+const IPYTHON_DESCRIPTOR_MAX_LENGTH = 64;
+const TOOL_DESCRIPTION_MAX_LENGTH = 100;
+const IPYTHON_IMPORT_PATTERN = /^\s*(?:import\s+\S|from\s+\S+\s+import\s+)/;
+const IPYTHON_CONTROL_PATTERN = /^\s*(?:if|elif|else|for|while|with|try|except|finally)\b.*:\s*$/;
+const IPYTHON_DEFINITION_PATTERN = /^\s*(?:async\s+def|def|class)\s+/;
+const IPYTHON_CALL_PATTERN = /^\s*(?:await\s+)?[A-Za-z_][A-Za-z0-9_.]*\s*\(/;
+const IPYTHON_LOW_SIGNAL_CALL_PATTERN = /^\s*(?:await\s+)?(?:print|len|str|repr|int|float|list|dict|set|tuple)\s*\(/;
+const IPYTHON_ASSIGNMENT_CALL_PATTERN = /^\s*[A-Za-z_][A-Za-z0-9_]*(?:\s*:\s*[^=]+)?\s*=\s*(?:await\s+)?[A-Za-z_][A-Za-z0-9_.]*\s*\(/;
+const IPYTHON_LOW_SIGNAL_ASSIGNMENT_CALL_PATTERN = /^\s*[A-Za-z_][A-Za-z0-9_]*(?:\s*:\s*[^=]+)?\s*=\s*(?:await\s+)?(?:Path|pathlib\.Path|json\.loads|json\.dumps|str|int|float|list|dict|set|tuple)\s*\(/;
+const IPYTHON_EFFECT_CALL_PATTERN = /^\s*(?:await\s+)?[A-Za-z_][A-Za-z0-9_.]*\.(?:write_text|write_bytes|mkdir|unlink|rename|replace|touch|append|extend|update|add|remove|discard|close|commit|execute|run)\s*\(/;
+
+const collapseIPythonPreview = (value: string) => {
+    const redacted = value
+        .replace(/[A-Za-z0-9+/]{80,}={0,2}/g, '<blob>')
+        .replace(/\b((?=\w*(?:token|key|secret|password))[A-Za-z_]\w*)\s*=\s*(["'])[^"']*\2/gi, '$1=<redacted>')
+        .replace(/\b((?=\w*(?:token|key|secret|password))[A-Za-z_]\w*)\s*=\s*(?!<redacted>)(?!["'])\S+/gi, '$1=<redacted>')
+        .replace(/(["'])sk-[^"']+\1/g, '$1<redacted>$1')
+        .replace(/(["']).{160,}\1/g, '$1…$1')
+        .replace(/\s+/g, ' ')
+        .trim();
+    return redacted.length <= IPYTHON_DESCRIPTOR_MAX_LENGTH
+        ? redacted
+        : `${redacted.slice(0, IPYTHON_DESCRIPTOR_MAX_LENGTH - 1).trimEnd()}…`;
+};
+
+const IPYTHON_BASH_SET_PATTERN = /^\s*set\s+[-+][A-Za-z]*(?:\s+[-+]?\w+)*(?:\s+pipefail)?\s*$/;
+const IPYTHON_BASH_SETUP_PATTERN = /^\s*(?:export\s+\w+=|source\s+\S+|\.\s+\S+)/;
+const IPYTHON_BASH_MUTATION_PATTERN = /\b(?:rm|mv|cp|git\s+(?:add|commit)|npm\s+install|sed\s+-i|perl\s+-pi|tee|cat\s*>|apply_patch)\b/;
+
+const shellPreviewWords = (line: string): string[] => {
+    const words: string[] = [];
+    for (const match of line.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)) {
+        words.push(match[1] ?? match[2] ?? match[3] ?? '');
+    }
+    return words;
+};
+
+const simplifyIPythonBashCommand = (line: string) => {
+    const words = shellPreviewWords(line);
+    const joined = words.join(' ');
+    if (words[0] === 'cd') return 'cd';
+    if (words[0] === 'npm') {
+        const runIndex = words.indexOf('run');
+        if (runIndex >= 0 && words[runIndex + 1]) return `npm ${words.slice(runIndex + 1).join(' ')}`;
+    }
+    const pytestIndex = words.indexOf('pytest');
+    if (words[0] === 'uv' && words[1] === 'run' && pytestIndex >= 0) {
+        return `pytest ${words.slice(pytestIndex + 1).join(' ')}`.trim();
+    }
+    if ((words[0] === 'python' || words[0] === 'python3') && words[1] === '-m' && words[2] === 'pytest') {
+        return `pytest ${words.slice(3).join(' ')}`.trim();
+    }
+    if (joined.includes('node_modules/.bin/')) return joined.replace(/\S*node_modules\/\.bin\//g, '');
+    if (words[0] === 'apply_patch') return 'apply patch';
+    return line;
+};
+
+const getIPythonBashPreview = (lines: readonly string[]) => {
+    let best: { text: string; score: number } | undefined;
+    let directoryFallback: string | undefined;
+    let index = 0;
+    for (const rawLine of lines) {
+        for (const rawPart of rawLine.split(/\s*(?:&&|;)\s*/)) {
+            const command = rawPart.replace(/^\s*!/, '').trim();
+            if (!command
+                || command.startsWith('#')
+                || IPYTHON_BASH_SET_PATTERN.test(command)
+                || IPYTHON_BASH_SETUP_PATTERN.test(command)) continue;
+            const firstWord = shellPreviewWords(command)[0] ?? '';
+            if (firstWord === 'cd') {
+                directoryFallback ??= 'cd';
+                continue;
+            }
+            const simplified = simplifyIPythonBashCommand(command);
+            let score = 30 + index;
+            if (simplified !== command) score += 40;
+            if (['rm', 'mv', 'cp', 'git', 'npm', 'pnpm', 'pytest', 'vitest'].includes(firstWord)) score += 20;
+            if (IPYTHON_BASH_MUTATION_PATTERN.test(command)) score += 40;
+            if (!best || score > best.score) best = { text: simplified, score };
+            index += 1;
+        }
+    }
+    return collapseIPythonPreview(best?.text ?? directoryFallback ?? '');
+};
+
+const ipythonIndent = (line: string) => line.match(/^\s*/)?.[0].length ?? 0;
+const isSkippableIPythonLine = (line: string) => {
+    const trimmed = line.trim();
+    return !trimmed || trimmed.startsWith('#') || IPYTHON_IMPORT_PATTERN.test(line) || trimmed.startsWith('@');
+};
+const firstIPythonChildLine = (lines: readonly string[], parentIndex: number): number | undefined => {
+    const parentIndent = ipythonIndent(lines[parentIndex] ?? '');
+    for (let index = parentIndex + 1; index < lines.length; index += 1) {
+        const line = lines[index] ?? '';
+        if (isSkippableIPythonLine(line)) continue;
+        if (ipythonIndent(line) <= parentIndent) return undefined;
+        return index;
+    }
+    return undefined;
+};
+const ipythonLineScore = (lines: readonly string[], index: number): number => {
+    const line = lines[index] ?? '';
+    const trimmed = line.trim();
+    if (isSkippableIPythonLine(line)) return -1;
+    if (/\bawait\s+edit\s*\(/.test(line)) return 100;
+    if (/\.(?:write_text|write_bytes|mkdir|unlink|rename|replace|touch)\s*\(/.test(line)) return 95;
+    if (/subprocess\.(?:run|check_call|check_output|Popen)\s*\(/.test(line)) return 90;
+    if (IPYTHON_EFFECT_CALL_PATTERN.test(line)) return 80;
+    if (/^\s*if\s+__name__\s*==\s*["']__main__["']\s*:/.test(line)) return 70;
+    if (IPYTHON_CONTROL_PATTERN.test(line)) {
+        const childIndex = firstIPythonChildLine(lines, index);
+        return childIndex === undefined ? 20 : Math.max(20, ipythonLineScore(lines, childIndex) - 5);
+    }
+    if (IPYTHON_DEFINITION_PATTERN.test(line)) return 50;
+    if (IPYTHON_LOW_SIGNAL_ASSIGNMENT_CALL_PATTERN.test(line)) return 25;
+    if (IPYTHON_ASSIGNMENT_CALL_PATTERN.test(line)) return 60;
+    if (IPYTHON_CALL_PATTERN.test(line) && !IPYTHON_LOW_SIGNAL_CALL_PATTERN.test(line)) return 65;
+    if (IPYTHON_CALL_PATTERN.test(line)) return 15;
+    return trimmed ? 30 : -1;
+};
+const ipythonPreviewIndex = (lines: readonly string[], index: number): number => {
+    if (!IPYTHON_CONTROL_PATTERN.test(lines[index] ?? '')) return index;
+    const childIndex = firstIPythonChildLine(lines, index);
+    return childIndex === undefined ? index : ipythonPreviewIndex(lines, childIndex);
+};
+
+const getIPythonInputPresentation = (code: string) => {
+    const lines = code.slice(0, IPYTHON_INPUT_SCAN_LENGTH).split(/\r?\n/);
+    const firstContentLineIndex = lines.findIndex((line) => line.trim().length > 0);
+    if (firstContentLineIndex < 0) return { language: 'python', preview: '' };
+    const firstContentLine = lines[firstContentLineIndex]?.trim() ?? '';
+    if (/^%%bash(?:\s|$)/.test(firstContentLine)) {
+        return {
+            language: 'bash',
+            preview: getIPythonBashPreview(lines.slice(firstContentLineIndex + 1)),
+        };
+    }
+    let bestIndex = firstContentLineIndex;
+    let bestScore = -1;
+    for (let index = firstContentLineIndex; index < lines.length; index += 1) {
+        const score = ipythonLineScore(lines, index);
+        if (score > bestScore) {
+            bestIndex = index;
+            bestScore = score;
+        }
+    }
+    return {
+        language: 'python',
+        preview: collapseIPythonPreview((lines[ipythonPreviewIndex(lines, bestIndex)] ?? '').trim()),
+    };
+};
+
+type IPythonDiffSummary = { path: string; additions: number; deletions: number };
+
+const getIPythonDiffSummaries = (metadata: Record<string, unknown> | undefined): IPythonDiffSummary[] => {
+    const files = Array.isArray(metadata?.files) ? metadata.files.slice(0, 64) : [];
+    const byPath = new Map<string, IPythonDiffSummary>();
+    for (const file of files) {
+        if (!isRecord(file) || typeof file.relativePath !== 'string' || file.relativePath.length > 512) continue;
+        const additions = Number.isSafeInteger(file.additions) && Number(file.additions) >= 0 ? Number(file.additions) : 0;
+        const deletions = Number.isSafeInteger(file.deletions) && Number(file.deletions) >= 0 ? Number(file.deletions) : 0;
+        const existing = byPath.get(file.relativePath);
+        if (existing) {
+            existing.additions += additions;
+            existing.deletions += deletions;
+        } else {
+            byPath.set(file.relativePath, { path: file.relativePath, additions, deletions });
+        }
+    }
+    return [...byPath.values()];
+};
+
+type IPythonDiffGroup = {
+    id: string;
+    title: string;
+    entries: DiffPatchEntry[];
+};
+
+const groupIPythonDiffEntries = (entries: readonly DiffPatchEntry[]): IPythonDiffGroup[] => {
+    const byPath = new Map<string, IPythonDiffGroup>();
+    for (const entry of entries) {
+        const key = entry.filePath ?? entry.title ?? entry.id;
+        const existing = byPath.get(key);
+        if (existing) {
+            existing.entries.push(entry);
+        } else {
+            byPath.set(key, { id: `ipython-${key}`, title: entry.title, entries: [entry] });
+        }
+    }
+    return [...byPath.values()];
+};
+
+const getIPythonLineCounts = (code: string, output: string | undefined, hasDiffs: boolean) => {
+    const lines = code.split(/\r?\n/);
+    const firstContentLineIndex = lines.findIndex((line) => line.trim().length > 0);
+    const body = firstContentLineIndex >= 0 && /^%%bash(?:\s|$)/.test(lines[firstContentLineIndex]?.trim() ?? '')
+        ? lines.slice(firstContentLineIndex + 1)
+        : lines;
+    const inputLines = body.filter((line) => line.trim().length > 0).length;
+    const trimmedOutput = hasDiffs ? '' : (output ?? '').trim();
+    return {
+        input: inputLines,
+        output: trimmedOutput ? trimmedOutput.split(/\r?\n/).length : 0,
+    };
+};
+
+const formatIPythonDuration = (durationMs: unknown): string | null => {
+    if (typeof durationMs !== 'number' || !Number.isFinite(durationMs) || durationMs < 0) return null;
+    return durationMs < 1000 ? `${Math.round(durationMs)}ms` : `${(durationMs / 1000).toFixed(1)}s`;
 };
 
 const GIT_REFRESH_MUTATING_TOOLS = new Set([
@@ -204,11 +416,8 @@ const useDeferredExpandedContent = (isExpanded: boolean) => {
     return shouldRender;
 };
 
-const parseDiffStats = (metadata?: Record<string, unknown>): { added: number; removed: number } | null => {
-    const diffText = getPatchText((metadata as { patch?: unknown } | undefined)?.patch)
-        ?? getPatchText(metadata?.diff);
+const parsePatchStats = (diffText: string | undefined): { added: number; removed: number } | null => {
     if (!diffText) return null;
-
     let added = 0;
     let removed = 0;
     let lineStart = 0;
@@ -227,6 +436,13 @@ const parseDiffStats = (metadata?: Record<string, unknown>): { added: number; re
     if (added === 0 && removed === 0) return null;
     return { added, removed };
 };
+
+const parseDiffStats = (metadata?: Record<string, unknown>): { added: number; removed: number } | null => (
+    parsePatchStats(
+        getPatchText((metadata as { patch?: unknown } | undefined)?.patch)
+        ?? getPatchText(metadata?.diff),
+    )
+);
 
 const parseWriteLineCount = (input?: Record<string, unknown>): number | null => {
     if (!input?.content || typeof input.content !== 'string') return null;
@@ -440,7 +656,7 @@ const parseQuestionOutput = (output: string): Array<{ question: string; answer: 
     return pairs.length > 0 ? pairs : null;
 };
 
-const getToolDescriptionPath = (part: ToolPartType, state: ToolStateUnion, currentDirectory: string): string | null => {
+const getToolDescriptionPath = (part: TranscriptToolPart, state: TranscriptToolState, currentDirectory: string): string | null => {
     const stateWithData = state as ToolStateWithMetadata;
     const metadata = stateWithData.metadata;
     const input = stateWithData.input;
@@ -520,7 +736,7 @@ const getLspToolDescription = (input: Record<string, unknown> | undefined, curre
     return displayPath ? `${operation} ${displayPath}${position}` : operation;
 };
 
-const getToolDescription = (part: ToolPartType, state: ToolStateUnion, currentDirectory: string): string => {
+const getToolDescription = (part: TranscriptToolPart, state: TranscriptToolState, currentDirectory: string): string => {
     const stateWithData = state as ToolStateWithMetadata;
     const metadata = stateWithData.metadata;
     const input = stateWithData.input;
@@ -546,7 +762,11 @@ const getToolDescription = (part: ToolPartType, state: ToolStateUnion, currentDi
 
     if (part.tool === 'bash' && input?.command && typeof input.command === 'string') {
         const firstLine = input.command.split('\n')[0];
-        return firstLine.substring(0, 100);
+        return firstLine.substring(0, TOOL_DESCRIPTION_MAX_LENGTH);
+    }
+
+    if (part.tool === 'ipython' && typeof input?.code === 'string') {
+        return getIPythonInputPresentation(input.code).preview;
     }
 
     if (part.tool === 'task' && input?.description && typeof input.description === 'string') {
@@ -627,7 +847,7 @@ const ToolScrollableSection: React.FC<ToolScrollableSectionProps> = ({
 
 const getToolOutputLanguage = (
     output: string,
-    part: ToolPartType,
+    part: TranscriptToolPart,
     metadata: Record<string, unknown> | undefined,
     input: Record<string, unknown> | undefined,
 ): string => {
@@ -640,7 +860,7 @@ const getToolOutputLanguage = (
 
 const getToolOutputText = (
     output: string,
-    part: ToolPartType,
+    part: TranscriptToolPart,
     metadata: Record<string, unknown> | undefined,
 ): string => {
     if (part.tool === 'bash') {
@@ -692,7 +912,7 @@ const StreamingPlainTextOutput: React.FC<{ output: string }> = ({ output }) => {
 
 const ToolScrollableTextOutput: React.FC<{
     output: string;
-    part: ToolPartType;
+    part: TranscriptToolPart;
     metadata: Record<string, unknown> | undefined;
     input: Record<string, unknown> | undefined;
     isStreaming?: boolean;
@@ -1018,7 +1238,7 @@ const TaskSummaryEntriesList = React.memo(({
 
 TaskSummaryEntriesList.displayName = 'TaskSummaryEntriesList';
 
-const TaskToolSummary: React.FC<{
+type TaskToolSummaryProps = {
     entries: TaskToolSummaryEntry[];
     isExpanded: boolean;
     isMobile: boolean;
@@ -1028,9 +1248,11 @@ const TaskToolSummary: React.FC<{
     input?: Record<string, unknown>;
     animateTailText?: boolean;
     isActive?: boolean;
-}> = ({ entries, isExpanded, isMobile, output, sessionId, onShowPopup, input, animateTailText = true, isActive = false }) => {
+};
+
+const TaskToolSummary: React.FC<TaskToolSummaryProps> = ({ entries, isExpanded, isMobile, output, sessionId, onShowPopup, input, animateTailText = true, isActive = false }) => {
     const { t } = useI18n();
-    const currentDirectory = useEffectiveDirectory();
+    const currentDirectory = useVisibleChatDirectory();
     const setCurrentSession = useSessionUIStore((state) => state.setCurrentSession);
     const openContextPanelTab = useUIStore((state) => state.openContextPanelTab);
     const showToolFileIcons = useUIStore((state) => state.showToolFileIcons);
@@ -1135,6 +1357,65 @@ const TaskToolSummary: React.FC<{
                 </div>
             ) : null}
         </div>
+    );
+};
+
+type ObservedTaskToolSummaryProps = TaskToolSummaryProps & {
+    onEntriesChange?: () => void;
+};
+
+const ObservedTaskToolSummary: React.FC<ObservedTaskToolSummaryProps> = ({
+    entries,
+    onEntriesChange,
+    ...props
+}) => {
+    const renderSignature = React.useMemo(
+        () => entries.map(getTaskSummaryEntryRenderSignature).join('\u0000'),
+        [entries],
+    );
+    const previousRenderSignatureRef = React.useRef<string | null>(null);
+
+    React.useEffect(() => {
+        const previous = previousRenderSignatureRef.current;
+        previousRenderSignatureRef.current = renderSignature;
+        if (previous === null || previous === renderSignature || entries.length === 0) return;
+        onEntriesChange?.();
+    }, [entries.length, onEntriesChange, renderSignature]);
+
+    return <TaskToolSummary {...props} entries={entries} />;
+};
+
+type ConnectedTaskToolSummaryProps = Omit<TaskToolSummaryProps, 'entries' | 'sessionId'> & {
+    currentDirectory: string;
+    metadataEntries: TaskToolSummaryEntry[];
+    onEntriesChange?: () => void;
+    sessionId: string;
+};
+
+const ConnectedTaskToolSummary: React.FC<ConnectedTaskToolSummaryProps> = ({
+    currentDirectory,
+    metadataEntries,
+    onEntriesChange,
+    sessionId,
+    ...props
+}) => {
+    const childSessionMessages = useSessionMessageRecords(sessionId, currentDirectory);
+    useEnsureSessionMessages(sessionId, currentDirectory);
+    const childEntries = React.useMemo(
+        () => Array.isArray(childSessionMessages) && childSessionMessages.length > 0
+            ? buildTaskSummaryEntriesFromSession(childSessionMessages)
+            : [],
+        [childSessionMessages],
+    );
+    const entries = childEntries.length > 0 ? childEntries : metadataEntries;
+
+    return (
+        <ObservedTaskToolSummary
+            {...props}
+            entries={entries}
+            sessionId={sessionId}
+            onEntriesChange={onEntriesChange}
+        />
     );
 };
 
@@ -1340,8 +1621,8 @@ const DiffPreview: React.FC<DiffPreviewProps> = React.memo(({ diff, pierreTheme,
 DiffPreview.displayName = 'DiffPreview';
 
 interface ToolExpandedContentProps {
-    part: ToolPartType;
-    state: ToolStateUnion;
+    part: TranscriptToolPart;
+    state: TranscriptToolState;
     currentDirectory: string;
     isExpanded: boolean;
     onShowPopup?: (content: ToolPopupContent) => void;
@@ -1410,6 +1691,24 @@ const ToolExpandedContent: React.FC<ToolExpandedContentProps> = React.memo(({
         return formatInputForDisplay(input, part.tool);
     }, [input, part.tool]);
     const hasInputText = !hideToolInputPreview && inputTextContent.trim().length > 0;
+    const isIPythonTool = normalizeToolName(part.tool) === 'ipython';
+    const ipythonInputPresentation = React.useMemo(() => (
+        isIPythonTool && typeof input?.code === 'string'
+            ? getIPythonInputPresentation(input.code)
+            : null
+    ), [input?.code, isIPythonTool]);
+    const isIPythonInput = ipythonInputPresentation !== null;
+    const ipythonDiffsOmitted = isIPythonTool
+        && Number.isSafeInteger(metadata?.ipythonDiffsOmitted)
+        && Number(metadata?.ipythonDiffsOmitted) > 0
+        ? Number(metadata?.ipythonDiffsOmitted)
+        : 0;
+    const diffGroups = React.useMemo(
+        () => isIPythonTool
+            ? groupIPythonDiffEntries(diffEntries)
+            : diffEntries.map((entry) => ({ id: entry.id, title: entry.title, entries: [entry] })),
+        [diffEntries, isIPythonTool],
+    );
     const isWriteLikeTool = part.tool === 'write' || part.tool === 'create' || part.tool === 'file_write';
     const isTodoTool = part.tool === 'todowrite' || part.tool === 'todoread';
     const todoContent = React.useMemo(() => {
@@ -1600,48 +1899,83 @@ const ToolExpandedContent: React.FC<ToolExpandedContentProps> = React.memo(({
             );
         }
 
-        if ((part.tool === 'edit' || part.tool === 'multiedit' || part.tool === 'apply_patch' || part.tool === 'write') && (diffEntries.length > 0 || !!diagnosticSection)) {
+        const supportsRichDiff = part.tool === 'edit'
+            || part.tool === 'multiedit'
+            || part.tool === 'apply_patch'
+            || part.tool === 'write'
+            || isIPythonTool;
+        if (supportsRichDiff && (diffEntries.length > 0 || !!diagnosticSection)) {
             return renderScrollableBlock(
                 <div className="space-y-3">
-                    {diffEntries.map((entry) => (
-                        <div key={entry.id} className="w-full min-w-0">
-                            <div className="mb-1 flex min-w-0 items-center gap-1 px-2 py-1">
-                                <div className="min-w-0 flex-1 typography-meta font-medium text-muted-foreground">
-                                    {renderPathLikeGitChanges(entry.title)}
+                    {diffGroups.map((group) => {
+                        let added = 0;
+                        let removed = 0;
+                        let hasStats = false;
+                        for (const entry of group.entries) {
+                            const stats = parsePatchStats(entry.patch);
+                            if (!stats) continue;
+                            hasStats = true;
+                            added += stats.added;
+                            removed += stats.removed;
+                        }
+                        const firstEntry = group.entries[0];
+                        if (!firstEntry) return null;
+                        const openable = group.entries.every((entry) => entry.openable !== false);
+                        return (
+                            <div key={group.id} className="w-full min-w-0">
+                                <div className="mb-1 flex min-w-0 items-center gap-1 px-2 py-1">
+                                    <div className="min-w-0 flex-1 typography-meta font-medium text-muted-foreground">
+                                        {renderPathLikeGitChanges(group.title)}
+                                    </div>
+                                    {hasStats ? (
+                                        <span className="flex shrink-0 items-center gap-1 typography-meta">
+                                            <span style={{ color: 'var(--status-success)' }}>+{added}</span>
+                                            <span style={{ color: 'var(--status-error)' }}>-{removed}</span>
+                                        </span>
+                                    ) : null}
+                                    {openable ? (
+                                        <>
+                                            <Button
+                                                variant="ghost"
+                                                size="icon"
+                                                className="h-6 w-6 shrink-0 text-muted-foreground hover:text-foreground"
+                                                onClick={(event) => openEntryFile(firstEntry, event)}
+                                                aria-label={t('chat.toolPart.openFileAtFirstChange')}
+                                                title={t('chat.toolPart.openFileAtFirstChange')}
+                                            >
+                                                <Icon name="file-edit" className="h-3.5 w-3.5" />
+                                            </Button>
+                                            {!isIPythonTool && group.entries.length === 1 ? (
+                                                <Button
+                                                    variant="ghost"
+                                                    size="icon"
+                                                    className="h-6 w-6 shrink-0 text-muted-foreground hover:text-foreground"
+                                                    onClick={(event) => openEntryDiff(firstEntry, event)}
+                                                    aria-label={t('chat.toolPart.openFileDiff')}
+                                                    title={t('chat.toolPart.openFileDiff')}
+                                                >
+                                                    <Icon name="git-pull-request" className="h-3.5 w-3.5" />
+                                                </Button>
+                                            ) : null}
+                                        </>
+                                    ) : null}
                                 </div>
-                                <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    className="h-6 w-6 shrink-0 text-muted-foreground hover:text-foreground"
-                                    onClick={(event) => openEntryFile(entry, event)}
-                                    aria-label={t('chat.toolPart.openFileAtFirstChange')}
-                                    title={t('chat.toolPart.openFileAtFirstChange')}
-                                >
-                                    <Icon name="file-edit" className="h-3.5 w-3.5" />
-                                </Button>
-                                <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    className="h-6 w-6 shrink-0 text-muted-foreground hover:text-foreground"
-                                    onClick={(event) => openEntryDiff(entry, event)}
-                                    aria-label={t('chat.toolPart.openFileDiff')}
-                                    title={t('chat.toolPart.openFileDiff')}
-                                >
-                                    <Icon name="git-pull-request" className="h-3.5 w-3.5" />
-                                </Button>
+                                <div className="space-y-2">
+                                    {group.entries.map((entry) => entry.renderMode === 'diff' ? (
+                                        <DiffPreview
+                                            key={entry.id}
+                                            diff={entry.patch}
+                                            pierreTheme={pierreTheme}
+                                            pierreThemeType={pierreThemeType}
+                                            diffViewMode={diffViewMode}
+                                        />
+                                    ) : (
+                                        <PlainDiffFallback key={entry.id} diff={entry.patch} />
+                                    ))}
+                                </div>
                             </div>
-                            {entry.renderMode === 'diff' ? (
-                                <DiffPreview
-                                    diff={entry.patch}
-                                    pierreTheme={pierreTheme}
-                                    pierreThemeType={pierreThemeType}
-                                    diffViewMode={diffViewMode}
-                                />
-                            ) : (
-                                <PlainDiffFallback diff={entry.patch} />
-                            )}
-                        </div>
-                    ))}
+                        );
+                    })}
                     {renderDiagnosticsSection()}
                 </div>,
                 { className: 'p-1' }
@@ -1682,6 +2016,8 @@ const ToolExpandedContent: React.FC<ToolExpandedContentProps> = React.memo(({
             );
         }
 
+        if (isIPythonTool && ipythonDiffsOmitted > 0) return null;
+
         return renderScrollableBlock(
             <div className="typography-meta text-muted-foreground/70">{t('chat.toolPart.noOutputProduced')}</div>,
             { maxHeightClass: 'max-h-60' }
@@ -1690,7 +2026,8 @@ const ToolExpandedContent: React.FC<ToolExpandedContentProps> = React.memo(({
 
     const hasVisibleOutput = outputString.trim().length > 0;
     const shouldRenderResult = (state.status === 'completed' && 'output' in state)
-        || (part.tool === 'bash' && hasVisibleOutput);
+        || (part.tool === 'bash' && hasVisibleOutput)
+        || (isIPythonTool && (diffEntries.length > 0 || ipythonDiffsOmitted > 0));
 
     if (isTodoTool) {
         if (state.status === 'error' && 'error' in state) {
@@ -1750,6 +2087,14 @@ const ToolExpandedContent: React.FC<ToolExpandedContentProps> = React.memo(({
                                     <pre className="tool-input-text whitespace-pre-wrap break-words typography-code text-muted-foreground/90 m-0 p-0">
                                         {inputTextContent}
                                     </pre>
+                                ) : isIPythonInput ? (
+                                    <WorkerHighlightedCode
+                                        language={ipythonInputPresentation.language}
+                                        code={inputTextContent}
+                                        style={TOOL_COLLAPSED_CUSTOM_STYLE}
+                                        codeStyle={CODE_TAG_PROPS.style}
+                                        wrap
+                                    />
                                 ) : isWriteLikeTool && writeLikeInputPatch ? (
                                     <DiffPreview
                                         diff={writeLikeInputPatch}
@@ -1764,7 +2109,11 @@ const ToolExpandedContent: React.FC<ToolExpandedContentProps> = React.memo(({
                                 ),
                                 {
                                     maxHeightClass: isWriteLikeTool && writeLikeInputPatch && isExpanded ? 'max-h-[50vh]' : 'max-h-60',
-                                    className: part.tool === 'bash' ? 'tool-input-surface p-0 rounded-none' : 'tool-input-surface',
+                                    className: part.tool === 'bash'
+                                        ? 'tool-input-surface p-0 rounded-none'
+                                        : isIPythonInput
+                                            ? 'tool-input-surface p-2'
+                                            : 'tool-input-surface',
                                 }
                             )}
                         </div>
@@ -1772,7 +2121,7 @@ const ToolExpandedContent: React.FC<ToolExpandedContentProps> = React.memo(({
 
                     {shouldRenderResult && (
                         <div>
-                            {(part.tool === 'edit' || part.tool === 'multiedit' || part.tool === 'apply_patch' || part.tool === 'write') && hasVisualDiffEntry ? (
+                            {(part.tool === 'edit' || part.tool === 'multiedit' || part.tool === 'apply_patch' || part.tool === 'write' || isIPythonTool) && hasVisualDiffEntry ? (
                                 <div className="mb-1 flex items-center justify-end gap-2">
                                     <DiffViewToggle
                                         mode={diffViewMode}
@@ -1782,6 +2131,11 @@ const ToolExpandedContent: React.FC<ToolExpandedContentProps> = React.memo(({
                                 </div>
                             ) : null}
                             {renderResultContent()}
+                            {ipythonDiffsOmitted > 0 ? (
+                                <div className="mt-1 px-2 typography-meta text-muted-foreground">
+                                    {t('chat.toolPart.ipythonDiffsOmitted', { count: ipythonDiffsOmitted })}
+                                </div>
+                            ) : null}
                         </div>
                     )}
 
@@ -1824,7 +2178,7 @@ const ToolPartContent: React.FC<ToolPartProps> = ({
     const metadata = stateWithData.metadata;
     const input = stateWithData.input;
     const showToolFileIcons = useUIStore((s) => s.showToolFileIcons);
-    const currentDirectory = useEffectiveDirectory() ?? '';
+    const currentDirectory = useVisibleChatDirectory() ?? '';
 
     const normalizedPartTool = normalizeToolName(part.tool);
     const isTaskTool = normalizedPartTool === 'task';
@@ -1888,6 +2242,9 @@ const ToolPartContent: React.FC<ToolPartProps> = ({
 
     const onContentChangeRef = React.useRef(onContentChange);
     onContentChangeRef.current = onContentChange;
+    const notifyTaskSummaryChange = React.useCallback(() => {
+        onContentChangeRef.current?.('structural');
+    }, []);
     const expandedContentRef = React.useRef<HTMLDivElement>(null);
 
     React.useLayoutEffect(() => {
@@ -2017,21 +2374,6 @@ const ToolPartContent: React.FC<ToolPartProps> = ({
         return readTaskSessionIdFromOutput(taskOutputString);
     }, [isTaskTool, metadata, parsedTaskMetadata.sessionId, partMetadata, taskOutputString]);
 
-    const childSessionLookupId = hasFinalMetadataTaskSummary ? '' : (taskSessionId ?? '');
-
-    const childSessionMessages = useSessionMessageRecords(childSessionLookupId, currentDirectory);
-    useEnsureSessionMessages(childSessionLookupId, currentDirectory);
-
-    const childSessionTaskSummaryEntries = React.useMemo<TaskToolSummaryEntry[]>(() => {
-        if (!isTaskTool || !taskSessionId) {
-            return [];
-        }
-        if (!Array.isArray(childSessionMessages) || childSessionMessages.length === 0) {
-            return [];
-        }
-        return buildTaskSummaryEntriesFromSession(childSessionMessages);
-    }, [childSessionMessages, isTaskTool, taskSessionId]);
-
     React.useEffect(() => {
         if (typeof time?.end === 'number' || typeof pinnedTime.end === 'number') {
             setLocalFinalizedAt(undefined);
@@ -2058,32 +2400,6 @@ const ToolPartContent: React.FC<ToolPartProps> = ({
     const isActive = !isFinalized && activeLatched;
     const shouldTreatAsFinalized = isFinalized;
 
-    const taskSummaryEntries = React.useMemo<TaskToolSummaryEntry[]>(() => {
-        if (childSessionTaskSummaryEntries.length > 0) {
-            return childSessionTaskSummaryEntries;
-        }
-        return metadataTaskSummaryEntries;
-    }, [childSessionTaskSummaryEntries, metadataTaskSummaryEntries]);
-    const taskSummaryRenderSignature = React.useMemo(() => {
-        return taskSummaryEntries.map(getTaskSummaryEntryRenderSignature).join('\u0000');
-    }, [taskSummaryEntries]);
-    const lastTaskSummaryRenderSignatureRef = React.useRef<string | null>(null);
-
-    React.useEffect(() => {
-        if (!isTaskTool) {
-            lastTaskSummaryRenderSignatureRef.current = null;
-            return;
-        }
-
-        const previous = lastTaskSummaryRenderSignatureRef.current;
-        lastTaskSummaryRenderSignatureRef.current = taskSummaryRenderSignature;
-        if (previous === null || previous === taskSummaryRenderSignature || taskSummaryEntries.length === 0) {
-            return;
-        }
-
-        onContentChangeRef.current?.('structural');
-    }, [isTaskTool, taskSummaryEntries.length, taskSummaryRenderSignature]);
-
     const diffStats = React.useMemo(() => {
         return (normalizedPartTool === 'edit' || normalizedPartTool === 'multiedit' || normalizedPartTool === 'apply_patch')
             ? parseDiffStats(metadata)
@@ -2093,10 +2409,37 @@ const ToolPartContent: React.FC<ToolPartProps> = ({
         return normalizedPartTool === 'write' ? parseWriteLineCount(input) : null;
     }, [input, normalizedPartTool]);
     const isMultiFileApplyPatch = normalizedPartTool === 'apply_patch' && Array.isArray(metadata?.files) && (metadata?.files as []).length > 1;
-    const normalizedPart = normalizedPartTool !== part.tool ? ({ ...part, tool: normalizedPartTool } as ToolPartType) : part;
+    const normalizedPart = normalizedPartTool !== part.tool ? ({ ...part, tool: normalizedPartTool } as TranscriptToolPart) : part;
     const descriptionPath = getToolDescriptionPath(normalizedPart, state, currentDirectory);
     const description = getToolDescription(normalizedPart, state, currentDirectory);
-    const displayName = getToolMetadata(normalizedPartTool || part.tool).displayName;
+    const ipythonInputPresentation = React.useMemo(
+        () => normalizedPartTool === 'ipython' && typeof input?.code === 'string'
+            ? getIPythonInputPresentation(input.code)
+            : null,
+        [input?.code, normalizedPartTool],
+    );
+    const ipythonDiffSummaries = React.useMemo(
+        () => normalizedPartTool === 'ipython' ? getIPythonDiffSummaries(metadata) : [],
+        [metadata, normalizedPartTool],
+    );
+    const ipythonDiffsOmitted = normalizedPartTool === 'ipython'
+        && Number.isSafeInteger(metadata?.ipythonDiffsOmitted)
+        && Number(metadata?.ipythonDiffsOmitted) > 0
+        ? Number(metadata?.ipythonDiffsOmitted)
+        : 0;
+    const ipythonLineCounts = React.useMemo(
+        () => normalizedPartTool === 'ipython' && typeof input?.code === 'string'
+            ? getIPythonLineCounts(input.code, stateWithData.output, ipythonDiffSummaries.length > 0)
+            : null,
+        [input?.code, ipythonDiffSummaries.length, normalizedPartTool, stateWithData.output],
+    );
+    const ipythonDuration = normalizedPartTool === 'ipython'
+        ? formatIPythonDuration(metadata?.durationMs)
+        : null;
+    const isIPythonBashCell = ipythonInputPresentation?.language === 'bash';
+    const displayName = isIPythonBashCell
+        ? 'Bash'
+        : getToolMetadata(normalizedPartTool || part.tool).displayName;
     
     // Tool title/description — shown inline as context
     const justificationText = React.useMemo(() => {
@@ -2200,7 +2543,7 @@ const ToolPartContent: React.FC<ToolPartProps> = ({
 
     const iconStyle = !isTaskTool && isError ? TOOL_ERROR_ICON_STYLE : TOOL_NORMAL_ICON_STYLE;
     const titleStyle = !isTaskTool && isError ? TOOL_ERROR_TITLE_STYLE : TOOL_NORMAL_TITLE_STYLE;
-    const shouldRenderTaskSummary = useDeferredExpandedContent(isTaskTool && (taskSummaryEntries.length > 0 || isActive || shouldTreatAsFinalized || !!taskSessionId));
+    const shouldRenderTaskSummary = useDeferredExpandedContent(isTaskTool && (metadataTaskSummaryEntries.length > 0 || isActive || shouldTreatAsFinalized || !!taskSessionId));
     const shouldRenderExpandedContent = useDeferredExpandedContent(!isTaskTool && isExpanded);
 
     if (!shouldTreatAsFinalized && !isActive && !isTaskTool) {
@@ -2344,6 +2687,14 @@ const ToolPartContent: React.FC<ToolPartProps> = ({
                                     </Text>
                                 )
                             )}
+                            {ipythonLineCounts && ipythonLineCounts.input > 0 ? (
+                                <span className="flex-shrink-0 tabular-nums text-muted-foreground/80">
+                                    · ↑ {ipythonLineCounts.input}{ipythonLineCounts.output > 0 ? ` ↓ ${ipythonLineCounts.output}` : ''} lines
+                                </span>
+                            ) : null}
+                            {ipythonDuration ? (
+                                <span className="flex-shrink-0 tabular-nums text-muted-foreground/80">· {ipythonDuration}</span>
+                            ) : null}
                             {diffStats && (
                                 <span className="flex-shrink-0 inline-flex items-center gap-0 typography-meta" style={{ fontSize: '0.8rem', lineHeight: '1' }}>
                                     <span style={{ color: 'var(--status-success)' }}>+{diffStats.added}</span>
@@ -2361,19 +2712,57 @@ const ToolPartContent: React.FC<ToolPartProps> = ({
                 )}
             </div>
 
+            {!isExpanded && (ipythonDiffSummaries.length > 0 || ipythonDiffsOmitted > 0) ? (
+                <div className="ml-5 space-y-0.5 pr-2">
+                    {ipythonDiffSummaries.map((summary) => (
+                        <div key={summary.path} className="flex min-w-0 items-center gap-1 typography-meta text-muted-foreground">
+                            <span className="shrink-0" aria-hidden="true">╰─</span>
+                            <span className="min-w-0 flex-1 truncate" title={summary.path}>{summary.path}</span>
+                            <span className="shrink-0 tabular-nums" style={{ color: 'var(--status-success)' }}>+{summary.additions}</span>
+                            <span className="shrink-0 tabular-nums" style={{ color: 'var(--status-error)' }}>-{summary.deletions}</span>
+                        </div>
+                    ))}
+                    {ipythonDiffsOmitted > 0 ? (
+                        <div className="flex min-w-0 items-center gap-1 typography-meta text-muted-foreground">
+                            <span className="shrink-0" aria-hidden="true">╰─</span>
+                            <span className="min-w-0 flex-1 truncate">
+                                {t('chat.toolPart.ipythonDiffsOmitted', { count: ipythonDiffsOmitted })}
+                            </span>
+                        </div>
+                    ) : null}
+                </div>
+            ) : null}
+
             {}
             {shouldRenderTaskSummary ? (
-                <TaskToolSummary
-                    entries={taskSummaryEntries}
-                    isExpanded={isExpanded}
-                    isMobile={isMobile}
-                    output={taskOutputString}
-                    sessionId={taskSessionId}
-                    onShowPopup={onShowPopup}
-                    input={input}
-                    animateTailText={animateTailText}
-                    isActive={isActive}
-                />
+                currentDirectory && taskSessionId && !hasFinalMetadataTaskSummary ? (
+                    <ConnectedTaskToolSummary
+                        currentDirectory={currentDirectory}
+                        metadataEntries={metadataTaskSummaryEntries}
+                        isExpanded={isExpanded}
+                        isMobile={isMobile}
+                        output={taskOutputString}
+                        sessionId={taskSessionId}
+                        onShowPopup={onShowPopup}
+                        input={input}
+                        animateTailText={animateTailText}
+                        isActive={isActive}
+                        onEntriesChange={notifyTaskSummaryChange}
+                    />
+                ) : (
+                    <ObservedTaskToolSummary
+                        entries={metadataTaskSummaryEntries}
+                        isExpanded={isExpanded}
+                        isMobile={isMobile}
+                        output={taskOutputString}
+                        sessionId={taskSessionId}
+                        onShowPopup={onShowPopup}
+                        input={input}
+                        animateTailText={animateTailText}
+                        isActive={isActive}
+                        onEntriesChange={notifyTaskSummaryChange}
+                    />
+                )
             ) : null}
 
             {!isTaskTool ? (

@@ -4,6 +4,7 @@
  */
 
 import { create } from "zustand"
+import type { ChatHarness } from "@/lib/chat-identity"
 import type { AttachedFile } from "@/stores/types/sessionTypes"
 import { prepareAttachmentFiles } from "./attachment-files"
 
@@ -105,14 +106,14 @@ export type InputState = {
    * render the chips outside ChatInput (e.g. under the welcome message on
    * narrow layouts); consumed by ChatInput, which owns the command-aware submit.
    */
-  pendingPresetSubmit: { text: string; type: "command" | "skill" } | null
+  pendingPresetSubmit: { text: string; type: "command" | "skill"; harness: ChatHarness } | null
   attachedFiles: AttachedFile[]
   activeEditorFile: VSCodeActiveEditorFile | null
 
   setPendingInputText: (text: string | null, mode?: "replace" | "append" | "append-inline") => void
   consumePendingInputText: () => { text: string; mode: "replace" | "append" | "append-inline" } | null
-  requestPresetSubmit: (text: string, type: "command" | "skill") => void
-  consumePendingPresetSubmit: () => { text: string; type: "command" | "skill" } | null
+  requestPresetSubmit: (text: string, type: "command" | "skill", harness: ChatHarness) => void
+  consumePendingPresetSubmit: (harness: ChatHarness) => { text: string; type: "command" | "skill"; harness: ChatHarness } | null
   setPendingSyntheticParts: (parts: SyntheticContextPart[] | null) => void
   consumePendingSyntheticParts: () => SyntheticContextPart[] | null
   addAttachedFile: (file: File) => Promise<boolean>
@@ -144,11 +145,11 @@ export const useInputStore = create<InputState>()((set, get) => ({
     return { text: pendingInputText, mode: pendingInputMode }
   },
 
-  requestPresetSubmit: (text, type) => set({ pendingPresetSubmit: { text, type } }),
+  requestPresetSubmit: (text, type, harness) => set({ pendingPresetSubmit: { text, type, harness } }),
 
-  consumePendingPresetSubmit: () => {
+  consumePendingPresetSubmit: (harness) => {
     const { pendingPresetSubmit } = get()
-    if (pendingPresetSubmit === null) return null
+    if (pendingPresetSubmit === null || pendingPresetSubmit.harness !== harness) return null
     set({ pendingPresetSubmit: null })
     return pendingPresetSubmit
   },

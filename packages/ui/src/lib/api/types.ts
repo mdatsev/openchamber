@@ -1221,8 +1221,352 @@ export interface ClientAuthAPI {
   getPairingTransports(): Promise<{ local: string | null; lan: string | null; relayAvailable: boolean }>;
 }
 
+export interface PrimeIssue {
+  code: string;
+  message?: string;
+  sessionId?: string;
+}
+
+export interface PrimeStatusResponse {
+  schemaVersion: 1;
+  supported: boolean;
+  availability: 'ready' | 'unavailable';
+  protocolVersion?: number;
+  schemaRevision?: number;
+  issues: PrimeIssue[];
+}
+
+export interface PrimeCatalogSession {
+  sessionId: string;
+  title: string;
+  parentSessionId: string | null;
+  rootSessionId: string;
+  workingDirectory?: string;
+  createdAt?: number;
+  updatedAt?: number;
+  residency: 'working' | 'idle' | 'inactive';
+  availability: 'ready' | 'unavailable';
+}
+
+export interface PrimeCatalogResponse {
+  schemaVersion: 1;
+  revision: string;
+  complete: boolean;
+  sessions: PrimeCatalogSession[];
+  issues: PrimeIssue[];
+}
+
+export type PrimeTranscriptBlock =
+  | { type: 'text'; text: string }
+  | { type: 'thinking'; text: string }
+  | { type: 'tool_call'; name: string; input?: { code: string }; omitted?: true }
+  | { type: 'omitted'; reason: string; bytes?: number; bytesAtLeast?: number };
+
+interface PrimeIpythonDiffFile {
+  path: string;
+  patch: string;
+  additions: number;
+  deletions: number;
+  openable: boolean;
+}
+
+export interface PrimeIpythonToolPresentation {
+  durationMs?: number;
+  diffFiles?: PrimeIpythonDiffFile[];
+  omittedDiffs?: number;
+}
+
+export interface PrimeTranscriptMessage {
+  type: 'message';
+  id?: string;
+  role: 'user' | 'assistant' | 'tool' | 'system' | 'custom';
+  name?: string;
+  error?: boolean;
+  timestamp?: number;
+  toolPresentation?: PrimeIpythonToolPresentation;
+  blocks: PrimeTranscriptBlock[];
+  omitted?: boolean;
+}
+
+export interface PrimeTranscriptResponse {
+  schemaVersion: 1;
+  sessionId: string;
+  revision: string;
+  messages: PrimeTranscriptMessage[];
+  page: {
+    olderCursor: string | null;
+    hasOlder: boolean;
+    truncated: boolean;
+    oversizedOmitted: number;
+  };
+}
+
+export interface PrimeSessionUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  totalTokens?: number;
+  cost?: number;
+}
+
+export interface PrimeContextResponse {
+  schemaVersion: 1;
+  sessionId: string;
+  revision: string;
+  usage: PrimeSessionUsage;
+  window?: { used: number; limit?: number; percent?: number };
+  truncated: boolean;
+}
+
+export interface PrimeTranscriptOptions {
+  cursor?: string;
+  limit?: number;
+  byteLimit?: number;
+}
+
+export type PrimeLiveTranscriptBlock =
+  | { type: 'text'; text: string }
+  | { type: 'thinking'; text?: string; redacted?: true }
+  | { type: 'tool_call'; name: string; input?: { code: string }; omitted?: true }
+  | {
+      type: 'omitted';
+      reason: string;
+      bytes?: number;
+      bytesAtLeast?: number;
+      blocksOmitted?: number;
+    };
+
+export interface PrimeLiveTranscriptRecord {
+  role: 'user' | 'assistant' | 'tool' | 'system' | 'custom';
+  name?: string;
+  error?: boolean;
+  timestamp?: number;
+  stopReason?: 'stop' | 'length' | 'toolUse' | 'error' | 'aborted';
+  toolPresentation?: PrimeIpythonToolPresentation;
+  blocks: PrimeLiveTranscriptBlock[];
+}
+
+export type PrimeThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+export interface PrimeModel {
+  id: string;
+  provider: string;
+  name?: string;
+  reasoning: boolean;
+  input: Array<'text' | 'image'>;
+  contextWindow?: number;
+  maxTokens?: number;
+}
+
+export interface PrimeLiveSnapshot {
+  schemaVersion: 1;
+  sessionId: string;
+  generation: string;
+  revision: number;
+  turn: { token: string; active: boolean };
+  freshness:
+    | { state: 'fresh'; observedAt: number }
+    | {
+        state: 'stale';
+        observedAt: number;
+        reason:
+          | 'deactivated'
+          | 'disconnected'
+          | 'identity_changed'
+          | 'protocol_error'
+          | 'reconnecting'
+          | 'reconnect_failed'
+          | 'resynchronizing'
+          | 'sequence_gap'
+          | 'snapshot_failed';
+      };
+  status: {
+    activity: 'working' | 'idle' | 'unknown';
+    recap?: string;
+  };
+  transcript: {
+    records: PrimeLiveTranscriptRecord[];
+    sourceMessageCount: number;
+    omittedOlderRecords: number;
+    streamingRecord?: PrimeLiveTranscriptRecord;
+  };
+  context:
+    | { known: false; usage?: PrimeSessionUsage }
+    | {
+        known: true;
+        tokens: number | null;
+        contextWindow: number;
+        percent: number | null;
+        usage?: PrimeSessionUsage;
+      };
+  configuration: {
+    currentModel?: PrimeModel;
+    models: PrimeModel[];
+    thinking: {
+      current?: PrimeThinkingLevel;
+      available: PrimeThinkingLevel[];
+    };
+  };
+  capabilities: {
+    mutations: boolean;
+    actions: {
+      canSend: boolean;
+      canAbort: boolean;
+      canChangeModel: boolean;
+    };
+    tools: string[];
+  };
+}
+
+export interface PrimeLiveActivationResponse {
+  schemaVersion: 1;
+  sessionId: string;
+  active: true;
+  snapshot: PrimeLiveSnapshot;
+}
+
+export interface PrimeLiveDeactivationResponse {
+  schemaVersion: 1;
+  sessionId: string;
+  active: false;
+  snapshot?: PrimeLiveSnapshot;
+}
+
+export type PrimeLiveEventPayload =
+  | { type: 'activity'; activity: 'working' | 'idle' }
+  | {
+      type: 'message';
+      phase: 'start' | 'update' | 'end';
+      record: PrimeLiveTranscriptRecord;
+    }
+  | { type: 'tool'; phase: 'start' | 'update' | 'end'; name?: string; error?: true }
+  | { type: 'thinking'; current: PrimeThinkingLevel }
+  | { type: 'status'; recap?: string }
+  | { type: 'state_changed' };
+
+export type PrimeLiveStreamEvent =
+  | { type: 'snapshot'; snapshot: PrimeLiveSnapshot }
+  | {
+      type: 'event';
+      sessionId: string;
+      generation: string;
+      revision: number;
+      turn: PrimeLiveSnapshot['turn'];
+      freshness: PrimeLiveSnapshot['freshness'];
+      event: PrimeLiveEventPayload;
+    }
+  | {
+      type: 'freshness';
+      sessionId: string;
+      generation: string;
+      revision: number;
+      turn: PrimeLiveSnapshot['turn'];
+      freshness: PrimeLiveSnapshot['freshness'];
+      status: PrimeLiveSnapshot['status'];
+    }
+  | { type: 'closed'; sessionId: string };
+
+export interface PrimeLiveEventOptions {
+  signal: AbortSignal;
+  onEvent: (event: PrimeLiveStreamEvent) => void;
+}
+
+type PrimeCreationBaseRequest = {
+  workingDirectory: string;
+  message: string;
+};
+
+export type PrimeCreationRequest = PrimeCreationBaseRequest & (
+  | {
+      sourceSessionId?: never;
+      generation?: never;
+      revision?: never;
+      provider?: never;
+      modelId?: never;
+      thinkingLevel?: never;
+    }
+  | {
+      sourceSessionId: string;
+      generation: string;
+      revision: number;
+      provider: string;
+      modelId: string;
+      thinkingLevel?: PrimeThinkingLevel;
+    }
+);
+
+export interface PrimeCreationResponse {
+  schemaVersion: 1;
+  sessionId: string;
+  accepted: true;
+}
+
+export interface PrimeMutationFence {
+  generation: string;
+  revision: number;
+  turnToken: string;
+  idempotencyKey: string;
+}
+
+export interface PrimePromptRequest extends PrimeMutationFence {
+  message: string;
+}
+
+export type PrimeAbortRequest = PrimeMutationFence;
+
+export interface PrimeSetModelRequest extends PrimeMutationFence {
+  provider: string;
+  modelId: string;
+}
+
+export interface PrimeSetThinkingLevelRequest extends PrimeMutationFence {
+  level: PrimeThinkingLevel;
+}
+
+export interface PrimeMutationAuthority {
+  generation: string;
+  revision: number;
+  turnToken: string;
+}
+
+interface PrimeMutationResponseBase {
+  schemaVersion: 1;
+  sessionId: string;
+  accepted: true;
+  authority?: PrimeMutationAuthority;
+}
+
+export type PrimeMutationResponse =
+  | (PrimeMutationResponseBase & { action: 'prompt' | 'abort' })
+  | (PrimeMutationResponseBase & {
+      action: 'set_model';
+      result: { model: { provider: string; id: string } };
+    })
+  | (PrimeMutationResponseBase & {
+      action: 'set_thinking_level';
+      result: { thinkingLevel: PrimeThinkingLevel };
+    });
+
+export interface PrimeAPI {
+  create(request: PrimeCreationRequest): Promise<PrimeCreationResponse>;
+  getStatus(): Promise<PrimeStatusResponse>;
+  getCatalog(): Promise<PrimeCatalogResponse>;
+  getTranscript(sessionId: string, options?: PrimeTranscriptOptions): Promise<PrimeTranscriptResponse>;
+  getContext(sessionId: string): Promise<PrimeContextResponse>;
+  activate(sessionId: string): Promise<PrimeLiveActivationResponse>;
+  deactivate(sessionId: string): Promise<PrimeLiveDeactivationResponse>;
+  getSnapshot(sessionId: string): Promise<PrimeLiveSnapshot>;
+  openEvents(sessionId: string, options: PrimeLiveEventOptions): Promise<void>;
+  prompt(sessionId: string, request: PrimePromptRequest): Promise<PrimeMutationResponse>;
+  abort(sessionId: string, request: PrimeAbortRequest): Promise<PrimeMutationResponse>;
+  setModel(sessionId: string, request: PrimeSetModelRequest): Promise<PrimeMutationResponse>;
+  setThinkingLevel(sessionId: string, request: PrimeSetThinkingLevelRequest): Promise<PrimeMutationResponse>;
+}
+
 export interface RuntimeAPIs {
   runtime: RuntimeDescriptor;
+  prime: PrimeAPI;
   terminal: TerminalAPI;
   git: GitAPI;
   files: FilesAPI;

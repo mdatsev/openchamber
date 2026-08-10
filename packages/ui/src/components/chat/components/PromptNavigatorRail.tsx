@@ -1,20 +1,16 @@
 import React from 'react';
-import type { Part } from '@opencode-ai/sdk/v2';
-
 import { Icon } from '@/components/icon/Icon';
 import { useI18n } from '@/lib/i18n';
 import { useUIStore } from '@/stores/useUIStore';
 import { cn } from '@/lib/utils';
-import { getMessagePreview } from '../lib/messagePreview';
 
-type PromptEntry = {
+export type PromptNavigatorEntry = {
     turnId: string;
     preview: string;
 };
 
 type PromptNavigatorRailProps = {
-    turnIds: string[];
-    previewsByTurnId: Map<string, Part[]>;
+    entries: readonly PromptNavigatorEntry[];
     activeTurnId: string | null;
     onSelectTurn: (turnId: string) => void;
     canLoadEarlier: boolean;
@@ -22,7 +18,6 @@ type PromptNavigatorRailProps = {
     onLoadEarlier: () => void;
 };
 
-const PREVIEW_MAX_CHARS = 160;
 // The whole gutter is one hover/click target: the cursor's vertical position
 // maps to the nearest tick, so tick density never demands pointer precision.
 // When the centered message column extends under the full-width gutter (narrow
@@ -55,19 +50,6 @@ const PANEL_MAX_ROWS = 8;
 const PANEL_SCROLL_MARGIN_ROWS = 2;
 const PANEL_HIDE_DELAY_MS = 160;
 
-const buildPromptEntries = (
-    turnIds: string[],
-    previewsByTurnId: Map<string, Part[]>,
-): PromptEntry[] => {
-    return turnIds.map((turnId) => {
-        const parts = previewsByTurnId.get(turnId) ?? [];
-        return {
-            turnId,
-            preview: getMessagePreview(parts, PREVIEW_MAX_CHARS),
-        };
-    });
-};
-
 // Codex-style wave: the highlighted tick stretches, neighbours taper off.
 const PROXIMITY_FALLOFF = [1, 0.6, 0.35, 0.15];
 
@@ -86,8 +68,7 @@ const resolveTickWidth = (
 };
 
 export function PromptNavigatorRail({
-    turnIds,
-    previewsByTurnId,
+    entries,
     activeTurnId,
     onSelectTurn,
     canLoadEarlier,
@@ -127,10 +108,7 @@ export function PromptNavigatorRail({
         return () => observer.disconnect();
     }, []);
 
-    const prompts = React.useMemo(
-        () => buildPromptEntries(turnIds, previewsByTurnId),
-        [previewsByTurnId, turnIds],
-    );
+    const prompts = entries;
 
     const visibleCount = Math.min(prompts.length, MAX_VISIBLE_TICKS);
     const maxWindowStart = Math.max(0, prompts.length - visibleCount);

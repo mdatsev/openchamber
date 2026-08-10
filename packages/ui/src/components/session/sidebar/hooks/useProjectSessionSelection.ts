@@ -1,6 +1,7 @@
 import React from 'react';
 import type { Session } from '@opencode-ai/sdk/v2';
-import type { SessionGroup, SessionNode } from '../types';
+import type { CatalogSessionNode, SessionGroup, SessionNode } from '../types';
+import { getOpenCodeCatalogWorktree, getOpenCodeSourceSession } from '../openCodeSessionAdapter';
 import { normalizePath } from '../utils';
 import type { MainTab } from '@/stores/useUIStore';
 import { useUIStore } from '@/stores/useUIStore';
@@ -8,7 +9,7 @@ import { useSessionUIStore } from '@/sync/session-ui-store';
 
 type ProjectSection = {
   project: { id: string; normalizedPath: string };
-  groups: SessionGroup[];
+  groups: Array<Omit<SessionGroup, 'sessions'> & { sessions: Array<CatalogSessionNode | SessionNode> }>; 
 };
 
 type Args = {
@@ -48,22 +49,27 @@ export const useProjectSessionSelection = (args: Args): void => {
       projectId: string,
       projectRoot: string,
       fallbackDirectory: string | null,
-      nodes: SessionNode[],
+      nodes: Array<CatalogSessionNode | SessionNode>,
     ) => {
       if (!metaByProject.has(projectId)) {
         metaByProject.set(projectId, new Map());
       }
       const projectMap = metaByProject.get(projectId)!;
       nodes.forEach((node) => {
+        const isCatalogNode = 'controller' in node;
+        const sessionId = isCatalogNode ? node.controller.getOpenCodeSessionId() : node.session.id;
+        if (!sessionId) return;
+        const sourceSession = isCatalogNode ? getOpenCodeSourceSession(node.session) : node.session;
+        const worktree = isCatalogNode ? getOpenCodeCatalogWorktree(node.session) : node.worktree;
         const sessionDirectory = normalizePath(
-          node.worktree?.path
-          ?? (node.session as Session & { directory?: string | null }).directory
+          worktree?.path
+          ?? (sourceSession as Session & { directory?: string | null }).directory
           ?? fallbackDirectory
           ?? projectRoot,
         );
-        projectMap.set(node.session.id, { directory: sessionDirectory });
+        projectMap.set(sessionId, { directory: sessionDirectory });
         if (!firstSessionByProject.has(projectId)) {
-          firstSessionByProject.set(projectId, { id: node.session.id, directory: sessionDirectory });
+          firstSessionByProject.set(projectId, { id: sessionId, directory: sessionDirectory });
         }
         if (node.children.length > 0) {
           visitNodes(projectId, projectRoot, sessionDirectory, node.children);

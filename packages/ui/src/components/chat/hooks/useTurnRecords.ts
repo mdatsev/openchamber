@@ -1,6 +1,6 @@
 import React from 'react';
 import { projectTurnRecords } from '../lib/turns/projectTurnRecords';
-import type { ChatMessageEntry, TurnProjectionResult, TurnRecord } from '../lib/turns/types';
+import type { TranscriptMessageEntry, TranscriptTurnProjectionResult, TranscriptTurnRecord } from '../lib/turns/types';
 import { buildProjectionCacheKey, getCachedProjection, setCachedProjection } from '../lib/turns/turnProjectionCache';
 import { streamPerfMeasure } from '@/stores/utils/streamDebug';
 
@@ -12,18 +12,18 @@ interface UseTurnRecordsOptions {
 }
 
 export interface TurnRecordsResult {
-    projection: TurnProjectionResult;
-    staticTurns: TurnProjectionResult['turns'];
-    streamingTurn: TurnProjectionResult['turns'][number] | undefined;
+    projection: TranscriptTurnProjectionResult;
+    staticTurns: TranscriptTurnProjectionResult['turns'];
+    streamingTurn: TranscriptTurnProjectionResult['turns'][number] | undefined;
 }
 
 export const useTurnRecords = (
-    messages: ChatMessageEntry[],
+    messages: TranscriptMessageEntry[],
     options: UseTurnRecordsOptions,
 ): TurnRecordsResult => {
-    const previousProjectionRef = React.useRef<TurnProjectionResult | null>(null);
-    const staticTurnsRef = React.useRef<TurnRecord[]>([]);
-    const streamingTurnRef = React.useRef<TurnRecord | undefined>(undefined);
+    const previousProjectionRef = React.useRef<TranscriptTurnProjectionResult | null>(null);
+    const staticTurnsRef = React.useRef<TranscriptTurnRecord[]>([]);
+    const streamingTurnRef = React.useRef<TranscriptTurnRecord | undefined>(undefined);
     const previousSessionKeyRef = React.useRef<string | undefined>(options.sessionKey);
     const previousShowTextJustificationActivityRef = React.useRef(options.showTextJustificationActivity);
     const previousShowTurnChangedFilesRef = React.useRef(options.showTurnChangedFiles);

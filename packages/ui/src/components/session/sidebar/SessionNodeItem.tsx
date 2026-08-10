@@ -28,7 +28,7 @@ import { useViewportStore, viewportSessionKey } from '@/sync/viewport-store';
 import { DraggableSessionRow } from './sessionFolderDnd';
 import { nodeContainsSessionId, nodeHasPinnedMembershipChange } from './sessionNodeItemUtils';
 import type { SessionNodeChildRenderExtras, SessionNodeRenderExtras } from './sessionNodeItemUtils';
-import type { SessionNode } from './types';
+import type { CatalogSessionNode } from './types';
 import { formatProjectLabel, formatSessionCompactDateLabel, formatSessionDateLabel, normalizePath, renderHighlightedText } from './utils';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useSessionDisplayStore } from '@/stores/useSessionDisplayStore';
@@ -48,6 +48,10 @@ import { RuntimeAPIContext } from '@/contexts/runtimeAPIContext';
 import { startSessionTreeWorktreeMove, useIsSessionWorktreeMovePending } from '@/lib/worktrees/sessionWorktreeMove';
 import { streamPerfCount } from '@/stores/utils/streamDebug';
 import { useSessionUIStore } from '@/sync/session-ui-store';
+import { chatIdentitiesEqual, serializeChatIdentity, type ChatIdentity } from '@/lib/chat-identity';
+import { ChatHarnessMarker } from '../ChatHarnessMarker';
+import { getOpenCodeCatalogWorktree, getOpenCodeSourceSession } from './openCodeSessionAdapter';
+import { useChatSelectionStore } from '@/stores/useChatSelectionStore';
 
 type Folder = { id: string; name: string; sessionIds: string[] };
 
@@ -57,9 +61,8 @@ type SecondaryMeta = {
 };
 
 type Props = {
-  node: SessionNode;
+  node: CatalogSessionNode;
   depth?: number;
-  groupDirectory?: string | null;
   projectId?: string | null;
   archivedBucket?: boolean;
   pinnedSessionIds: Set<string>;
@@ -74,7 +77,7 @@ type Props = {
   handleSaveEdit: (titleOverride?: string) => void;
   handleCancelEdit: () => void;
   toggleParent: (expansionKey: string) => void;
-  handleSessionSelect: (sessionId: string, sessionDirectory: string | null) => void;
+  handleSessionSelect: (identity: ChatIdentity) => void;
   handleSessionDoubleClick: (sessionId: string, sessionTitle: string) => void;
   togglePinnedSession: (target: SessionPinnedTarget) => void;
   handleShareSession: (session: Session) => void;
@@ -96,9 +99,8 @@ type Props = {
   mobileVariant: boolean;
   alwaysShowActions: boolean;
   renderSessionNode: (
-    node: SessionNode,
+    node: CatalogSessionNode,
     depth?: number,
-    groupDirectory?: string | null,
     projectId?: string | null,
     archivedBucket?: boolean,
     secondaryMeta?: SecondaryMeta | null,
@@ -130,7 +132,7 @@ type Props = {
    * descendant; SessionNodeItem's recursive child render uses this lookup
    * to fetch the right key for each child it produces.
    */
-  childRenderExtrasFor?: (child: SessionNode) => SessionNodeChildRenderExtras;
+  childRenderExtrasFor?: (child: CatalogSessionNode) => SessionNodeChildRenderExtras;
 };
 
 // Shared row geometry: the gutter edge matches the zone-header band padding
@@ -249,13 +251,143 @@ const QuickSessionAction = React.memo(function QuickSessionAction({
   );
 });
 
-function SessionNodeItemComponent(props: Props): React.ReactNode {
+const SessionRowPresentation = React.forwardRef<HTMLDivElement, React.ComponentPropsWithoutRef<'div'> & {
+  depth: number;
+  active: boolean;
+  selected?: boolean;
+}>(({ depth, active, selected = false, className, style, children, ...props }, ref) => (
+  <div
+    ref={ref}
+    style={{ ...style, paddingLeft: ROW_TEXT_LEFT_PX + depth * ROW_DEPTH_STEP_PX }}
+    className={cn(
+      'group relative my-0.5 flex cursor-pointer items-center rounded-md py-1 pr-1.5',
+      active && !selected && 'bg-primary/10',
+      selected && 'bg-interactive-selection',
+      className,
+    )}
+    {...props}
+  >
+    {children}
+  </div>
+));
+SessionRowPresentation.displayName = 'SessionRowPresentation';
+
+function PassiveSessionNodeItem({
+  node,
+  depth = 0,
+  projectId,
+  expandedParents,
+  hasSessionSearchQuery,
+  normalizedSessionSearchQuery,
+  toggleParent,
+  handleSessionSelect,
+  renderSessionNode,
+  secondaryMeta,
+  renderContext = 'project',
+  archivedBucket = false,
+  subtreeContainsEditing,
+  menuOpenSessionId,
+  childRenderExtrasFor,
+}: Props): React.ReactNode {
+  const { t } = useI18n();
+  const session = node.session;
+  const isActive = useChatSelectionStore((state) => (
+    chatIdentitiesEqual(state.visibleChatIdentity, session.identity)
+  ));
+  const identityKey = serializeChatIdentity(session.identity);
+  const expansionKey = `${renderContext}:${archivedBucket ? 'archived' : 'active'}:${identityKey}`;
+  const hasChildren = node.children.length > 0;
+  const isExpanded = hasSessionSearchQuery || expandedParents.has(expansionKey);
+  const title = session.title || t('sessions.sidebar.session.untitled');
+  const updatedLabel = formatSessionCompactDateLabel(session.updatedAt || session.createdAt || Date.now());
+  const isWorking = session.activity === 'working';
+
+  return (
+    <React.Fragment key={identityKey}>
+      <SessionRowPresentation
+        depth={depth}
+        active={isActive}
+        data-session-row={identityKey}
+        onClick={() => {
+          handleSessionSelect(session.identity);
+        }}
+      >
+        {hasChildren ? (
+          <button
+            type="button"
+            style={{ left: ROW_GUTTER_LEFT_PX + depth * ROW_DEPTH_STEP_PX }}
+            className="absolute top-1/2 inline-flex h-3.5 w-3.5 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+            aria-label={isExpanded
+              ? t('sessions.sidebar.session.subsessions.collapse')
+              : t('sessions.sidebar.session.subsessions.expand')}
+            onClick={(event) => {
+              event.stopPropagation();
+              toggleParent(expansionKey);
+            }}
+          >
+            <Icon name={isExpanded ? 'arrow-down-s' : 'arrow-right-s'} className="h-3 w-3" />
+          </button>
+        ) : isWorking ? (
+          <span
+            style={{ left: ROW_GUTTER_LEFT_PX + depth * ROW_DEPTH_STEP_PX }}
+            className="pointer-events-none absolute top-1/2 inline-flex h-3.5 w-3.5 -translate-y-1/2 items-center justify-center"
+          >
+            <Icon name="loader-4" className="h-3 w-3 animate-spin text-primary" aria-label={t('sessions.sidebar.session.status.active')} />
+          </span>
+        ) : null}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              className="flex min-w-0 flex-1 cursor-pointer items-center gap-1 overflow-hidden text-left text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+              onClick={(event) => {
+                event.stopPropagation();
+                handleSessionSelect(session.identity);
+              }}
+            >
+              <span className={cn('block min-w-0 flex-1 truncate typography-ui-label font-normal', isActive ? 'text-primary' : 'text-foreground/80')}>
+                {renderHighlightedText(title, normalizedSessionSearchQuery)}
+              </span>
+              {secondaryMeta?.branchLabel ? <Icon name="git-branch" className="h-3 w-3 flex-shrink-0 text-muted-foreground/60" /> : null}
+              <span className="ml-2 flex-shrink-0 text-[0.72rem] text-muted-foreground/75">{updatedLabel}</span>
+              <ChatHarnessMarker harness={session.identity.harness} compact />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="right" sideOffset={8} className="max-w-xs text-left">
+            <div className="flex min-w-44 flex-col gap-1.5 text-left text-xs">
+              <span className="truncate font-medium text-foreground">{title}</span>
+              {secondaryMeta?.projectLabel ? <span className="truncate text-muted-foreground">{secondaryMeta.projectLabel}</span> : null}
+              {secondaryMeta?.branchLabel ? <span className="truncate text-muted-foreground">{secondaryMeta.branchLabel}</span> : null}
+            </div>
+          </TooltipContent>
+        </Tooltip>
+      </SessionRowPresentation>
+      {hasChildren && isExpanded
+        ? node.children.map((child) => {
+            const childRenderExtras = childRenderExtrasFor
+              ? childRenderExtrasFor(child)
+              : { subtreeContainsEditing, menuOpenSessionId, nodeStructureKey: '' };
+            return renderSessionNode(
+              child,
+              depth + 1,
+              projectId,
+              archivedBucket,
+              undefined,
+              renderContext,
+              childRenderExtras,
+            );
+          })
+        : null}
+    </React.Fragment>
+  );
+}
+
+function OpenCodeSessionNodeItemComponent(props: Props): React.ReactNode {
   streamPerfCount('ui.sidebar_session_node.render');
   const { t } = useI18n();
   const {
     node,
     depth = 0,
-    groupDirectory,
     projectId,
     archivedBucket = false,
     pinnedSessionIds,
@@ -340,8 +472,10 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
   const renameTargetRef = React.useRef<string | null>(null);
   const formRef = React.useRef<HTMLFormElement>(null);
 
-  const session = node.session;
+  const catalogEntry = node.session;
+  const session = getOpenCodeSourceSession(catalogEntry);
   const resolvedSession = session;
+  const nodeWorktree = getOpenCodeCatalogWorktree(catalogEntry);
   // Tooltip context: recent rows receive project/branch via secondaryMeta;
   // project rows resolve them from the row's own props/node instead.
   const projectLabelFromStore = useProjectsStore(
@@ -354,13 +488,13 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
   );
   const tooltipProjectLabel = secondaryMeta?.projectLabel
     ?? (projectLabelFromStore ? formatProjectLabel(projectLabelFromStore) : null);
-  const tooltipBranchLabel = secondaryMeta?.branchLabel ?? node.worktree?.branch ?? null;
+  const tooltipBranchLabel = secondaryMeta?.branchLabel ?? nodeWorktree?.branch ?? null;
   const prLookupKey = React.useMemo(() => {
     if (isVSCode) return null;
-    const branch = node.worktree?.branch?.trim();
-    const directory = normalizePath(node.worktree?.path ?? null);
+    const branch = nodeWorktree?.branch?.trim();
+    const directory = normalizePath(nodeWorktree?.path ?? null);
     return branch && directory ? getGitHubPrStatusKey(directory, branch) : null;
-  }, [isVSCode, node.worktree]);
+  }, [isVSCode, nodeWorktree]);
   const prSummary = usePrVisualSummary(prLookupKey);
   const prIconColor = prSummary ? `var(--pr-${prSummary.visualState})` : undefined;
   const sessionGroupingMode = useSessionDisplayStore((state) => state.sessionGroupingMode);
@@ -390,11 +524,13 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
         return null;
     }
   }, [prSummary, t]);
-  const isActive = useSessionUIStore((state) => state.currentSessionId === session.id);
+  const isActive = useChatSelectionStore((state) =>
+    chatIdentitiesEqual(state.visibleChatIdentity, catalogEntry.identity),
+  );
 
-  const sessionDirectory =
-    normalizePath((session as Session & { directory?: string | null }).directory ?? null)
-    ?? normalizePath(groupDirectory ?? null);
+  const sessionDirectory = normalizePath(
+    (session as Session & { directory?: string | null }).directory ?? null,
+  );
   // Multi-select scope: sessions are flat per project, so selection groups by
   // project (falling back to the directory when no project is known) — a
   // selection must survive mixing sessions from different worktrees.
@@ -411,11 +547,12 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
   const toggleRowSelected = useSessionMultiSelectStore((state) => state.toggleSelected);
   const setRowRange = useSessionMultiSelectStore((state) => state.setRange);
 
-  const collectNodeDescendantIds = React.useCallback((root: SessionNode): string[] => {
+  const collectNodeDescendantIds = React.useCallback((root: CatalogSessionNode): string[] => {
     const out: string[] = [];
-    const walk = (n: SessionNode) => {
+    const walk = (n: CatalogSessionNode) => {
       n.children.forEach((child) => {
-        out.push(child.session.id);
+        const childId = child.controller.getOpenCodeSessionId();
+        if (childId) out.push(childId);
         walk(child);
       });
     };
@@ -423,11 +560,11 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
     return out;
   }, []);
 
-  const collectNodeDescendantSessions = React.useCallback((root: SessionNode): Session[] => {
+  const collectNodeDescendantSessions = React.useCallback((root: CatalogSessionNode): Session[] => {
     const out: Session[] = [];
-    const walk = (current: SessionNode) => {
+    const walk = (current: CatalogSessionNode) => {
       current.children.forEach((child) => {
-        out.push(child.session);
+        out.push(getOpenCodeSourceSession(child.session));
         walk(child);
       });
     };
@@ -479,16 +616,17 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
 
   const descendantCount = React.useMemo(() => collectNodeDescendantIds(node).length, [collectNodeDescendantIds, node]);
 
-  const collectChildExports = React.useCallback(async (children: SessionNode[]): Promise<{ children: ChildSessionExport[]; skipped: number }> => {
+  const collectChildExports = React.useCallback(async (children: CatalogSessionNode[]): Promise<{ children: ChildSessionExport[]; skipped: number }> => {
     const results: ChildSessionExport[] = [];
     let skipped = 0;
     for (const child of children) {
       try {
         if (!sessionDirectory) throw new Error('Session directory is required for export');
-        await sync.loadCompleteHistory(child.session.id, sessionDirectory);
-        const childRecords = buildSessionMessageRecordsSnapshot(directoryStore.getState(), child.session.id).list;
-        const childTitle = child.session.title || t('sessions.sidebar.session.export.untitledSubagent');
-        const childAgent = (child.session as Session & { agent?: string }).agent;
+        await sync.loadCompleteHistory(child.session.identity.sessionId, sessionDirectory);
+        const childRecords = buildSessionMessageRecordsSnapshot(directoryStore.getState(), child.session.identity.sessionId).list;
+        const childSource = getOpenCodeSourceSession(child.session);
+        const childTitle = childSource.title || t('sessions.sidebar.session.export.untitledSubagent');
+        const childAgent = (childSource as Session & { agent?: string }).agent;
         const grandChildren = await collectChildExports(child.children);
         skipped += grandChildren.skipped;
         results.push({
@@ -879,7 +1017,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
       return;
     }
     if (event?.currentTarget) holdSessionRowPosition(event.currentTarget);
-    handleSessionSelect(session.id, sessionDirectory);
+    handleSessionSelect(catalogEntry.identity);
   };
 
   // The selection/active highlight covers the WHOLE row box (gutter, edge
@@ -1200,23 +1338,14 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
         <ContextMenu.Root open={isContextMenuOpen} onOpenChange={handleContextMenuOpenChange} onOpenChangeComplete={handleMenuOpenChangeComplete}>
           <ContextMenu.Trigger
             render={
-              <div
+              <SessionRowPresentation
+                depth={depth}
+                active={isActive}
+                selected={isRowSelected}
                 data-session-row={session.id}
                 data-session-scope={selectionScopeKey ?? ''}
                 data-session-archived={archivedBucket ? '1' : '0'}
                 onClick={handleRowBackgroundClick}
-                // Row geometry mirrors the zone-header band: full container
-                // width, px-1.5 inner edge, a 14px icon-wide gutter (status
-                // marker / chevron) plus a 6px gap, so the title starts at the
-                // same x as the header text. Children indent one gutter step.
-                style={{ paddingLeft: ROW_TEXT_LEFT_PX + depth * ROW_DEPTH_STEP_PX }}
-                className={cn(
-                  'group relative my-0.5 flex cursor-pointer items-center rounded-md py-1 pr-1.5',
-                  // Active (currently open) session gets a subtle primary tint;
-                  // multi-select highlight takes precedence when both apply.
-                  isActive && !isRowSelected && 'bg-primary/10',
-                  isRowSelected && 'bg-interactive-selection',
-                )}
               />
             }
           >
@@ -1238,7 +1367,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
                       handleSessionDoubleClick(session.id, sessionTitle);
                     }}
                     className={cn(
-	                      'flex min-w-0 flex-1 cursor-pointer flex-col gap-0 overflow-hidden text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 text-foreground select-none transition-[padding]',
+	                      'flex min-w-0 flex-1 cursor-pointer flex-col gap-0 overflow-hidden text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 text-foreground select-none',
 	                      isTouchPressed && 'bg-interactive-hover/70',
                       alwaysShowActions
                         ? (isVSCode ? revealPaddingClass : alwaysActionPaddingClass)
@@ -1289,6 +1418,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
                           <span className="leading-none">{pendingPermissionCount}</span>
                         </span>
                       ) : null}
+                      <ChatHarnessMarker harness={catalogEntry.identity.harness} compact />
                     </div>
                   </button>
                 </TooltipTrigger>
@@ -1417,7 +1547,6 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
           return renderSessionNode(
             child,
             depth + 1,
-            sessionDirectory ?? groupDirectory,
             projectId,
             archivedBucket,
             undefined,
@@ -1478,8 +1607,8 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
   );
 }
 
-const getNodeSessionDirectory = (node: SessionNode): string | null => {
-  return normalizePath((node.session as Session & { directory?: string | null }).directory ?? null);
+const getNodeSessionDirectory = (node: CatalogSessionNode): string | null => {
+  return normalizePath((getOpenCodeSourceSession(node.session) as Session & { directory?: string | null }).directory ?? null);
 };
 
 const isSecondaryMetaEqual = (prev?: SecondaryMeta | null, next?: SecondaryMeta | null): boolean => {
@@ -1506,18 +1635,18 @@ const subtreeContainsSession = (
   precomputed: Set<string>,
 ): boolean => {
   if (!sessionId) return false;
-  if (precomputed.has(props.node.session.id)) return true;
+  if (precomputed.has(props.node.controller.getOpenCodeSessionId() ?? '')) return true;
   return nodeContainsSessionId(props.node, sessionId);
 };
 
 const hasSetMembershipChangeInNode = (
-  prevNode: SessionNode,
-  nextNode: SessionNode,
+  prevNode: CatalogSessionNode,
+  nextNode: CatalogSessionNode,
   prevSet: Set<string>,
   nextSet: Set<string>,
-  getKey: (node: SessionNode) => string,
+  getKey: (node: CatalogSessionNode) => string,
 ): boolean => {
-  if (prevNode.session.id !== nextNode.session.id) return true;
+  if (!chatIdentitiesEqual(prevNode.session.identity, nextNode.session.identity)) return true;
   const key = getKey(prevNode);
   if (prevSet.has(key) !== nextSet.has(key)) return true;
   if (prevNode.children.length !== nextNode.children.length) return true;
@@ -1538,21 +1667,20 @@ const hasExpansionMembershipChange = (prev: Props, next: Props): boolean => {
     next.node,
     prev.expandedParents,
     next.expandedParents,
-    (node) => `${prev.renderContext ?? 'project'}:${prevBucketTag}:${node.session.id}`,
+    (node) => `${prev.renderContext ?? 'project'}:${prevBucketTag}:${node.controller.getOpenCodeSessionId() ?? ''}`,
   ) || hasSetMembershipChangeInNode(
     prev.node,
     next.node,
     prev.expandedParents,
     next.expandedParents,
-    (node) => `${next.renderContext ?? 'project'}:${nextBucketTag}:${node.session.id}`,
+    (node) => `${next.renderContext ?? 'project'}:${nextBucketTag}:${node.controller.getOpenCodeSessionId() ?? ''}`,
   );
 };
 
 const areSessionNodeItemPropsEqual = (prev: Props, next: Props): boolean => {
-  if (prev.node.session.id !== next.node.session.id) return false;
+  if (!chatIdentitiesEqual(prev.node.session.identity, next.node.session.identity)) return false;
   if (prev.node.session !== next.node.session) return false;
   if (prev.depth !== next.depth) return false;
-  if (prev.groupDirectory !== next.groupDirectory) return false;
   if (prev.projectId !== next.projectId) return false;
   if (prev.archivedBucket !== next.archivedBucket) return false;
   if ((prev.renderContext ?? 'project') !== (next.renderContext ?? 'project')) return false;
@@ -1571,8 +1699,6 @@ const areSessionNodeItemPropsEqual = (prev: Props, next: Props): boolean => {
       next.node,
       prev.pinnedSessionIds,
       next.pinnedSessionIds,
-      prev.groupDirectory,
-      next.groupDirectory,
     )) {
     return false;
   }
@@ -1645,4 +1771,14 @@ const areSessionNodeItemPropsEqual = (prev: Props, next: Props): boolean => {
     && prev.renderSessionNode === next.renderSessionNode;
 };
 
-export const SessionNodeItem = React.memo(SessionNodeItemComponent, areSessionNodeItemPropsEqual);
+const MemoizedOpenCodeSessionNodeItem = React.memo(OpenCodeSessionNodeItemComponent, areSessionNodeItemPropsEqual);
+const MemoizedPassiveSessionNodeItem = React.memo(PassiveSessionNodeItem);
+
+export const SessionNodeItem = (props: Props): React.ReactNode => {
+  switch (props.node.controller.kind) {
+    case 'opencode':
+      return <MemoizedOpenCodeSessionNodeItem {...props} />;
+    case 'passive':
+      return <MemoizedPassiveSessionNodeItem {...props} />;
+  }
+};

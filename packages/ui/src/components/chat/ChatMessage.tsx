@@ -1,5 +1,6 @@
 import React from 'react';
-import type { Message, Part } from '@opencode-ai/sdk/v2';
+import type { TranscriptMessage, TranscriptPart } from './transcript/types';
+import { useTranscriptMessageActions } from './transcript/actions';
 import { useShallow } from 'zustand/react/shallow';
 
 import { MessageFreshnessDetector } from '@/lib/messageFreshness';
@@ -7,7 +8,6 @@ import { useConfigStore } from '@/stores/useConfigStore';
 import { useFeatureFlagsStore } from '@/stores/useFeatureFlagsStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { useContextStore } from '@/stores/contextStore';
-import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSelectionStore } from '@/sync/selection-store';
 import { useDeviceInfo } from '@/lib/device';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
@@ -19,10 +19,8 @@ import type { AgentMentionInfo } from './message/types';
 import type { StreamPhase, ToolPopupContent } from './message/types';
 import { deriveMessageRole } from './message/messageRole';
 import { filterVisibleParts, normalizeParts } from './message/partUtils';
-import { normalizeUserDisplayParts } from './message/normalizeUserDisplayParts';
 import { isHiddenUserMessage } from './message/hiddenUserMessage';
-import { flattenAssistantTextParts } from '@/lib/messages/messageText';
-import { isLikelyProviderAuthFailure, PROVIDER_AUTH_FAILURE_MESSAGE } from '@/lib/messages/providerAuthError';
+import { flattenTranscriptTextParts } from './transcript/text';
 import { getProviderModelDisplayName } from '@/lib/modelDisplay';
 import { lazyWithChunkRecovery } from '@/lib/chunkLoadRecovery';
 import type { TurnGroupingContext } from './lib/turns/types';
@@ -33,10 +31,6 @@ import { areOptionalRenderRelevantMessagesEqual, areRenderRelevantMessagesEqual,
 import type { ReviewTransferDirection } from '@/lib/reviewFlow';
 import { toast } from 'sonner';
 import { useI18n } from '@/lib/i18n';
-import { useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
-import { getContextObligatoryMessages } from '@/lib/contextObligatoryMessages';
-import { setContextObligatoryMessage } from '@/sync/session-actions';
-import { isVSCodeRuntime } from '@/lib/desktop';
 
 const ToolOutputDialog = lazyWithChunkRecovery(() => import('./message/ToolOutputDialog'));
 
@@ -110,26 +104,10 @@ function useStickyDisplayValue<T>(value: T | null | undefined): T | null | undef
     return value ?? stickyValue;
 }
 
-const getMessageInfoProp = (info: unknown, key: string): unknown => {
-    if (typeof info === 'object' && info !== null) {
-        return (info as Record<string, unknown>)[key];
-    }
-    return undefined;
-};
-
 interface ChatMessageProps {
-    message: {
-        info: Message;
-        parts: Part[];
-    };
-    previousMessage?: {
-        info: Message;
-        parts: Part[];
-    };
-    nextMessage?: {
-        info: Message;
-        parts: Part[];
-    };
+    message: TranscriptMessage;
+    previousMessage?: TranscriptMessage;
+    nextMessage?: TranscriptMessage;
     onContentChange?: (reason?: ContentChangeReason) => void;
     animationHandlers?: AnimationHandlers;
     scrollToBottom?: () => void;
@@ -159,7 +137,8 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
     const { t } = useI18n();
     const { isMobile, isTablet, hasTouchInput } = useDeviceInfo();
     const alwaysShowMessageActions = isMobile || isTablet;
-    const canPinIntoContext = !isVSCodeRuntime();
+    const messageActions = useTranscriptMessageActions();
+    const canPinIntoContext = Boolean(messageActions.setContextPinned);
     const { currentTheme } = useThemeSystem();
     const messageContainerRef = React.useRef<HTMLDivElement | null>(null);
 
@@ -184,8 +163,8 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
 
     const [copiedCode, setCopiedCode] = React.useState<string | null>(null);
     const [copiedMessage, setCopiedMessage] = React.useState(false);
-    const [expandedTools, setExpandedTools] = React.useState<Set<string>>(() => readExpandedToolsCache(message.info.id));
-    const [collapsedTools, setCollapsedTools] = React.useState<Set<string>>(() => readCollapsedToolsCache(message.info.id));
+    const [expandedTools, setExpandedTools] = React.useState<Set<string>>(() => readExpandedToolsCache(message.id));
+    const [collapsedTools, setCollapsedTools] = React.useState<Set<string>>(() => readCollapsedToolsCache(message.id));
     const [popupContent, setPopupContent] = React.useState<ToolPopupContent>({
         open: false,
         title: '',
@@ -193,18 +172,18 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
     });
 
     React.useEffect(() => {
-        setExpandedTools(readExpandedToolsCache(message.info.id));
-        setCollapsedTools(readCollapsedToolsCache(message.info.id));
-    }, [message.info.id]);
+        setExpandedTools(readExpandedToolsCache(message.id));
+        setCollapsedTools(readCollapsedToolsCache(message.id));
+    }, [message.id]);
 
 
 
-    const messageRole = React.useMemo(() => deriveMessageRole(message.info), [message.info]);
+    const messageRole = React.useMemo(() => deriveMessageRole(message), [message]);
     const isUser = messageRole.isUser;
     const useExternalUserActionsRow = isUser && (isMobile || !stickyUserHeader);
     const showStickyInlineHoverRow = isUser && !isMobile && stickyUserHeader && !useExternalUserActionsRow;
 
-    const sessionId = message.info.sessionID;
+    const sessionId = message.sessionId;
     const planModeEnabled = useFeatureFlagsStore((state) => state.planModeEnabled);
 
     // Keep non-active-turn rows detached from context-store churn.
@@ -215,50 +194,16 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
         }))
     );
 
-    const normalizedParts = React.useMemo(() => {
-        const safeParts = normalizeParts(message.parts);
-        if (!isUser) {
-            return safeParts;
-        }
-
-        return normalizeUserDisplayParts(safeParts, { planModeEnabled });
-    }, [isUser, message.parts, planModeEnabled]);
+    const normalizedParts = React.useMemo(() => normalizeParts(message.parts), [message.parts]);
 
     const previousUserMetadata = React.useMemo(() => {
-        if (isUser || !previousMessage) {
-            return null;
-        }
-
-        const clientRole = getMessageInfoProp(previousMessage.info, 'clientRole');
-        const role = getMessageInfoProp(previousMessage.info, 'role');
-        const previousRole = typeof clientRole === 'string' ? clientRole : (typeof role === 'string' ? role : undefined);
-        if (previousRole !== 'user') {
-            return null;
-        }
-
-        const mode = getMessageInfoProp(previousMessage.info, 'mode');
-        const agent = getMessageInfoProp(previousMessage.info, 'agent');
-        const providerID = getMessageInfoProp(previousMessage.info, 'providerID');
-        const modelID = getMessageInfoProp(previousMessage.info, 'modelID');
-        const variant = getMessageInfoProp(previousMessage.info, 'variant');
-        const resolvedAgent =
-            typeof mode === 'string' && mode.trim().length > 0
-                ? mode
-                : (typeof agent === 'string' && agent.trim().length > 0 ? agent : undefined);
-        const resolvedProvider = typeof providerID === 'string' && providerID.trim().length > 0 ? providerID : undefined;
-        const resolvedModel = typeof modelID === 'string' && modelID.trim().length > 0 ? modelID : undefined;
-        const resolvedVariant = typeof variant === 'string' && variant.trim().length > 0 ? variant : undefined;
-
-        if (!resolvedAgent && !resolvedProvider && !resolvedModel && !resolvedVariant) {
-            return null;
-        }
-
-        return {
-            agentName: resolvedAgent,
-            providerId: resolvedProvider,
-            modelId: resolvedModel,
-            variant: resolvedVariant,
-        };
+        if (isUser || !previousMessage || previousMessage.role !== 'user') return null;
+        const resolvedAgent = previousMessage.mode ?? previousMessage.agent;
+        const resolvedProvider = previousMessage.providerId;
+        const resolvedModel = previousMessage.modelId;
+        const resolvedVariant = previousMessage.modelVariant ?? previousMessage.variant;
+        if (!resolvedAgent && !resolvedProvider && !resolvedModel && !resolvedVariant) return null;
+        return { agentName: resolvedAgent, providerId: resolvedProvider, modelId: resolvedModel, variant: resolvedVariant };
     }, [isUser, previousMessage]);
 
     const previousIsModeSwitchMessage = React.useMemo(() => {
@@ -266,8 +211,8 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
         if (isUser || !previousMessage) return false;
         const parts = Array.isArray(previousMessage.parts) ? previousMessage.parts : [];
         for (let i = 0; i < parts.length; i++) {
-            const part = parts[i] as unknown as { type?: string; text?: string; synthetic?: boolean };
-            if (part?.type !== 'text') continue;
+            const part = parts[i];
+            if (part?.kind !== 'text') continue;
             if (part?.synthetic !== true) continue;
             const text = typeof part.text === 'string' ? part.text.trim() : '';
             if (text.startsWith('User has requested to enter plan mode') || text.startsWith('The plan at ')) {
@@ -282,18 +227,17 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
 
         // While the assistant message is streaming, if the immediately previous user message is a
         // synthetic mode switch, trust that mode for the badge.
-        const timeInfo = message.info.time as { completed?: number } | undefined;
-        const isCompleted = typeof timeInfo?.completed === 'number' && timeInfo.completed > 0;
+        const isCompleted = typeof message.completedAt === 'number' && message.completedAt > 0;
         if (!isCompleted && previousIsModeSwitchMessage && previousUserMetadata?.agentName) {
             return previousUserMetadata.agentName;
         }
 
-        const messageMode = getMessageInfoProp(message.info, 'mode');
+        const messageMode = message.mode;
         if (typeof messageMode === 'string' && messageMode.trim().length > 0) {
             return messageMode;
         }
 
-        const messageAgent = getMessageInfoProp(message.info, 'agent');
+        const messageAgent = message.agent;
         if (typeof messageAgent === 'string' && messageAgent.trim().length > 0) {
             return messageAgent;
         }
@@ -311,10 +255,10 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
         }
 
         return savedSessionAgentSelection ?? undefined;
-    }, [isUser, message.info, previousIsModeSwitchMessage, previousUserMetadata, sessionId, currentContextAgent, savedSessionAgentSelection]);
+    }, [isUser, message, previousIsModeSwitchMessage, previousUserMetadata, sessionId, currentContextAgent, savedSessionAgentSelection]);
 
-    const messageProviderID = !isUser ? getMessageInfoProp(message.info, 'providerID') : null;
-    const messageModelID = !isUser ? getMessageInfoProp(message.info, 'modelID') : null;
+    const messageProviderID = !isUser ? message.providerId : null;
+    const messageModelID = !isUser ? message.modelId : null;
 
     const contextModelSelection = React.useMemo(() => {
         if (isUser || !sessionId) return null;
@@ -391,48 +335,34 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
     const headerProviderID = displayProviderIDValue ?? null;
     const headerModelName = displayModelName ?? undefined;
 
-    const messageCompletedAt = React.useMemo(() => {
-        const timeInfo = message.info.time as { completed?: number } | undefined;
-        return typeof timeInfo?.completed === 'number' ? timeInfo.completed : null;
-    }, [message.info.time]);
-
-    const messageCreatedAt = React.useMemo(() => {
-        const timeInfo = message.info.time as { created?: number } | undefined;
-        return typeof timeInfo?.created === 'number' ? timeInfo.created : null;
-    }, [message.info.time]);
-    const isPinnedIntoContext = useGlobalSessionsStore((state) => {
-        const session = state.activeSessions.find((candidate) => candidate.id === sessionId)
-            ?? state.archivedSessions.find((candidate) => candidate.id === sessionId);
-        return getContextObligatoryMessages(session).some((entry) => entry.id === message.info.id);
-    });
+    const messageCompletedAt = message.completedAt ?? null;
+    const messageCreatedAt = message.createdAt ?? null;
+    const isPinnedIntoContext = messageActions.isContextPinned?.(message.id) ?? false;
     const [pinPending, setPinPending] = React.useState(false);
     const handleToggleContextPin = React.useCallback(async () => {
-        if (!sessionId || !messageCreatedAt || pinPending) return;
+        if (!messageCreatedAt || pinPending || !messageActions.setContextPinned) return;
         setPinPending(true);
         try {
-            const directory = useSessionUIStore.getState().getDirectoryForSession(sessionId);
-            await setContextObligatoryMessage(sessionId, directory, {
-                id: message.info.id,
-                createdAt: messageCreatedAt,
-                role: isUser ? 'user' : 'assistant',
-            }, !isPinnedIntoContext);
+            await messageActions.setContextPinned(
+                message.id,
+                messageCreatedAt,
+                isUser ? 'user' : 'assistant',
+                !isPinnedIntoContext,
+            );
         } catch (error) {
             console.error('[chat-message] failed to update context pin', error);
             toast.error(t('chat.messageBody.actions.contextPinFailed'));
         } finally {
             setPinPending(false);
         }
-    }, [isPinnedIntoContext, isUser, message.info.id, messageCreatedAt, pinPending, sessionId, t]);
+    }, [isPinnedIntoContext, isUser, message.id, messageActions, messageCreatedAt, pinPending, t]);
 
     const isMessageCompleted = React.useMemo(() => {
         if (isUser) return true;
         return Boolean(messageCompletedAt && messageCompletedAt > 0);
     }, [isUser, messageCompletedAt]);
 
-    const messageFinish = React.useMemo(() => {
-        const finish = (message.info as { finish?: string }).finish;
-        return typeof finish === 'string' ? finish : undefined;
-    }, [message.info]);
+    const messageFinish = message.finish;
 
     const visibleParts = React.useMemo(
         () =>
@@ -459,26 +389,26 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
         if (isUser) {
             return [];
         }
-        return visibleParts.filter((part) => part.type === 'text');
+        return visibleParts.filter((part) => part.kind === 'text');
     }, [isUser, visibleParts]);
 
     const toolParts = React.useMemo(() => {
         if (isUser) {
             return [];
         }
-        const filtered = visibleParts.filter((part) => part.type === 'tool');
+        const filtered = visibleParts.filter((part) => part.kind === 'tool');
         return filtered;
     }, [isUser, visibleParts]);
 
     const turnActivityToolParts = React.useMemo(() => {
         if (isUser) {
-            return [] as Part[];
+            return [] as TranscriptPart[];
         }
         const records = turnGroupingContext?.activityParts ?? [];
         return records
             .filter((record) => record.kind === 'tool')
             .map((record) => record.part)
-            .filter((part): part is Part => part.type === 'tool');
+            .filter((part): part is TranscriptPart => part.kind === 'tool');
     }, [isUser, turnGroupingContext?.activityParts]);
 
     const defaultOpenToolIds = React.useMemo(() => {
@@ -526,7 +456,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
         if (!isUser) {
             return undefined;
         }
-        const mentionPart = normalizedParts.find((part) => part.type === 'agent');
+        const mentionPart = normalizedParts.find((part) => part.kind === 'agent');
         if (!mentionPart) {
             return undefined;
         }
@@ -570,14 +500,14 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
     const shouldAnimateMessage = React.useMemo(() => {
         if (isUser) return false;
         const freshnessDetector = MessageFreshnessDetector.getInstance();
-        return freshnessDetector.shouldAnimateMessage(message.info, message.info.sessionID);
-    }, [message.info, isUser]);
+        return freshnessDetector.shouldAnimateMessage(message, message.sessionId);
+    }, [message, isUser]);
 
     const [hasStartedStreamingHeader, setHasStartedStreamingHeader] = React.useState(false);
 
     const nextRole = React.useMemo(() => {
         if (!nextMessage) return null;
-        return deriveMessageRole(nextMessage.info);
+        return deriveMessageRole(nextMessage);
     }, [nextMessage]);
 
     const hasTurnGrouping = Boolean(turnGroupingContext);
@@ -616,16 +546,16 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
         if (!isUser || !animateUserOnMount) {
             return;
         }
-        onUserAnimationConsumed?.(message.info.id);
-    }, [animateUserOnMount, isUser, message.info.id, onUserAnimationConsumed]);
+        onUserAnimationConsumed?.(message.id);
+    }, [animateUserOnMount, isUser, message.id, onUserAnimationConsumed]);
 
     React.useEffect(() => {
         setHasStartedStreamingHeader(false);
-    }, [message.info.id]);
+    }, [message.id]);
 
     React.useEffect(() => {
         const headerMessageId = assistantHeaderMessageId ?? turnGroupingContext?.headerMessageId;
-        if (isUser || !headerMessageId || headerMessageId !== message.info.id) {
+        if (isUser || !headerMessageId || headerMessageId !== message.id) {
             return;
         }
 
@@ -633,7 +563,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
         if (isCurrentlyStreaming) {
             setHasStartedStreamingHeader(true);
         }
-    }, [assistantHeaderMessageId, isUser, message.info.id, streamPhase, turnGroupingContext?.headerMessageId]);
+    }, [assistantHeaderMessageId, isUser, message.id, streamPhase, turnGroupingContext?.headerMessageId]);
 
     const shouldShowHeader = React.useMemo(() => {
         if (isUser) return true;
@@ -642,7 +572,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
         const headerMessageId = assistantHeaderMessageId ?? turnGroupingContext?.headerMessageId;
         if (headerMessageId) {
             // For turn grouping: only show header for the first assistant message in the turn
-            const isFirstAssistantInTurn = message.info.id === headerMessageId;
+            const isFirstAssistantInTurn = message.id === headerMessageId;
 
             if (isFirstAssistantInTurn) {
                 // For completed messages, always show header (historical messages)
@@ -661,7 +591,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
 
         // Ungrouped fallback path: always show assistant header.
         return true;
-    }, [assistantHeaderMessageId, hasStartedStreamingHeader, isUser, turnGroupingContext, streamPhase, message.info.id]);
+    }, [assistantHeaderMessageId, hasStartedStreamingHeader, isUser, turnGroupingContext, streamPhase, message.id]);
 
     const handleCopyCode = React.useCallback((code: string) => {
         void copyTextToClipboard(code).then((result) => {
@@ -679,46 +609,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
 
     // Summary body removed — flat rendering means text is always inline.
 
-    const assistantError = React.useMemo(() => {
-        if (isUser) {
-            return undefined;
-        }
-        const errorInfo = (message.info as { error?: unknown } | undefined)?.error as
-            | { data?: { message?: unknown }; message?: unknown; name?: unknown }
-            | undefined;
-        if (!errorInfo) {
-            return undefined;
-        }
-        const dataMessage = typeof errorInfo.data?.message === 'string' ? errorInfo.data.message : undefined;
-        const errorMessage = typeof errorInfo.message === 'string' ? errorInfo.message : undefined;
-        const errorName = typeof errorInfo.name === 'string' ? errorInfo.name : undefined;
-        const detail = dataMessage || errorMessage || errorName;
-        if (!detail) {
-            return undefined;
-        }
-        if (errorName === 'SessionRetry') {
-            return {
-                text: `Opencode failed to send a message. Retry attempt info: \n\`${detail}\``,
-                variant: 'info' as const,
-            };
-        }
-        if (isLikelyProviderAuthFailure(detail)) {
-            return {
-                text: PROVIDER_AUTH_FAILURE_MESSAGE,
-                variant: 'error' as const,
-            };
-        }
-        if (detail.trim().toLowerCase() === 'aborted') {
-            return {
-                text: 'The running turn was stopped before OpenCode could send the next message.',
-                variant: 'info' as const,
-            };
-        }
-        return {
-            text: `Opencode failed to send message with error:\n\`${detail}\``,
-            variant: 'error' as const,
-        };
-    }, [isUser, message.info]);
+    const assistantError = isUser ? undefined : message.error;
 
     const assistantErrorText = assistantError?.text;
     const assistantErrorVariant = assistantError?.variant;
@@ -726,7 +617,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
     const messageTextContent = React.useMemo(() => {
         if (isUser) {
             const shellOutputs = displayParts
-                .filter((part): part is Part & { type: 'text'; shellAction?: { output?: unknown } } => part.type === 'text')
+                .filter((part): part is Extract<TranscriptPart, { kind: 'text' }> => part.kind === 'text')
                 .map((part) => {
                     const output = part.shellAction?.output;
                     return typeof output === 'string' ? output.trim() : '';
@@ -738,7 +629,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
             }
 
             const shellCommands = displayParts
-                .filter((part): part is Part & { type: 'text'; shellAction?: { command?: unknown } } => part.type === 'text')
+                .filter((part): part is Extract<TranscriptPart, { kind: 'text' }> => part.kind === 'text')
                 .map((part) => {
                     const command = part.shellAction?.command;
                     return typeof command === 'string' ? command.trim() : '';
@@ -750,9 +641,9 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
             }
 
             const textParts = displayParts
-                .filter((part): part is Part & { type: 'text'; text?: string; content?: string } => part.type === 'text')
+                .filter((part): part is Extract<TranscriptPart, { kind: 'text' }> => part.kind === 'text')
                 .map((part) => {
-                    const text = part.text || part.content || '';
+                    const text = part.text;
                     return text.trim();
                 })
                 .filter((text) => text.length > 0);
@@ -765,7 +656,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
             return assistantErrorText;
         }
 
-        return flattenAssistantTextParts(displayParts);
+        return flattenTranscriptTextParts(displayParts);
     }, [assistantErrorText, displayParts, isUser]);
 
     const hasTextContent = messageTextContent.length > 0;
@@ -789,15 +680,12 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
     }, [isUser, messageTextContent]);
 
     const handleRevert = React.useCallback(() => {
-        if (!sessionId || !message.info.id) return;
-        useSessionUIStore.getState().revertToMessage(sessionId, message.info.id);
-    }, [sessionId, message.info.id]);
+        messageActions.revert?.(message.id);
+    }, [message.id, messageActions]);
 
-    // NEW: Fork handler
     const handleFork = React.useCallback(() => {
-        if (!sessionId || !message.info.id) return;
-        useSessionUIStore.getState().forkFromMessage(sessionId, message.info.id);
-    }, [sessionId, message.info.id]);
+        messageActions.fork?.(message.id);
+    }, [message.id, messageActions]);
 
     const handleToggleTool = React.useCallback((toolId: string) => {
         const isDefaultOpen = defaultOpenToolIds.has(toolId);
@@ -811,7 +699,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
                 } else {
                     next.delete(toolId);
                 }
-                writeCollapsedToolsCache(message.info.id, next);
+                writeCollapsedToolsCache(message.id, next);
                 return next;
             });
 
@@ -819,7 +707,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
                 setExpandedTools((prev) => {
                     const next = new Set(prev);
                     next.delete(toolId);
-                    writeExpandedToolsCache(message.info.id, next);
+                    writeExpandedToolsCache(message.id, next);
                     return next;
                 });
             }
@@ -833,7 +721,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
             } else {
                 next.add(toolId);
             }
-            writeExpandedToolsCache(message.info.id, next);
+            writeExpandedToolsCache(message.id, next);
             return next;
         });
 
@@ -843,10 +731,10 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
             }
             const next = new Set(prev);
             next.delete(toolId);
-            writeCollapsedToolsCache(message.info.id, next);
+            writeCollapsedToolsCache(message.id, next);
             return next;
         });
-    }, [defaultOpenToolIds, effectiveExpandedTools, message.info.id]);
+    }, [defaultOpenToolIds, effectiveExpandedTools, message.id]);
 
     const resolvedAnimationHandlers = animationHandlers ?? null;
     const hasAnnouncedAuxiliaryScrollRef = React.useRef(false);
@@ -864,7 +752,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
         hasTriggeredReservationOnceRef.current = false;
         hasAnnouncedAuxiliaryScrollRef.current = false;
         hasEverStreamedRef.current = false;
-    }, [message.info.id]);
+    }, [message.id]);
 
     const handleAuxiliaryContentComplete = React.useCallback(() => {
         if (isUser) {
@@ -892,7 +780,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
         setImagePreviewOpen(open);
     }, [setImagePreviewOpen]);
 
-    const isAnimationSettled = Boolean(getMessageInfoProp(message.info, 'animationSettled'));
+    const isAnimationSettled = message.animationSettled === true;
     const isStreamingPhase = streamPhase === 'streaming' || streamPhase === 'cooldown';
 
     if (isStreamingPhase) {
@@ -903,7 +791,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
         if (isUser) {
             return false;
         }
-        return visibleParts.some((part) => part.type === 'reasoning');
+        return visibleParts.some((part) => part.kind === 'reasoning');
     }, [isUser, visibleParts]);
 
     const allowAnimation = shouldAnimateMessage && !isAnimationSettled && !isStreamingPhase && !hasEverStreamedRef.current;
@@ -1025,8 +913,8 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
                     isUser ? (isMobile ? 'pt-2' : 'pt-4') : assistantTopPaddingClass,
                     isUser ? 'pb-0' : (isFollowedByAssistant || nextIsHiddenUserMessage) ? 'pb-0' : 'pb-2'
                 )}
-                id={`message-${message.info.id}`}
-                data-message-id={message.info.id}
+                id={`message-${message.id}`}
+                data-message-id={message.id}
                 ref={messageContainerRef}
             >
                 <div className="chat-message-column relative">
@@ -1049,7 +937,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
                                             className="px-5 py-3 shadow-none border border-primary/5"
                                         >
                                             <MessageBody
-                                                messageId={message.info.id}
+                                                messageId={message.id}
                                                 parts={displayParts}
                                                 isUser={isUser}
                                                 isMessageCompleted={isMessageCompleted}
@@ -1073,8 +961,8 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
                                                 showReasoningTraces={showReasoningTraces}
                                                 onAuxiliaryContentComplete={handleAuxiliaryContentComplete}
                                                 agentMention={agentMention}
-                                                onRevert={handleRevert}
-                                                onFork={isUser ? handleFork : undefined}
+                                                onRevert={messageActions.revert ? handleRevert : undefined}
+                                                onFork={isUser && messageActions.fork ? handleFork : undefined}
                                                 contextPinned={isPinnedIntoContext}
                                                 contextPinPending={pinPending}
                                                 onToggleContextPin={canPinIntoContext && messageCreatedAt ? handleToggleContextPin : undefined}
@@ -1086,7 +974,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
                                         </div>
                                         {useExternalUserActionsRow ? (
                                             <MessageBody
-                                                messageId={message.info.id}
+                                                messageId={message.id}
                                                 parts={displayParts}
                                                 isUser={isUser}
                                                 isMessageCompleted={isMessageCompleted}
@@ -1110,8 +998,8 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
                                                 showReasoningTraces={showReasoningTraces}
                                                 onAuxiliaryContentComplete={handleAuxiliaryContentComplete}
                                                 agentMention={agentMention}
-                                                onRevert={handleRevert}
-                                                onFork={isUser ? handleFork : undefined}
+                                                onRevert={messageActions.revert ? handleRevert : undefined}
+                                                onFork={isUser && messageActions.fork ? handleFork : undefined}
                                                 contextPinned={isPinnedIntoContext}
                                                 contextPinPending={pinPending}
                                                 onToggleContextPin={canPinIntoContext && messageCreatedAt ? handleToggleContextPin : undefined}
@@ -1128,8 +1016,8 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
                     ) : (
                         <div className="relative">
                             <MessageBody
-                                sessionId={message.info.sessionID}
-                                messageId={message.info.id}
+                                sessionId={message.sessionId}
+                                messageId={message.id}
                                 parts={visibleParts}
                                 isUser={isUser}
                                 isMessageCompleted={isMessageCompleted}
@@ -1184,17 +1072,14 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
 };
 
 export default React.memo(ChatMessage, (prev, next) => {
-    return areRenderRelevantMessagesEqual(
-        { info: prev.message.info, parts: prev.message.parts },
-        { info: next.message.info, parts: next.message.parts }
-    )
+    return areRenderRelevantMessagesEqual(prev.message, next.message)
         && areOptionalRenderRelevantMessagesEqual(
-            prev.previousMessage ? { info: prev.previousMessage.info, parts: prev.previousMessage.parts } : undefined,
-            next.previousMessage ? { info: next.previousMessage.info, parts: next.previousMessage.parts } : undefined
+            prev.previousMessage,
+            next.previousMessage
         )
         && areOptionalRenderRelevantMessagesEqual(
-            prev.nextMessage ? { info: prev.nextMessage.info, parts: prev.nextMessage.parts } : undefined,
-            next.nextMessage ? { info: next.nextMessage.info, parts: next.nextMessage.parts } : undefined
+            prev.nextMessage,
+            next.nextMessage
         )
         && prev.isInActiveTurn === next.isInActiveTurn
         && prev.activeStreamingPhase === next.activeStreamingPhase
@@ -1205,7 +1090,7 @@ export default React.memo(ChatMessage, (prev, next) => {
         && areRelevantTurnGroupingContextsEqual(
             prev.turnGroupingContext,
             next.turnGroupingContext,
-            prev.message.info.id,
-            deriveMessageRole(prev.message.info).isUser
+            prev.message.id,
+            deriveMessageRole(prev.message).isUser
         );
 });

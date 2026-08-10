@@ -64,7 +64,7 @@ import { opencodeClient } from '@/lib/opencode/client';
 import { useDirectoryShowHidden } from '@/lib/directoryShowHidden';
 import { useFilesViewShowGitignored } from '@/lib/filesViewShowGitignored';
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
-import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
+import { useVisibleChatDirectory } from '@/hooks/useVisibleChatDirectory';
 import { FileTypeIcon } from '@/components/icons/FileTypeIcon';
 import { Icon } from "@/components/icon/Icon";
 import { useMessageTTS } from '@/hooks/useMessageTTS';
@@ -730,7 +730,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
   const showHidden = useDirectoryShowHidden();
   const showGitignored = useFilesViewShowGitignored();
 
-  const currentDirectory = useEffectiveDirectory() ?? '';
+  const currentDirectory = useVisibleChatDirectory() ?? '';
   const root = normalizePath(currentDirectory.trim());
   // editor-only hosts (desktop context panel, the mobile Files surface) bring
   // their own chrome — the open-file tabs row is redundant there.
@@ -1069,6 +1069,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
   });
 
   const {
+    canPersistDrafts,
     drafts: filesFileDrafts,
     commentText,
     setCommentText,
@@ -3141,6 +3142,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
   const handleCloseDialog = React.useCallback(() => setActiveDialog(null), []);
 
   const blockWidgets = React.useMemo(() => {
+    if (!canPersistDrafts) return [];
     return buildCodeMirrorCommentWidgets({
       drafts: filesFileDrafts,
       editingDraftId,
@@ -3162,7 +3164,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
       },
       onDelete: deleteDraft,
     });
-  }, [cancel, commentText, deleteDraft, editingDraftId, filesFileDrafts, handleSaveComment, isDragging, lineSelection, selectedFile?.path, setCommentText, startEdit]);
+  }, [canPersistDrafts, cancel, commentText, deleteDraft, editingDraftId, filesFileDrafts, handleSaveComment, isDragging, lineSelection, selectedFile?.path, setCommentText, startEdit]);
 
   const renderShikiFileView = React.useCallback((file: FileNode, content: string) => {
     return (
@@ -4012,13 +4014,13 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
                   enableSearch
                   searchOpen={isSearchOpen}
                   onSearchOpenChange={setIsSearchOpen}
-                  highlightLines={lineSelection
+                  highlightLines={canPersistDrafts && lineSelection
                     ? {
                       start: Math.min(lineSelection.start, lineSelection.end),
                       end: Math.max(lineSelection.start, lineSelection.end),
                     }
                     : undefined}
-                  lineNumbersConfig={{
+                  lineNumbersConfig={canPersistDrafts ? {
                     domEventHandlers: {
                       mousedown: (view: EditorView, line: { from: number; to: number }, event: Event) => {
                         if (!(event instanceof MouseEvent)) {
@@ -4095,7 +4097,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
                           return false;
                         },
                       },
-                  }}
+                  } : undefined}
                 />
               </div>
               {shouldMaskEditorForPendingNavigation && (

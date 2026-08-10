@@ -1,4 +1,5 @@
-import type { ChatMessageEntry, TurnProjectionResult } from './types';
+import type { ChatMessageEntry, TranscriptMessageEntry, TranscriptTurnProjectionResult } from './types';
+import { adaptOpenCodeTurnMessages } from '../../transcript/openCodeTurnCompatibility';
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { isMobileSurfaceRuntime } from '@/lib/runtimeSurface';
 
@@ -6,7 +7,7 @@ const TURN_PROJECTION_CACHE_MAX = 30;
 const VSCODE_TURN_PROJECTION_CACHE_MAX = 4;
 const MOBILE_TURN_PROJECTION_CACHE_MAX = 4;
 
-const projectionCache = new Map<string, TurnProjectionResult>();
+const projectionCache = new Map<string, TranscriptTurnProjectionResult>();
 const objectVersionByRef = new WeakMap<object, number>();
 let nextObjectVersion = 1;
 
@@ -25,24 +26,24 @@ const getObjectVersion = (value: object): number => {
   return next;
 };
 
-const buildMessagesVersionSignature = (messages: ChatMessageEntry[]): string => {
+const buildMessagesVersionSignature = (messages: TranscriptMessageEntry[]): string => {
   return messages.map((message) => {
-    const infoVersion = getObjectVersion(message.info as object);
+    const messageVersion = getObjectVersion(message);
     const partsVersion = getObjectVersion(message.parts);
     const partVersions = message.parts.map((part) => getObjectVersion(part as object)).join(',');
-    return `${infoVersion}:${partsVersion}:${partVersions}`;
+    return `${messageVersion}:${partsVersion}:${partVersions}`;
   }).join(';');
 };
 
-export const buildProjectionCacheKey = (
+const buildTranscriptProjectionCacheKey = (
   sessionKey: string,
-  messages: ChatMessageEntry[],
+  messages: TranscriptMessageEntry[],
   showTextJustificationActivity: boolean,
   showTurnChangedFiles: boolean,
   mergeHiddenUserTurnsKey: string,
 ): string => {
   const lastMessage = messages.length > 0 ? messages[messages.length - 1] : undefined;
-  const lastMessageId = lastMessage?.info?.id ?? '';
+  const lastMessageId = lastMessage?.id ?? '';
   const lastMessagePartCount = lastMessage?.parts?.length ?? 0;
   return [
     sessionKey,
@@ -56,7 +57,7 @@ export const buildProjectionCacheKey = (
   ].join('|');
 };
 
-export const getCachedProjection = (key: string): TurnProjectionResult | undefined => {
+export const getCachedProjection = (key: string): TranscriptTurnProjectionResult | undefined => {
   const cached = projectionCache.get(key);
   if (cached) {
     // LRU re-order: move hit to the end (most recent) so it survives
@@ -69,7 +70,7 @@ export const getCachedProjection = (key: string): TurnProjectionResult | undefin
 
 export const setCachedProjection = (
   key: string,
-  projection: TurnProjectionResult,
+  projection: TranscriptTurnProjectionResult,
 ): void => {
   projectionCache.delete(key);
   const max = getProjectionCacheMax();
@@ -80,3 +81,33 @@ export const setCachedProjection = (
   }
   projectionCache.set(key, projection);
 };
+
+
+export function buildProjectionCacheKey(
+  sessionKey: string,
+  messages: TranscriptMessageEntry[],
+  showTextJustificationActivity: boolean,
+  showTurnChangedFiles: boolean,
+  mergeHiddenUserTurnsKey: string,
+): string;
+/** @deprecated Pass TranscriptMessage values instead. */
+export function buildProjectionCacheKey(
+  sessionKey: string,
+  messages: ChatMessageEntry[],
+  showTextJustificationActivity: boolean,
+  showTurnChangedFiles: boolean,
+  mergeHiddenUserTurnsKey: string,
+): string;
+export function buildProjectionCacheKey(
+  sessionKey: string,
+  messages: TranscriptMessageEntry[] | ChatMessageEntry[],
+  showTextJustificationActivity: boolean,
+  showTurnChangedFiles: boolean,
+  mergeHiddenUserTurnsKey: string,
+): string {
+  const first = messages[0];
+  const transcriptMessages = first && 'info' in first
+    ? adaptOpenCodeTurnMessages(messages as ChatMessageEntry[])
+    : messages as TranscriptMessageEntry[];
+  return buildTranscriptProjectionCacheKey(sessionKey, transcriptMessages, showTextJustificationActivity, showTurnChangedFiles, mergeHiddenUserTurnsKey);
+}

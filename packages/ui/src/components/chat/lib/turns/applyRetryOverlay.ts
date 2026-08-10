@@ -1,13 +1,4 @@
-import type { Message } from '@opencode-ai/sdk/v2';
-
-import type { ChatMessageEntry } from './types';
-
-const resolveMessageRole = (message: ChatMessageEntry): string | null => {
-    const info = message.info as { clientRole?: string | null; role?: string | null };
-    return (typeof info.clientRole === 'string' ? info.clientRole : null)
-        ?? (typeof info.role === 'string' ? info.role : null)
-        ?? null;
-};
+import type { TranscriptMessage } from '../../transcript/types';
 
 interface RetryOverlayInput {
     sessionId: string | null;
@@ -17,74 +8,50 @@ interface RetryOverlayInput {
 }
 
 export const applyRetryOverlay = (
-    messages: ChatMessageEntry[],
+    messages: TranscriptMessage[],
     input: RetryOverlayInput,
-): ChatMessageEntry[] => {
-    if (!input.sessionId) {
-        return messages;
-    }
-
-    const retryError = {
-        name: 'SessionRetry',
-        message: input.message,
-        data: { message: input.message },
-    };
+): TranscriptMessage[] => {
+    if (!input.sessionId) return messages;
 
     let lastUserIndex = -1;
     for (let index = messages.length - 1; index >= 0; index -= 1) {
-        if (resolveMessageRole(messages[index]) === 'user') {
+        if (messages[index]?.role === 'user') {
             lastUserIndex = index;
             break;
         }
     }
-
-    if (lastUserIndex < 0) {
-        return messages;
-    }
+    if (lastUserIndex < 0) return messages;
 
     let targetAssistantIndex = -1;
     for (let index = messages.length - 1; index > lastUserIndex; index -= 1) {
-        if (resolveMessageRole(messages[index]) === 'assistant') {
+        if (messages[index]?.role === 'assistant') {
             targetAssistantIndex = index;
             break;
         }
     }
 
+    const error = {
+        text: `Opencode failed to send a message. Retry attempt info: 
+\`${input.message}\``,
+        variant: 'info' as const,
+    };
     if (targetAssistantIndex >= 0) {
         const existing = messages[targetAssistantIndex];
-        const existingInfo = existing.info as { error?: unknown };
-        if (existingInfo.error) {
-            return messages;
-        }
-
-        return messages.map((message, index) => {
-            if (index !== targetAssistantIndex) {
-                return message;
-            }
-            return {
-                ...message,
-                info: {
-                    ...(message.info as Record<string, unknown>),
-                    error: retryError,
-                } as unknown as Message,
-            };
-        });
+        if (existing.error) return messages;
+        return messages.map((message, index) => index === targetAssistantIndex ? { ...message, error } : message);
     }
 
-    const eventTime = typeof input.confirmedAt === 'number' ? input.confirmedAt : input.fallbackTimestamp;
-    const syntheticId = `synthetic_retry_notice_${input.sessionId}`;
-    const synthetic: ChatMessageEntry = {
-        info: {
-            id: syntheticId,
-            sessionID: input.sessionId,
-            role: 'assistant',
-            time: { created: eventTime, completed: eventTime },
-            finish: 'stop',
-            error: retryError,
-        } as unknown as Message,
+    const eventTime = input.confirmedAt ?? input.fallbackTimestamp;
+    const synthetic: TranscriptMessage = {
+        id: `synthetic_retry_notice_${input.sessionId}`,
+        sessionId: input.sessionId,
+        role: 'assistant',
+        createdAt: eventTime,
+        completedAt: eventTime,
+        finish: 'stop',
+        error,
         parts: [],
     };
-
     const next = messages.slice();
     next.splice(lastUserIndex + 1, 0, synthetic);
     return next;

@@ -19,6 +19,58 @@ belongs to one of them.
 | `ui/` | Presentation |
 | `text.ts` | How inserted text meets the text already there |
 
+## Controller seam
+
+Shared composer presentation reads a harness-neutral, observable
+`ComposerController` from `controller/`. State is exposed by `getSnapshot()` and
+`subscribe()` and consumed with `useSyncExternalStore`; operations and connected
+renderers remain explicit controller dependencies. `ChatInput.tsx` is currently
+the OpenCode composition root: it supplies the existing send, queue, abort,
+command-menu and model-controls implementations to the provider. Presentation
+leaves consume those dependencies
+without inspecting a harness kind or importing the connected controls directly.
+A different harness must provide the same contract at composition time; do not
+add harness conditionals to the editor, footer, autocomplete popups or action
+buttons. Existing-session and new-root Prime composers share the same
+`PrimeComposerFrame`, `ComposerEditor`, `ComposerFooter`, and mobile shell. The
+new-root composition stays in the same centered/compact-responsive placement as
+OpenCode and omits attachments and other unsupported affordances. Its model and
+thinking controls are a Prime-private local draft selection, never the connected
+OpenCode controls and never a mutation of the source Prime session. They use only
+a fresh retained Prime snapshot catalog. The initial selected row is explicitly
+Prime defaults rather than the source session's current configuration; selecting
+any catalog model creates an override, while resetting defaults clears model and
+thinking together. Thinking remains an explicit Prime-default/null selection
+until the source current model is explicitly selected. Every unconfigured draft
+shows Load Prime options. Only that button's direct click refreshes the passive
+catalog, privately ranks ready sources by same working directory and then latest
+update, and explicitly activates the winner without replacing the visible draft.
+The exact arriving fresh snapshot initializes the local controls; no unrelated
+retained live snapshot may win. Configured submission passively refreshes that
+same source before create. A transport or activation failure remains a safe
+pre-create refresh failure, while a new activation generation may be rebased only
+when its fresh snapshot still authoritatively publishes the exact selected model
+and thinking level. Prime exposes no protocol-v7 pre-session catalog,
+so an authoritative empty source catalog leaves the button retriable and explains
+that an existing Prime session is required. The composer keeps honest Prime
+defaults and remains sendable without options.
+
+The controller boundary is intentionally narrow. CodeMirror handles, caret and
+selection state, IME handling, paste/drop behavior, autocomplete placement and
+mobile keyboard/overlay state remain local to the shared composer. They are UI
+interaction state, not harness state. Likewise, OpenCode model/agent/variant
+restoration remains inside `ModelControls.tsx` until its data controller is
+separated from that connected component; the composer reaches it only through
+the neutral model-controls renderer.
+
+Action availability is explicit in `ComposerActionState`. Presentation must not
+infer send or queue eligibility from a session identifier. Harness-private
+identities also stay behind the composition root. Draft persistence is keyed by
+`(runtime, harness, directory, session)`; Prime new-root drafts use a null session
+and their normalized target directory only in this adapter-private state. Neither
+OpenCode nor Prime draft targets are published through `ComposerController` or
+neutral chat/catalog identities.
+
 ## The prompt language
 
 `language/` is the single source of truth for composer syntax. Everything that
@@ -92,8 +144,8 @@ and the send path reading the same grammar.
   oldest queued message becomes primary; **inline comments attach to the last
   body the user authored** rather than becoming their own part; PR instructions
   precede the PR diff.
-- `state/useComposerDraft.ts` — a draft belongs to a (runtime, directory,
-  session) identity. Writes are debounced while typing but forced at every edge
+- `state/useComposerDraft.ts` — a draft belongs to a (runtime, harness,
+  directory, session) identity. Writes are debounced while typing but forced at every edge
   where the page may stop running, because a pending timer is not a saved
   draft. Two orderings are load-bearing: the debounced write is skipped once
   while a draft is being restored, and a deleted draft's empty signature is

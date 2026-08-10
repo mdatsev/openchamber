@@ -4,6 +4,7 @@ import type { PermissionRequest } from '@/types/permission';
 import type { QuestionRequest } from '@/types/question';
 
 import { ChatInput } from './ChatInput';
+import { PrimeComposer, PrimeDraftComposer } from './PrimeComposer';
 import { DraftPresetChips } from './DraftPresetChips';
 import { useInputStore } from '@/sync/input-store';
 import { useUIStore } from '@/stores/useUIStore';
@@ -16,7 +17,7 @@ import { QuestionCard } from './QuestionCard';
 import { StatusRowContainer } from './StatusRowContainer';
 import { SessionRecapNote } from '@/components/chat/SessionRecapSpacer';
 import ScrollToBottomButton from './components/ScrollToBottomButton';
-import { PromptNavigatorRail } from './components/PromptNavigatorRail';
+import { PromptNavigatorRail, type PromptNavigatorEntry } from './components/PromptNavigatorRail';
 import { ScrollShadow } from '@/components/ui/ScrollShadow';
 import { useChatAutoFollow, type AnimationHandlers, type ContentChangeReason } from '@/hooks/useChatAutoFollow';
 import { useChatTimelineController } from './hooks/useChatTimelineController';
@@ -37,6 +38,7 @@ import {
     useSessionMessageCount,
     useSessionMessageRecords,
     useSessionMessageLoadState,
+    useSessionParts,
     useSyncDirectory,
     useSessionRenderable,
     useSessionStatus,
@@ -51,14 +53,43 @@ import { useI18n } from '@/lib/i18n';
 import { isMobileSurfaceRuntime } from '@/lib/runtimeSurface';
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { getEmbeddedSessionChatOriginSessionId } from '@/components/layout/contextPanelEmbeddedChat';
-import { isFullySyntheticMessage } from '@/lib/messages/synthetic';
-import { normalizeUserDisplayParts } from './message/normalizeUserDisplayParts';
-import { findShellCommandForMessage, isUserShellMarkerMessage } from './lib/shellBridge';
 import { resolveChatPromptReadOnly } from './chatPromptReadOnly';
 import { getRuntimeKey } from '@/lib/runtime-switch';
 import { createFirstVisibleSessionPerformanceTracker } from '@/sync/session-load-performance';
+import { useFeatureFlagsStore } from '@/stores/useFeatureFlagsStore';
+import { adaptOpenCodeMessage, adaptOpenCodeMessages } from './transcript/openCodeTranscriptAdapter';
+import type { TranscriptMessage, TranscriptMessageActions } from './transcript/types';
+import type { ReviewTransferDirection } from '@/lib/reviewFlow';
+import { useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
+import { ensurePrimeCatalog } from '@/stores/usePrimeCatalogStore';
+import { getContextObligatoryMessages } from '@/lib/contextObligatoryMessages';
+import { setContextObligatoryMessage } from '@/sync/session-actions';
+import { useShallow } from 'zustand/react/shallow';
+import type { ChatHarness, ChatIdentity } from '@/lib/chat-identity';
+import { createChatDraftIdentity } from '@/lib/chatDraftPersistence';
+import { useChatSelectionStore } from '@/stores/useChatSelectionStore';
+import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
+import {
+    getPrimeTranscriptKey,
+    loadEarlierPrimeTranscript,
+    loadPrimeTranscript,
+    usePrimeTranscriptStore,
+} from '@/stores/usePrimeTranscriptStore';
+import {
+    activatePrimeSessionFromUserSelection,
+    getPrimeLiveKey,
+    suspendHiddenPrimeLiveSessions,
+    usePrimeLiveStore,
+} from '@/stores/usePrimeLiveStore';
+import {
+    getPrimeDraftComposerKey,
+    selectPrimeDraftCreationPending,
+    usePrimeComposerStore,
+} from '@/stores/usePrimeComposerStore';
 
 const EMPTY_MESSAGES: Array<{ info: Message; parts: Part[] }> = [];
+const EMPTY_QUESTIONS: QuestionRequest[] = [];
+const EMPTY_PERMISSIONS: PermissionRequest[] = [];
 const IDLE_SESSION_STATUS = { type: 'idle' as const };
 const CHAT_FORCE_SCROLL_BOTTOM_EVENT = 'openchamber:chat-force-scroll-bottom';
 const DEFAULT_RETRY_MESSAGE = 'Quota limit reached. Retrying automatically.';
@@ -84,8 +115,6 @@ const CHAT_NAVIGATION_IGNORED_TARGET_SELECTOR = [
     '[role="textbox"]',
     '[data-radix-popper-content-wrapper]',
 ].join(',');
-type SessionMessageRecord = { info: Message; parts: Part[] };
-
 const isHTMLElement = (target: EventTarget | null): target is HTMLElement => {
     return target instanceof HTMLElement;
 };
@@ -150,7 +179,8 @@ type ChatViewportProps = {
     scrollRef: React.RefObject<HTMLDivElement | null>;
     messageListRef: React.RefObject<MessageListHandle | null>;
     pendingRevealWork: boolean;
-    renderedMessages: SessionMessageRecord[];
+    renderedMessages: TranscriptMessage[];
+    activeStreamingMessage: TranscriptMessage | null;
     isLoadingOlder: boolean;
     sessionIsWorking: boolean;
     streamingMessageId: string | null;
@@ -177,6 +207,9 @@ type ChatViewportProps = {
     canLoadEarlierPrompts: boolean;
     isLoadingOlderPrompts: boolean;
     onLoadEarlierPrompts: () => void;
+    messageActions?: TranscriptMessageActions;
+    reviewTransferDirection?: ReviewTransferDirection | null;
+    showConnectedFooter?: boolean;
 };
 
 const ChatViewport = React.memo(({
@@ -190,6 +223,7 @@ const ChatViewport = React.memo(({
     messageListRef,
     pendingRevealWork,
     renderedMessages,
+    activeStreamingMessage,
     isLoadingOlder,
     sessionIsWorking,
     streamingMessageId,
@@ -211,92 +245,28 @@ const ChatViewport = React.memo(({
     canLoadEarlierPrompts,
     isLoadingOlderPrompts,
     onLoadEarlierPrompts,
+    messageActions,
+    reviewTransferDirection,
+    showConnectedFooter = true,
 }: ChatViewportProps) => {
     const { t } = useI18n();
-    const promptPreviewsByTurnIdRef = React.useRef<Map<string, Part[]>>(new Map());
-    // Cache normalized parts per source array so unchanged messages keep the
-    // same reference and the memo below can bail out to the previous map.
-    const normalizedPromptPartsCache = React.useRef(new WeakMap<Part[], Part[]>());
-    // Shell-mode prompts show their extracted command; cache by message id so
-    // the parts array reference is stable while the command is unchanged.
-    const shellPreviewCache = React.useRef(new Map<string, { command: string; parts: Part[] }>());
-    const shellPreviewSessionRef = React.useRef(currentSessionId);
-    if (shellPreviewSessionRef.current !== currentSessionId) {
-        shellPreviewSessionRef.current = currentSessionId;
-        shellPreviewCache.current.clear();
-    }
-    const promptPreviewsByTurnId = React.useMemo(() => {
-        const next = new Map<string, Part[]>();
-        for (let index = 0; index < renderedMessages.length; index += 1) {
-            const message = renderedMessages[index];
-            if (message.info.role !== 'user') {
-                continue;
-            }
-            if (isUserShellMarkerMessage(message)) {
-                const command = findShellCommandForMessage(renderedMessages, index) ?? '';
-                const cached = shellPreviewCache.current.get(message.info.id);
-                if (cached && cached.command === command) {
-                    next.set(message.info.id, cached.parts);
-                } else {
-                    const parts = [{ type: 'text', text: command ? `$ ${command}` : '/shell' } as Part];
-                    shellPreviewCache.current.set(message.info.id, { command, parts });
-                    next.set(message.info.id, parts);
-                }
-                continue;
-            }
-            // Other fully synthetic user messages (loop continuations,
-            // plan-mode injections) are not prompts the user typed — keep
-            // them out of the navigator entirely.
-            if (isFullySyntheticMessage(message.parts)) {
-                continue;
-            }
-            let displayParts = normalizedPromptPartsCache.current.get(message.parts);
-            if (!displayParts) {
-                displayParts = normalizeUserDisplayParts(message.parts);
-                normalizedPromptPartsCache.current.set(message.parts, displayParts);
-            }
-            if (displayParts.length === 0) {
-                continue;
-            }
-            next.set(message.info.id, displayParts);
-        }
-        const prev = promptPreviewsByTurnIdRef.current;
-        if (prev.size === next.size) {
-            let unchanged = true;
-            for (const [id, parts] of next) {
-                if (prev.get(id) !== parts) {
-                    unchanged = false;
-                    break;
-                }
-            }
-            if (unchanged) {
-                return prev;
-            }
-        }
-        promptPreviewsByTurnIdRef.current = next;
-        return next;
-    }, [renderedMessages]);
-    // Only real (non-synthetic) prompts become rail entries; selection still
-    // targets the same turn anchors as the timeline.
-    const promptTurnIds = React.useMemo(
-        () => turnIds.filter((id) => promptPreviewsByTurnId.has(id)),
-        [promptPreviewsByTurnId, turnIds],
-    );
-    // If the viewport sits in a filtered-out (synthetic) turn, treat the
-    // nearest preceding real prompt as active so the rail doesn't jump.
+    const promptEntries = React.useMemo<PromptNavigatorEntry[]>(() => {
+        const messageById = new Map(renderedMessages.map((message) => [message.id, message]));
+        return turnIds.flatMap((turnId) => {
+            const preview = messageById.get(turnId)?.promptPreview;
+            return preview ? [{ turnId, preview }] : [];
+        });
+    }, [renderedMessages, turnIds]);
+    const promptTurnIdSet = React.useMemo(() => new Set(promptEntries.map((entry) => entry.turnId)), [promptEntries]);
     const railActiveTurnId = React.useMemo(() => {
-        if (!activeTurnId || promptPreviewsByTurnId.has(activeTurnId)) {
-            return activeTurnId;
-        }
+        if (!activeTurnId || promptTurnIdSet.has(activeTurnId)) return activeTurnId;
         const activeIndex = turnIds.indexOf(activeTurnId);
         for (let index = activeIndex - 1; index >= 0; index -= 1) {
             const turnId = turnIds[index];
-            if (promptPreviewsByTurnId.has(turnId)) {
-                return turnId;
-            }
+            if (promptTurnIdSet.has(turnId)) return turnId;
         }
         return null;
-    }, [activeTurnId, promptPreviewsByTurnId, turnIds]);
+    }, [activeTurnId, promptTurnIdSet, turnIds]);
     const focusScrollContainer = React.useCallback((event: React.MouseEvent<HTMLElement>) => {
         if (event.defaultPrevented || shouldIgnoreChatNavigationTarget(event.target)) {
             return;
@@ -354,6 +324,7 @@ const ChatViewport = React.memo(({
                             sessionKey={currentSessionId}
                             disableStaging={pendingRevealWork}
                             messages={renderedMessages}
+                            activeStreamingMessage={activeStreamingMessage}
                             sessionIsWorking={sessionIsWorking}
                             activeStreamingMessageId={streamingMessageId}
                             activeStreamingPhase={activeStreamingPhase}
@@ -363,7 +334,8 @@ const ChatViewport = React.memo(({
                             isLoadingOlder={isLoadingOlder}
                             scrollToBottom={scrollToBottom}
                             scrollRef={scrollRef}
-                            directory={directory}
+                            messageActions={messageActions}
+                            reviewTransferDirection={reviewTransferDirection}
                         />
                         {(sessionQuestions.length > 0 || sessionPermissions.length > 0) && (
                             <div>
@@ -376,20 +348,22 @@ const ChatViewport = React.memo(({
                             </div>
                         )}
 
-                        <SessionRecapNote sessionId={currentSessionId} directory={directory} isMobile={isMobile} />
-
-                        <div className="mb-3">
-                            <StatusRowContainer />
-                        </div>
+                        {showConnectedFooter ? (
+                            <>
+                                <SessionRecapNote sessionId={currentSessionId} directory={directory} isMobile={isMobile} />
+                                <div className="mb-3">
+                                    <StatusRowContainer />
+                                </div>
+                            </>
+                        ) : null}
 
                         <div className="flex-shrink-0" style={{ height: isMobile ? '40px' : '10vh' }} aria-hidden="true" />
                     </div>
                 </ScrollShadow>
                 <OverlayScrollbar containerRef={scrollRef} suppressVisibility={isProgrammaticFollowActive} userIntentOnly observeMutations={false} />
-                {showPromptNavigator && promptTurnIds.length >= 2 ? (
+                {showPromptNavigator && promptEntries.length >= 2 ? (
                     <PromptNavigatorRail
-                        turnIds={promptTurnIds}
-                        previewsByTurnId={promptPreviewsByTurnId}
+                        entries={promptEntries}
                         activeTurnId={railActiveTurnId}
                         onSelectTurn={onSelectTurn}
                         canLoadEarlier={canLoadEarlierPrompts}
@@ -411,6 +385,7 @@ const ChatViewport = React.memo(({
         && prev.messageListRef === next.messageListRef
         && prev.pendingRevealWork === next.pendingRevealWork
         && prev.renderedMessages === next.renderedMessages
+        && prev.activeStreamingMessage === next.activeStreamingMessage
         && prev.isLoadingOlder === next.isLoadingOlder
         && prev.sessionIsWorking === next.sessionIsWorking
         && prev.streamingMessageId === next.streamingMessageId
@@ -431,7 +406,10 @@ const ChatViewport = React.memo(({
         && prev.showPromptNavigator === next.showPromptNavigator
         && prev.canLoadEarlierPrompts === next.canLoadEarlierPrompts
         && prev.isLoadingOlderPrompts === next.isLoadingOlderPrompts
-        && prev.onLoadEarlierPrompts === next.onLoadEarlierPrompts;
+        && prev.onLoadEarlierPrompts === next.onLoadEarlierPrompts
+        && prev.messageActions === next.messageActions
+        && prev.reviewTransferDirection === next.reviewTransferDirection
+        && prev.showConnectedFooter === next.showConnectedFooter;
 });
 
 ChatViewport.displayName = 'ChatViewport';
@@ -499,9 +477,56 @@ const renderDraftTitle = (title: string, projectLabel: string | null): React.Rea
     );
 };
 
+const DRAFT_HARNESS_LABEL_KEYS = {
+    opencode: 'sessions.harness.openCode',
+    prime: 'sessions.harness.primeAgent',
+} as const satisfies Record<ChatHarness, 'sessions.harness.openCode' | 'sessions.harness.primeAgent'>;
+
+const DraftHarnessPicker: React.FC = () => {
+    const { t } = useI18n();
+    const harness = useSessionUIStore((state) => state.newSessionDraft.harness ?? 'opencode');
+    const setHarness = useSessionUIStore((state) => state.setNewSessionDraftHarness);
+
+    return (
+        <div
+            role="group"
+            aria-label={t('chat.draftHarness.pickerAria')}
+            className="flex shrink-0 items-center justify-center gap-1 px-3 pt-3"
+        >
+            {(['opencode', 'prime'] as const).map((candidate) => (
+                <Button
+                    key={candidate}
+                    variant="chip"
+                    size="xs"
+                    aria-pressed={harness === candidate}
+                    onClick={() => {
+                        setHarness(candidate);
+                        if (candidate === 'prime') useUIStore.getState().setExpandedInput(false);
+                    }}
+                >
+                    {t(DRAFT_HARNESS_LABEL_KEYS[candidate])}
+                </Button>
+            ))}
+        </div>
+    );
+};
+
 const DraftWelcome: React.FC = () => {
     const { t } = useI18n();
+    const harness = useSessionUIStore((state) => state.newSessionDraft.harness ?? 'opencode');
     const selectedProjectId = useSessionUIStore((state) => state.newSessionDraft.selectedProjectId ?? null);
+    const targetDirectory = useSessionUIStore((state) => (
+        state.newSessionDraft.bootstrapPendingDirectory ?? state.newSessionDraft.directoryOverride
+    ));
+    const primeDraftKey = React.useMemo(() => {
+        const identity = createChatDraftIdentity(getRuntimeKey(), targetDirectory, null, 'prime');
+        return identity ? getPrimeDraftComposerKey(identity) : null;
+    }, [targetDirectory]);
+    const primeCreationPending = usePrimeComposerStore((state) => (
+        primeDraftKey
+            ? selectPrimeDraftCreationPending(state, getRuntimeKey())
+            : false
+    ));
     const projectLabel = useProjectsStore(React.useCallback((state) => {
         const projectId = selectedProjectId ?? state.activeProjectId;
         const project = (projectId
@@ -520,10 +545,19 @@ const DraftWelcome: React.FC = () => {
                     projectLabel,
                 )}
             </h1>
-            <DraftPresetChips
-                onSubmit={(starter) => useInputStore.getState().requestPresetSubmit(starter.submitText, starter.ref.type)}
-                className="oc-draft-starters mt-8 max-w-md"
-            />
+            <fieldset
+                disabled={harness === 'prime' && primeCreationPending}
+                aria-busy={harness === 'prime' && primeCreationPending}
+                className="oc-draft-starters mt-8 max-w-md disabled:opacity-50"
+            >
+                <DraftPresetChips
+                    onSubmit={(starter) => useInputStore.getState().requestPresetSubmit(
+                        starter.submitText,
+                        starter.ref.type,
+                        harness,
+                    )}
+                />
+            </fieldset>
         </div>
     );
 };
@@ -534,11 +568,12 @@ type ChatContainerProps = {
     readOnly?: boolean;
 };
 
-export const ChatContainer: React.FC<ChatContainerProps> = ({ active = true, autoOpenDraft = true, readOnly = false }) => {
+const OpenCodeChatContainer: React.FC<ChatContainerProps> = ({ active = true, autoOpenDraft = true, readOnly = false }) => {
     const { t } = useI18n();
     // Session UI state
     const currentSessionId = useSessionUIStore((s) => s.currentSessionId);
     const currentSessionDirectory = useSessionUIStore((s) => s.currentSessionDirectory);
+    const visibleChatIdentity = useChatSelectionStore((state) => state.visibleChatIdentity);
     const openNewSessionDraft = useSessionUIStore((s) => s.openNewSessionDraft);
     const setCurrentSession = useSessionUIStore((s) => s.setCurrentSession);
     const newSessionDraft = useSessionUIStore((s) => s.newSessionDraft);
@@ -593,6 +628,12 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({ active = true, aut
         suspendPartUpdatesForMessageId: streamingMessageId,
     });
     const sessionMessages = currentSessionId ? sessionMessageRecords : EMPTY_MESSAGES;
+    const liveStreamingParts = useSessionParts(streamingMessageId ?? '', effectiveSessionDirectory);
+    const planModeEnabled = useFeatureFlagsStore((state) => state.planModeEnabled);
+    const transcriptMessages = React.useMemo(
+        () => adaptOpenCodeMessages(sessionMessages, { planModeEnabled }),
+        [planModeEnabled, sessionMessages],
+    );
     const sessionMessageLoadState = useSessionMessageLoadState(
         currentSessionId ?? '',
         effectiveSessionDirectory,
@@ -689,6 +730,7 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({ active = true, aut
     const isVSCode = isVSCodeRuntime();
     const chatSurfaceMode = useChatSurfaceMode();
     const draftOpen = Boolean(newSessionDraft?.open);
+    const draftHarness = newSessionDraft?.harness ?? 'opencode';
     const initError = useGlobalSyncStore((s) => s.error);
     // Despite the historical name, this now covers mobile too: the mobile
     // composer enters the same fullscreen-input mode via its drag handle.
@@ -697,6 +739,45 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({ active = true, aut
     const messageListRef = React.useRef<MessageListHandle | null>(null);
     const currentSession = useSession(currentSessionId, effectiveSessionDirectory);
     const parentSession = useParentSession(currentSessionId, effectiveSessionDirectory);
+    const contextPinnedMessageIds = useGlobalSessionsStore(useShallow((state) => {
+        if (!currentSessionId) return [];
+        const session = state.activeSessions.find((candidate) => candidate.id === currentSessionId)
+            ?? state.archivedSessions.find((candidate) => candidate.id === currentSessionId);
+        return getContextObligatoryMessages(session).map((entry) => entry.id).sort();
+    }));
+    const contextPinnedMessageIdSet = React.useMemo(
+        () => new Set(contextPinnedMessageIds),
+        [contextPinnedMessageIds],
+    );
+    const reviewTransferDirection = useGlobalSessionsStore((state) => (
+        currentSessionId ? state.reviewTransferBySessionId.get(currentSessionId) ?? null : null
+    ));
+    const transcriptMessageActions = React.useMemo<TranscriptMessageActions | undefined>(() => {
+        if (!currentSessionId) return undefined;
+        return {
+            revert: (messageId) => {
+                useSessionUIStore.getState().revertToMessage(currentSessionId, messageId);
+            },
+            fork: (messageId) => {
+                useSessionUIStore.getState().forkFromMessage(currentSessionId, messageId);
+            },
+            isContextPinned: (messageId) => contextPinnedMessageIdSet.has(messageId),
+            ...(!isVSCode ? {
+                setContextPinned: async (
+                    messageId: string,
+                    createdAt: number,
+                    role: 'user' | 'assistant',
+                    pinned: boolean,
+                ) => {
+                    await setContextObligatoryMessage(currentSessionId, effectiveSessionDirectory, {
+                        id: messageId,
+                        createdAt,
+                        role,
+                    }, pinned);
+                },
+            } : null),
+        };
+    }, [contextPinnedMessageIdSet, currentSessionId, effectiveSessionDirectory, isVSCode]);
 
     // In the embedded session-chat iframe, hide "Return to parent" when
     // viewing the panel's anchor session (the one recorded in the URL). Going
@@ -770,12 +851,14 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({ active = true, aut
     }, []);
 
     React.useEffect(() => {
-        if (autoOpenDraft && !currentSessionId && !draftOpen) {
+        const visiblePrimeSession = visibleChatIdentity?.runtimeKey === getRuntimeKey()
+            && visibleChatIdentity.harness === 'prime';
+        if (autoOpenDraft && !currentSessionId && !draftOpen && !visiblePrimeSession) {
             // Programmatic fallback, not user navigation — must not clear the
             // persisted last-session pointer the cold-launch restore reads.
             openNewSessionDraft({ automatic: true });
         }
-    }, [autoOpenDraft, currentSessionId, draftOpen, openNewSessionDraft]);
+    }, [autoOpenDraft, currentSessionId, draftOpen, openNewSessionDraft, visibleChatIdentity]);
 
     const activeTurnChangeRef = React.useRef<(turnId: string | null) => void>(() => {});
     const handleActiveTurnChange = React.useCallback((turnId: string | null) => {
@@ -802,7 +885,7 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({ active = true, aut
         onActiveTurnChange: handleActiveTurnChange,
     });
 
-    const viewportMessages = sessionMessages;
+    const viewportMessages = transcriptMessages;
 
     const timelineController = useChatTimelineController({
         sessionId: currentSessionId,
@@ -817,6 +900,14 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({ active = true, aut
         isPinned,
         showScrollButton,
     });
+    const renderedTranscriptMessages = timelineController.renderedMessages;
+    const activeStreamingMessage = React.useMemo(() => {
+        if (!streamingMessageId) return null;
+        const sourceMessage = sessionMessages.find((message) => message.info.id === streamingMessageId);
+        if (!sourceMessage) return null;
+        return adaptOpenCodeMessage({ ...sourceMessage, parts: liveStreamingParts }, { planModeEnabled });
+    }, [liveStreamingParts, planModeEnabled, sessionMessages, streamingMessageId]);
+
     const resumeToLatestInstant = React.useCallback(() => {
         goToBottom('instant');
     }, [goToBottom]);
@@ -1011,26 +1102,32 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({ active = true, aut
 		);
 	}
 
-	if (!currentSessionId && draftOpen) {
-		return (
-			// No transform on this root: it would become the containing block for
-			// the fullscreen composer's position:fixed visual-viewport pinning in
-			// mobile browsers (see ChatInput's composerFormRef effect).
-			<div data-composer-bound className="relative flex h-full flex-col bg-background">
-				{useCompactDraftLayout && !isDesktopExpandedInput ? <DraftWelcome /> : null}
-				<div
-					className={cn(
-						'relative z-10 flex min-h-0',
-						isDesktopExpandedInput
-							? 'flex-1 bg-background'
-							: useCompactDraftLayout
-								? 'bg-background px-0'
-								: 'flex-1 items-center justify-center bg-background px-0 pb-[6vh]'
-					)}
-				>
-                        {promptReadOnly ? <ReadOnlyPromptBanner /> : <ChatInput scrollToBottom={scrollToBottomOnSend} />}
-				</div>
-			</div>
+    if (!currentSessionId && draftOpen) {
+        const compactDraftLayout = useCompactDraftLayout;
+        return (
+            // No transform on this root: it would become the containing block for
+            // the fullscreen composer's position:fixed visual-viewport pinning in
+            // mobile browsers (see ChatInput's composerFormRef effect).
+            <div data-composer-bound className="relative flex h-full flex-col bg-background">
+                <DraftHarnessPicker />
+                {compactDraftLayout && !isDesktopExpandedInput ? <DraftWelcome /> : null}
+                <div
+                    className={cn(
+                        'relative z-10 flex min-h-0',
+                        isDesktopExpandedInput
+                            ? 'flex-1 bg-background'
+                            : compactDraftLayout
+                                ? 'bg-background px-0'
+                                : 'flex-1 items-center justify-center bg-background px-0 pb-[6vh]'
+                    )}
+                >
+                    {promptReadOnly
+                        ? <ReadOnlyPromptBanner />
+                        : draftHarness === 'prime'
+                            ? <PrimeDraftComposer />
+                            : <ChatInput scrollToBottom={scrollToBottomOnSend} />}
+                </div>
+            </div>
         );
     }
 
@@ -1164,7 +1261,8 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({ active = true, aut
                 scrollRef={scrollRef}
                 messageListRef={messageListRef}
                 pendingRevealWork={timelineController.pendingRevealWork}
-                renderedMessages={timelineController.renderedMessages}
+                renderedMessages={renderedTranscriptMessages}
+                activeStreamingMessage={activeStreamingMessage}
                 isLoadingOlder={timelineController.isLoadingOlder}
                 sessionIsWorking={sessionIsWorking}
                 streamingMessageId={streamingMessageId}
@@ -1186,6 +1284,8 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({ active = true, aut
                 canLoadEarlierPrompts={canLoadEarlierPrompts}
                 isLoadingOlderPrompts={timelineController.isLoadingOlder}
                 onLoadEarlierPrompts={handleLoadOlderClick}
+                messageActions={transcriptMessageActions}
+                reviewTransferDirection={reviewTransferDirection}
             />
 
             <div
@@ -1217,4 +1317,313 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({ active = true, aut
             />
         </div>
     );
+};
+
+
+const EMPTY_TRANSCRIPT_MESSAGES: TranscriptMessage[] = [];
+const TRANSCRIPT_BANNER_INLINE_ISSUES = new Set([
+    'prime_transcript_truncated',
+    'prime_transcript_messages_omitted',
+    'prime_live_transcript_older_omitted',
+]);
+
+const PrimeReconnectControls: React.FC<{
+    reconnecting: boolean;
+    hasConnectedSnapshot: boolean;
+    onReconnect: () => void;
+}> = ({ reconnecting, hasConnectedSnapshot, onReconnect }) => {
+    const { t } = useI18n();
+
+    return (
+        <div className="chat-input-column pb-4">
+            <div
+                role="status"
+                className="flex items-center gap-3 rounded-xl border border-border/70 bg-[var(--surface-elevated)] px-3 py-2.5"
+            >
+                <div className="min-w-0 flex-1">
+                    <p className="typography-ui-label text-foreground">
+                        {t('chat.primeSession.liveControls.readOnly')}
+                    </p>
+                </div>
+                <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={reconnecting}
+                    onClick={onReconnect}
+                    className="shrink-0"
+                >
+                    {reconnecting
+                        ? t('chat.primeSession.liveControls.reconnecting')
+                        : hasConnectedSnapshot
+                            ? t('chat.primeSession.liveControls.reconnect')
+                            : t('chat.primeSession.liveControls.enable')}
+                </Button>
+            </div>
+        </div>
+    );
+};
+
+const PassiveTranscriptContainer: React.FC<{
+    identity: ChatIdentity;
+    active: boolean;
+}> = ({ identity, active }) => {
+    const { t } = useI18n();
+    const apis = useRuntimeAPIs();
+    const transcriptKey = getPrimeTranscriptKey(identity);
+    const liveKey = getPrimeLiveKey(identity);
+    const snapshot = usePrimeTranscriptStore((state) => state.byKey.get(transcriptKey) ?? null);
+    const live = usePrimeLiveStore((state) => state.byKey.get(liveKey));
+    const messages = snapshot?.messages ?? EMPTY_TRANSCRIPT_MESSAGES;
+    const activationPending = live?.desiredActive === true && live.availability === 'activating';
+    const showComposer = active && live?.desiredActive === true && !activationPending;
+    const { isMobile } = useDeviceInfo();
+    const isVSCode = isVSCodeRuntime();
+    const stickyUserHeader = useUIStore((state) => state.stickyUserHeader);
+    const promptNavigatorEnabled = useUIStore((state) => state.promptNavigatorEnabled);
+    const isTimelineDialogOpen = useUIStore((state) => state.isTimelineDialogOpen);
+    const setTimelineDialogOpen = useUIStore((state) => state.setTimelineDialogOpen);
+    const messageListRef = React.useRef<MessageListHandle | null>(null);
+
+    React.useEffect(() => {
+        if (!active) return;
+        void ensurePrimeCatalog(identity.runtimeKey, apis);
+        void loadPrimeTranscript(identity, apis);
+    }, [active, apis, identity]);
+
+    const reconnect = React.useCallback(() => {
+        if (activationPending) return;
+        void activatePrimeSessionFromUserSelection(identity, apis);
+    }, [activationPending, apis, identity]);
+    const liveControlArea = active
+        ? showComposer
+            ? <PrimeComposer identity={identity} />
+            : (
+                <PrimeReconnectControls
+                    reconnecting={activationPending}
+                    hasConnectedSnapshot={Boolean(live?.snapshot)}
+                    onReconnect={reconnect}
+                />
+            )
+        : null;
+
+    const activeTurnChangeRef = React.useRef<(turnId: string | null) => void>(() => {});
+    const handleActiveTurnChange = React.useCallback((turnId: string | null) => {
+        activeTurnChangeRef.current(turnId);
+    }, []);
+    const {
+        scrollRef,
+        notifyContentChange: handleMessageContentChange,
+        getAnimationHandlers,
+        goToBottom,
+        releaseAutoFollow,
+        isPinned,
+        showScrollButton,
+        isFollowingProgrammatically,
+    } = useChatAutoFollow({
+        currentSessionId: transcriptKey,
+        currentSessionKey: transcriptKey,
+        sessionMessageCount: messages.length,
+        sessionIsWorking: false,
+        isMobile,
+        onActiveTurnChange: handleActiveTurnChange,
+    });
+    const loadEarlier = React.useCallback(async () => {
+        await loadEarlierPrimeTranscript(identity, apis);
+    }, [apis, identity]);
+    const historyMeta = React.useMemo(() => ({
+        limit: messages.length,
+        complete: snapshot?.complete ?? false,
+        loading: snapshot?.loadingOlder ?? snapshot?.availability === 'loading',
+    }), [messages.length, snapshot?.availability, snapshot?.complete, snapshot?.loadingOlder]);
+    const timelineController = useChatTimelineController({
+        sessionId: transcriptKey,
+        sessionKey: transcriptKey,
+        messages,
+        historyMeta,
+        scrollRef,
+        messageListRef,
+        loadMoreMessages: loadEarlier,
+        goToBottom,
+        releaseAutoFollow,
+        isPinned,
+        showScrollButton,
+    });
+    const resumeToLatestInstant = React.useCallback(() => {
+        goToBottom('instant');
+    }, [goToBottom]);
+    const navigation = useChatTurnNavigation({
+        sessionId: transcriptKey,
+        turnIds: timelineController.turnIds,
+        activeTurnId: timelineController.activeTurnId,
+        scrollToTurn: timelineController.scrollToTurn,
+        scrollToMessage: timelineController.scrollToMessage,
+        resumeToBottom: timelineController.resumeToBottomInstant,
+    });
+    const handlePromptNavigatorSelect = React.useCallback((turnId: string) => {
+        void navigation.scrollToTurnId(turnId, { behavior: 'smooth' });
+    }, [navigation]);
+    const handleLoadEarlier = React.useCallback(() => {
+        void timelineController.loadEarlier({ userInitiated: true });
+    }, [timelineController]);
+
+    React.useEffect(() => {
+        activeTurnChangeRef.current = timelineController.handleActiveTurnChange;
+    }, [timelineController.handleActiveTurnChange]);
+
+    const showPromptNavigator = !isMobile
+        && !isVSCode
+        && promptNavigatorEnabled
+        && timelineController.turnIds.length >= 2;
+    const hasRetainedTranscriptIssue = messages.length > 0 && Boolean(snapshot && (
+        snapshot.availability === 'unavailable'
+        || snapshot.issues.some((issue) => !TRANSCRIPT_BANNER_INLINE_ISSUES.has(issue.code))
+    ));
+    const liveUnavailableNotice = live?.availability === 'unavailable' && live.issues.length > 0 ? (
+        <div
+            role="status"
+            className="mx-3 mt-2 flex shrink-0 items-start gap-2 rounded-lg border border-[var(--status-warning-border)] bg-[var(--status-warning-background)] px-3 py-2 typography-meta text-foreground"
+        >
+            <Icon name="error-warning" className="mt-0.5 size-4 shrink-0 text-[var(--status-warning)]" />
+            <span>{t('chat.primeSession.readOnlyUnavailable')}</span>
+        </div>
+    ) : null;
+
+    if (!snapshot || (snapshot.availability === 'loading' && messages.length === 0)) {
+        return (
+            <div className="flex h-full flex-col bg-background">
+                <div className="min-h-0 flex-1 px-6 pt-8">
+                    <div className="chat-message-column space-y-4">
+                        <Skeleton className="h-16 w-3/4 self-end rounded-2xl" />
+                        <Skeleton className="h-28 w-full rounded-2xl" />
+                        <Skeleton className="h-20 w-5/6 rounded-2xl" />
+                    </div>
+                </div>
+                {liveControlArea}
+            </div>
+        );
+    }
+
+    if (snapshot.availability === 'unavailable' && messages.length === 0) {
+        return (
+            <div className="flex h-full flex-col bg-background">
+                <div className="flex min-h-0 flex-1 items-center justify-center px-6">
+                    <div className="max-w-sm text-center">
+                        <div className="mx-auto mb-3 flex size-9 items-center justify-center rounded-full bg-[color-mix(in_srgb,var(--status-error)_10%,transparent)] text-[var(--status-error)]">
+                            <Icon name="error-warning" className="size-4" />
+                        </div>
+                        <p className="typography-ui-label font-medium text-foreground">{t('chat.container.sessionLoadError.title')}</p>
+                        <p className="typography-meta mt-1 text-muted-foreground">{t('chat.container.sessionLoadError.description')}</p>
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            className="mt-4"
+                            onClick={() => { void loadPrimeTranscript(identity, apis); }}
+                        >
+                            {t('chat.container.sessionLoadError.retry')}
+                        </Button>
+                    </div>
+                </div>
+                {liveControlArea}
+            </div>
+        );
+    }
+
+    if (messages.length === 0) {
+        return (
+            <div className="flex h-full flex-col bg-background">
+                {liveUnavailableNotice}
+                <div className="min-h-0 flex-1" />
+                {liveControlArea}
+            </div>
+        );
+    }
+
+    return (
+        <div className="relative flex h-full flex-col bg-background">
+            {liveUnavailableNotice}
+            {hasRetainedTranscriptIssue ? (
+                <div
+                    role="status"
+                    className="mx-3 mt-2 flex shrink-0 items-center gap-2 rounded-lg border border-[var(--status-warning-border)] bg-[var(--status-warning-background)] px-3 py-2 typography-meta text-foreground"
+                >
+                    <Icon name="error-warning" className="size-4 shrink-0 text-[var(--status-warning)]" />
+                    <span>{t('chat.container.partialTranscript.description')}</span>
+                </div>
+            ) : null}
+            <ChatViewport
+                currentSessionId={transcriptKey}
+                currentSessionKey={transcriptKey}
+                isDesktopExpandedInput={false}
+                isMobile={isMobile}
+                stickyUserHeader={stickyUserHeader}
+                scrollRef={scrollRef}
+                messageListRef={messageListRef}
+                pendingRevealWork={timelineController.pendingRevealWork}
+                renderedMessages={timelineController.renderedMessages}
+                activeStreamingMessage={null}
+                isLoadingOlder={timelineController.isLoadingOlder}
+                sessionIsWorking={snapshot.liveIsWorking}
+                streamingMessageId={snapshot.liveActiveMessageId}
+                activeStreamingPhase={snapshot.liveIsWorking ? 'streaming' : null}
+                retryOverlay={null}
+                handleMessageContentChange={handleMessageContentChange}
+                getAnimationHandlers={getAnimationHandlers}
+                handleHistoryScroll={timelineController.handleHistoryScroll}
+                scrollToBottom={resumeToLatestInstant}
+                sessionQuestions={EMPTY_QUESTIONS}
+                sessionPermissions={EMPTY_PERMISSIONS}
+                isProgrammaticFollowActive={isFollowingProgrammatically}
+                showLoadOlderButton={isMobileSurfaceRuntime() && timelineController.historySignals.canLoadEarlier}
+                onLoadOlder={handleLoadEarlier}
+                turnIds={timelineController.turnIds}
+                activeTurnId={timelineController.activeTurnId}
+                onSelectTurn={handlePromptNavigatorSelect}
+                showPromptNavigator={showPromptNavigator}
+                canLoadEarlierPrompts={timelineController.historySignals.canLoadEarlier}
+                isLoadingOlderPrompts={timelineController.isLoadingOlder}
+                onLoadEarlierPrompts={handleLoadEarlier}
+                showConnectedFooter={false}
+            />
+            {liveControlArea}
+            <ScrollToBottomButton
+                visible={timelineController.showScrollToBottom}
+                onClick={navigation.resumeToLatest}
+            />
+            <TimelineDialog
+                open={isTimelineDialogOpen}
+                onOpenChange={setTimelineDialogOpen}
+                onScrollToMessage={timelineController.scrollToMessage}
+                onScrollByTurnOffset={navigation.scrollByTurnOffset}
+                onResumeToLatest={resumeToLatestInstant}
+                canLoadEarlier={timelineController.historySignals.canLoadEarlier}
+                isLoadingEarlier={timelineController.isLoadingOlder}
+                onLoadEarlier={handleLoadEarlier}
+            />
+        </div>
+    );
+};
+
+export const ChatContainer: React.FC<ChatContainerProps> = (props) => {
+    const visibleChatIdentity = useChatSelectionStore((state) => state.visibleChatIdentity);
+    const draftOpen = useSessionUIStore((state) => state.newSessionDraft.open);
+    React.useEffect(() => {
+        // The OpenCode no-session fallback may race a routed Prime identity on
+        // cold boot. Its automatic draft intentionally cannot clear Prime
+        // selection, so close that fallback once the routed identity is known.
+        if (draftOpen && visibleChatIdentity?.harness === 'prime') {
+            useSessionUIStore.getState().closeNewSessionDraft();
+        }
+    }, [draftOpen, visibleChatIdentity]);
+    React.useEffect(() => {
+        suspendHiddenPrimeLiveSessions(draftOpen ? null : visibleChatIdentity);
+    }, [draftOpen, visibleChatIdentity]);
+    if (!draftOpen && visibleChatIdentity?.harness === 'prime') {
+        return (
+            <PassiveTranscriptContainer
+                identity={visibleChatIdentity}
+                active={props.active ?? true}
+            />
+        );
+    }
+    return <OpenCodeChatContainer {...props} />;
 };

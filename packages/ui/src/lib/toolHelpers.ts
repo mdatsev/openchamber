@@ -71,6 +71,14 @@ const TOOL_METADATA: Record<string, ToolMetadata> = {
       { key: 'timeout', label: 'Timeout (ms)', type: 'text' }
     ]
   },
+  ipython: {
+    displayName: 'IPython',
+    category: 'code',
+    outputLanguage: 'text',
+    inputFields: [
+      { key: 'code', label: 'Code', type: 'code', language: 'python' }
+    ]
+  },
 
   grep: {
     displayName: 'Search Files',
@@ -806,6 +814,11 @@ export function formatToolInput(input: Record<string, unknown>, toolName: string
     const val = input[key];
     return typeof val === 'string' ? val : (typeof val === 'number' ? String(val) : null);
   };
+
+  if (toolName === 'ipython') {
+    const code = getString('code');
+    if (code) return code;
+  }
 
   if (toolName === 'bash') {
     const cmd = getString('command');

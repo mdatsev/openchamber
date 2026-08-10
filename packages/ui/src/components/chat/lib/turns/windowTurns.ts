@@ -1,17 +1,9 @@
-import type { ChatMessageEntry } from './types';
+import type { ChatMessageEntry, TranscriptMessageEntry } from './types';
+import { adaptOpenCodeTurnMessages } from '../../transcript/openCodeTurnCompatibility';
 
-const resolveMessageRole = (message: ChatMessageEntry): string => {
-    const role = (message.info as { clientRole?: string | null; role?: string | null }).clientRole ?? message.info.role;
-    return typeof role === 'string' ? role : '';
-};
+const resolveMessageRole = (message: TranscriptMessageEntry): string => message.role;
 
-const resolveParentMessageId = (message: ChatMessageEntry): string | undefined => {
-    const parentId = (message.info as { parentID?: unknown }).parentID;
-    if (typeof parentId !== 'string' || parentId.trim().length === 0) {
-        return undefined;
-    }
-    return parentId;
-};
+const resolveParentMessageId = (message: TranscriptMessageEntry): string | undefined => message.parentId;
 
 export interface TurnWindowModel {
     turnIds: string[];
@@ -22,10 +14,10 @@ export interface TurnWindowModel {
     turnCount: number;
 }
 
-const getMessageSignature = (message: ChatMessageEntry | undefined): string | null => {
+const getMessageSignature = (message: TranscriptMessageEntry | undefined): string | null => {
     if (!message) return null;
     const role = resolveMessageRole(message);
-    const messageId = typeof message.info?.id === 'string' ? message.info.id : '';
+    const messageId = message.id;
     const parentId = resolveParentMessageId(message) ?? '';
     return `${messageId}::${role}::${parentId}`;
 };
@@ -39,10 +31,10 @@ const cloneTurnWindowModel = (model: TurnWindowModel): TurnWindowModel => ({
     turnCount: model.turnCount,
 });
 
-export const updateTurnWindowModelIncremental = (
+const updateTranscriptTurnWindowModelIncremental = (
     previousModel: TurnWindowModel | null,
-    previousMessages: ChatMessageEntry[] | null,
-    nextMessages: ChatMessageEntry[],
+    previousMessages: TranscriptMessageEntry[] | null,
+    nextMessages: TranscriptMessageEntry[],
 ): TurnWindowModel | null => {
     if (!previousModel || !previousMessages) {
         return null;
@@ -89,7 +81,7 @@ export const updateTurnWindowModelIncremental = (
     }
 
     const role = resolveMessageRole(nextMessage);
-    const messageId = nextMessage.info.id;
+    const messageId = nextMessage.id;
     const nextModel = cloneTurnWindowModel(previousModel);
 
     if (role === 'user') {
@@ -136,7 +128,7 @@ export const updateTurnWindowModelIncremental = (
     return nextModel;
 };
 
-export const buildTurnWindowModel = (messages: ChatMessageEntry[]): TurnWindowModel => {
+const buildTranscriptTurnWindowModel = (messages: TranscriptMessageEntry[]): TurnWindowModel => {
     const turnIds: string[] = [];
     const turnMessageStartIndexes: number[] = [];
     const turnIndexById = new Map<string, number>();
@@ -148,7 +140,7 @@ export const buildTurnWindowModel = (messages: ChatMessageEntry[]): TurnWindowMo
 
     messages.forEach((message, index) => {
         const role = resolveMessageRole(message);
-        const messageId = message.info.id;
+        const messageId = message.id;
 
         if (role === 'user') {
             currentTurnIndex = turnIds.length;
@@ -202,3 +194,41 @@ export const buildTurnWindowModel = (messages: ChatMessageEntry[]): TurnWindowMo
         turnCount: turnIds.length,
     };
 };
+
+
+export function buildTurnWindowModel(messages: TranscriptMessageEntry[]): TurnWindowModel;
+/** @deprecated Pass TranscriptMessage values instead. */
+export function buildTurnWindowModel(messages: ChatMessageEntry[]): TurnWindowModel;
+export function buildTurnWindowModel(messages: TranscriptMessageEntry[] | ChatMessageEntry[]): TurnWindowModel {
+    const first = messages[0];
+    return buildTranscriptTurnWindowModel(first && 'info' in first
+        ? adaptOpenCodeTurnMessages(messages as ChatMessageEntry[])
+        : messages as TranscriptMessageEntry[]);
+}
+
+export function updateTurnWindowModelIncremental(
+    previousModel: TurnWindowModel | null,
+    previousMessages: TranscriptMessageEntry[] | null,
+    nextMessages: TranscriptMessageEntry[],
+): TurnWindowModel | null;
+/** @deprecated Pass TranscriptMessage values instead. */
+export function updateTurnWindowModelIncremental(
+    previousModel: TurnWindowModel | null,
+    previousMessages: ChatMessageEntry[] | null,
+    nextMessages: ChatMessageEntry[],
+): TurnWindowModel | null;
+export function updateTurnWindowModelIncremental(
+    previousModel: TurnWindowModel | null,
+    previousMessages: TranscriptMessageEntry[] | ChatMessageEntry[] | null,
+    nextMessages: TranscriptMessageEntry[] | ChatMessageEntry[],
+): TurnWindowModel | null {
+    const nextFirst = nextMessages[0];
+    const next = nextFirst && 'info' in nextFirst
+        ? adaptOpenCodeTurnMessages(nextMessages as ChatMessageEntry[])
+        : nextMessages as TranscriptMessageEntry[];
+    const previousFirst = previousMessages?.[0];
+    const previous = previousMessages && previousFirst && 'info' in previousFirst
+        ? adaptOpenCodeTurnMessages(previousMessages as ChatMessageEntry[])
+        : previousMessages as TranscriptMessageEntry[] | null;
+    return updateTranscriptTurnWindowModelIncremental(previousModel, previous, next);
+}
