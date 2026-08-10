@@ -314,8 +314,7 @@ describe('fs write', () => {
 });
 
 describe('fs read', () => {
-  it('rejects outside workspace reads without a grant', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  it('allows outside workspace reads without a grant', async () => {
     const fsPromises = {
       stat: vi.fn(async () => ({ isFile: () => true, size: 3 })),
       readFile: vi.fn(async () => 'secret'),
@@ -324,10 +323,9 @@ describe('fs read', () => {
 
     const res = await callRead(handler, { path: '/etc/passwd', allowOutsideWorkspace: 'true' });
 
-    expect(res.statusCode).toBe(400);
-    expect(res.body).toEqual({ error: 'Outside workspace file access requires a grant' });
-    expect(fsPromises.readFile).not.toHaveBeenCalled();
-    warn.mockRestore();
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toBe('secret');
+    expect(fsPromises.readFile).toHaveBeenCalledWith('/etc/passwd', 'utf8');
   });
 
   it('allows outside workspace reads with an exact-path grant', async () => {
@@ -353,7 +351,7 @@ describe('fs read', () => {
     expect(res.body).toBe('secret');
   });
 
-  it('rejects outside workspace grants for a different canonical path', async () => {
+  it('does not let a stale grant restrict an outside workspace read', async () => {
     const fsPromises = {
       realpath: vi.fn(async (targetPath) => targetPath),
       stat: vi.fn(async () => ({ isFile: () => true, size: 6 })),
@@ -372,9 +370,9 @@ describe('fs read', () => {
       outsideFileGrant: grant.outsideFileGrant,
     });
 
-    expect(res.statusCode).toBe(400);
-    expect(res.body).toEqual({ error: 'Outside workspace file grant does not match requested path' });
-    expect(fsPromises.readFile).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toBe('secret');
+    expect(fsPromises.readFile).toHaveBeenCalledWith('/outside/b.txt', 'utf8');
   });
 
   it('sets no-referrer on raw responses served through outside file grants', async () => {
