@@ -23,7 +23,8 @@ Own filesystem API behavior for the web server runtime, including workspace-boun
     - `GET /api/fs/exec/:jobId`
     - `GET /api/fs/list`
   - Owns exec job queue state (`execJobs`) and lifecycle/TTL pruning.
-  - Enforces workspace boundary checks with active project + worktree fallback support.
+  - Authenticated `stat`, text-read, and raw-read requests may access any file readable by the server process. Write, delete, rename, directory creation, and static serving remain workspace-bound.
+  - Enforces workspace boundary checks with active project + worktree fallback support for operations that remain bounded.
 - `createFsSearchRuntime({ fsPromises, path, spawn, resolveGitBinaryForSpawn })` from `search.js`
   - Returns `{ searchFilesystemFiles(rootPath, options) }`.
   - Supports fuzzy matching, hidden-file handling, and optional `git check-ignore` filtering.

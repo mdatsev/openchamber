@@ -701,6 +701,8 @@ export const dict: Record<I18nKey, string> = {
   'gitView.changes.revertDirectoryDialogTitle': '폴더 변경 사항을 되돌릴까요?',
   'gitView.changes.revertDirectoryTooltip': '폴더 변경 사항 되돌리기',
   'gitView.changes.revertFileAria': '파일 변경 사항 되돌리기',
+  'gitView.changes.revertFileDescription': '{path}의 로컬 변경 사항을 버립니다. 이 작업은 실행 취소할 수 없습니다.',
+  'gitView.changes.revertFileDialogTitle': '파일 변경 사항을 되돌릴까요?',
   'gitView.changes.revertFileTooltip': '변경 사항 되돌리기',
   'gitView.changes.reverting': '되돌리는 중…',
   'gitView.changes.selectAllAria': '모든 파일 선택',

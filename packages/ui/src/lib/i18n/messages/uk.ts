@@ -701,6 +701,8 @@ export const dict: Record<I18nKey, string> = {
   "gitView.changes.revertDirectoryDialogTitle": "Скасувати зміни в папці?",
   "gitView.changes.revertDirectoryTooltip": "Скасувати зміни в папці",
   "gitView.changes.revertFileAria": "Скасувати зміни у файлі",
+  "gitView.changes.revertFileDescription": "Локальні зміни у файлі {path} буде відкинуто. Цю дію неможливо скасувати.",
+  "gitView.changes.revertFileDialogTitle": "Скасувати зміни у файлі?",
   "gitView.changes.revertFileTooltip": "Скасувати зміни",
   "gitView.changes.reverting": "Скасування...",
   "gitView.changes.selectAllAria": "Вибрати всі файли",

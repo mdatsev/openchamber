@@ -529,6 +529,8 @@ export const dict = {
   'gitView.changes.revertAllDescriptionSingle': 'Rétablir la modification sélectionnée ?',
   'gitView.changes.revertAllDialogTitle': 'Annuler toutes les modifications ?',
   'gitView.changes.revertFileAria': 'Rétablir le fichier',
+  'gitView.changes.revertFileDescription': 'Les modifications locales de {path} seront supprimées. Cette action est irréversible.',
+  'gitView.changes.revertFileDialogTitle': 'Annuler les modifications du fichier ?',
   'gitView.changes.revertFileTooltip': 'Annuler les modifications',
   'gitView.changes.reverting': 'Revenant...',
   'gitView.changes.selectAllAria': 'Sélectionnez tous les fichiers',

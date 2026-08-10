@@ -701,6 +701,8 @@ export const dict: Record<I18nKey, string> = {
   'gitView.changes.revertDirectoryDialogTitle': 'フォルダの変更を元に戻しますか？',
   'gitView.changes.revertDirectoryTooltip': 'フォルダの変更を元に戻す',
   'gitView.changes.revertFileAria': '{path}の変更を元に戻す',
+  'gitView.changes.revertFileDescription': '{path}のローカル変更が破棄されます。この操作は元に戻せません。',
+  'gitView.changes.revertFileDialogTitle': 'ファイルの変更を元に戻しますか？',
   'gitView.changes.revertFileTooltip': '変更を元に戻す',
   'gitView.changes.reverting': '元に戻しています...',
   'gitView.changes.selectAllAria': 'すべてのファイルを選択',

@@ -7,6 +7,8 @@ const OUTSIDE_FILE_GRANT_TTL_MS = 10 * 60 * 1000;
 
 const outsideFileGrants = new Map();
 
+// See docs/decisions/2026-08-10-17-58-default-unrestricted-file-reads.md.
+
 const pruneOutsideFileGrants = () => {
   const now = Date.now();
   for (const [token, grant] of outsideFileGrants.entries()) {
@@ -282,6 +284,15 @@ const escapeCloneSshKeyPath = (sshKeyPath) => {
 };
 
 const resolveReadPathFromContext = async ({ req, targetPath, scope, resolveProjectDirectory, path, os, fsPromises, normalizeDirectoryPath, openchamberUserConfigRoot }) => {
+  if (scope) {
+    const normalized = normalizeDirectoryPath(targetPath);
+    if (!normalized || typeof normalized !== 'string') {
+      return { ok: false, error: 'Path is required' };
+    }
+    const resolved = path.resolve(normalized);
+    return { ok: true, base: path.parse(resolved).root || path.sep, resolved, granted: true };
+  }
+
   if (req.query?.allowOutsideWorkspace === 'true') {
     const normalized = normalizeDirectoryPath(targetPath);
     if (!normalized || typeof normalized !== 'string') {

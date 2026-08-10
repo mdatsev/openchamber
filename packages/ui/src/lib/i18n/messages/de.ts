@@ -643,6 +643,8 @@ export const dict = {
   'gitView.changes.revertDirectoryDialogTitle': 'Ordneränderungen rückgängig machen?',
   'gitView.changes.revertDirectoryTooltip': 'Ordneränderungen rückgängig machen',
   'gitView.changes.revertFileAria': 'Änderungen in {path} rückgängig machen',
+  'gitView.changes.revertFileDescription': 'Dadurch werden die lokalen Änderungen in {path} verworfen. Dies kann nicht rückgängig gemacht werden.',
+  'gitView.changes.revertFileDialogTitle': 'Dateiänderungen rückgängig machen?',
   'gitView.changes.revertFileTooltip': 'Änderungen rückgängig machen',
   'gitView.changes.reverting': 'Rückgängig machen...',
   'gitView.changes.selectAllAria': 'Alle Dateien auswählen',
