@@ -1,21 +1,16 @@
 import React from 'react';
+
 import {
-    DropdownMenu,
-    DropdownMenuContent,
-    DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
-import { MobileOverlayPanel } from '@/components/ui/MobileOverlayPanel';
-import { ProviderLogo } from '@/components/ui/ProviderLogo';
-import { Icon } from '@/components/icon/Icon';
+    ControlledModelSelector,
+    type ControlledModelSelectorLabels,
+} from '@/components/model-picker/ControlledModelSelector';
+import type { ModelPickerEntry, ModelPickerProvider } from '@/components/model-picker/ModelPickerList';
 import { useModelLists } from '@/hooks/useModelLists';
 import { useOpenCodeReadiness } from '@/hooks/useOpenCodeReadiness';
 import { useDeviceInfo } from '@/lib/device';
 import { useI18n } from '@/lib/i18n';
-import { cn } from '@/lib/utils';
-import { dropdownTriggerVariants } from '@/components/ui/dropdown-trigger';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useUIStore } from '@/stores/useUIStore';
-import { ModelPickerList, type ModelPickerEntry, type ModelPickerProvider } from '@/components/model-picker/ModelPickerList';
 
 interface ModelSelectorProps {
     providerId: string;
@@ -52,7 +47,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
     const { isReady, isUnavailable } = useOpenCodeReadiness();
     const providers = useConfigStore((state) => state.providers) as ModelPickerProvider[];
     const modelsMetadata = useConfigStore((state) => state.modelsMetadata);
-    const isMobile = useUIStore((state) => state.isMobile);
+    const uiIsMobile = useUIStore((state) => state.isMobile);
     const hiddenModels = useUIStore((state) => state.hiddenModels);
     const toggleFavoriteModel = useUIStore((state) => state.toggleFavoriteModel);
     const isFavoriteModel = useUIStore((state) => state.isFavoriteModel);
@@ -60,36 +55,18 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
     const providerOrder = useUIStore((state) => state.providerOrder);
     const { favoriteModelsList, recentModelsList } = useModelLists();
     const { isMobile: deviceIsMobile } = useDeviceInfo();
-    const isActuallyMobile = isMobile || deviceIsMobile;
+    const isMobile = uiIsMobile || deviceIsMobile;
 
-    const [isMobilePanelOpen, setIsMobilePanelOpen] = React.useState(false);
-    const [isDropdownOpen, setIsDropdownOpen] = React.useState(false);
-    const [searchQuery, setSearchQuery] = React.useState('');
-
-    const closePicker = React.useCallback(() => {
-        setIsMobilePanelOpen(false);
-        setIsDropdownOpen(false);
-        setSearchQuery('');
-    }, []);
-
-    const handleSelect = React.useCallback((entry: ModelPickerEntry) => {
-        onChange(entry.providerID, entry.modelID);
-        addRecentModel(entry.providerID, entry.modelID);
-        closePicker();
-    }, [addRecentModel, closePicker, onChange]);
-
-    const handleSelectNone = React.useCallback(() => {
-        onChange('', '');
-        closePicker();
-    }, [closePicker, onChange]);
-
-    const labels = React.useMemo(() => ({
+    const labels = React.useMemo<ControlledModelSelectorLabels>(() => ({
+        title: t('settings.agents.modelSelector.title'),
         searchPlaceholder: t('settings.agents.modelSelector.searchPlaceholder'),
         noResults: t('settings.agents.modelSelector.state.noModelsFound'),
         favorites: t('settings.agents.modelSelector.section.favorites'),
         recent: t('settings.agents.modelSelector.section.recent'),
         keyboardHint: t('settings.agents.modelSelector.keyboardHints'),
         notSelected: placeholder || t('settings.agents.modelSelector.notSelected'),
+        loading: t('common.loading'),
+        unavailable: t('common.unavailable'),
         favorite: t('settings.agents.modelSelector.actions.favorite'),
         unfavorite: t('settings.agents.modelSelector.actions.unfavorite'),
         capabilities: t('chat.modelControls.capabilities'),
@@ -101,116 +78,35 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
     }), [placeholder, t]);
 
     const selectedModel = providerId && modelId ? { providerID: providerId, modelID: modelId } : null;
-    // Show the model's display name (as in the picker list), not the raw provider/model id.
-    const triggerLabel = React.useMemo(() => {
-        if (!providerId || !modelId) {
-            return placeholder || t('settings.agents.modelSelector.notSelected');
-        }
-        const provider = providers.find((entry) => entry.id === providerId);
-        const model = provider?.models?.find((entry) => entry.id === modelId);
-        return (typeof model?.name === 'string' && model.name.trim()) || modelId;
-    }, [modelId, placeholder, providerId, providers, t]);
+    const handleSelect = React.useCallback((entry: ModelPickerEntry) => {
+        onChange(entry.providerID, entry.modelID);
+        addRecentModel(entry.providerID, entry.modelID);
+    }, [addRecentModel, onChange]);
 
-    const picker = (
-        <ModelPickerList
+    return (
+        <ControlledModelSelector
             providers={providers}
-            providerOrder={providerOrder}
-            favoriteModels={favoriteModelsList}
-            recentModels={recentModelsList}
             modelsMetadata={modelsMetadata}
-            searchQuery={searchQuery}
-            onSearchQueryChange={setSearchQuery}
+            selectedModel={selectedModel}
             onSelect={handleSelect}
             labels={labels}
-            selectedModel={selectedModel}
+            placeholder={placeholder}
+            status={isReady ? 'ready' : isUnavailable ? 'unavailable' : 'loading'}
+            mobile={isMobile}
+            compact={compact}
+            className={className}
+            favoriteModels={favoriteModelsList}
+            recentModels={recentModelsList}
             hiddenModels={hiddenModels}
+            providerOrder={providerOrder}
             allowedProviderIds={allowedProviderIds}
             isModelAllowed={isModelAllowed}
             includeNotSelected
-            onSelectNone={handleSelectNone}
-            onEscape={closePicker}
-            tooltipsEnabled={tooltipsEnabled && (isActuallyMobile ? isMobilePanelOpen : isDropdownOpen)}
+            onSelectNone={() => onChange('', '')}
             isFavorite={(entry) => isFavoriteModel(entry.providerID, entry.modelID)}
             onToggleFavorite={(entry) => toggleFavoriteModel(entry.providerID, entry.modelID)}
+            tooltipsEnabled={tooltipsEnabled}
+            dropdownPortalToBody={dropdownPortalToBody}
         />
-    );
-
-    if (isActuallyMobile) {
-        return (
-            <>
-                <button
-                    type="button"
-                    onClick={isReady ? () => setIsMobilePanelOpen(true) : undefined}
-                    disabled={!isReady}
-                    className={cn(
-                        dropdownTriggerVariants(),
-                        'w-full',
-                        className,
-                    )}
-                >
-                    <div className="flex min-w-0 items-center gap-2">
-                        {!isReady ? (
-                            <>
-                                <Icon name="loader-4" className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
-                                <span className="typography-meta text-muted-foreground">{isUnavailable ? t('common.unavailable') : t('common.loading')}</span>
-                            </>
-                        ) : providerId ? (
-                            <ProviderLogo providerId={providerId} className="h-3.5 w-3.5 flex-shrink-0" />
-                        ) : (
-                            <Icon name="pencil-ai" className="h-3 w-3 text-muted-foreground" />
-                        )}
-                        {isReady ? <span className="typography-meta font-medium text-foreground truncate">{triggerLabel}</span> : null}
-                    </div>
-                    <Icon name="arrow-down-s" className="h-3 w-3 flex-shrink-0 text-muted-foreground" />
-                </button>
-                <MobileOverlayPanel
-                    open={isMobilePanelOpen}
-                    onClose={closePicker}
-                    title={t('settings.agents.modelSelector.title')}
-                >
-                    {picker}
-                </MobileOverlayPanel>
-            </>
-        );
-    }
-
-    return (
-        <DropdownMenu open={isReady && isDropdownOpen} onOpenChange={isReady ? setIsDropdownOpen : undefined}>
-            <DropdownMenuTrigger asChild>
-                <div
-                    className={cn(
-                        dropdownTriggerVariants({ size: 'sm' }),
-                        'min-w-0 w-fit',
-                        !isReady && 'opacity-60 cursor-not-allowed',
-                        className,
-                    )}
-                    // The name is gone from the trigger, so it has to stay
-                    // reachable somewhere.
-                    title={compact && isReady ? triggerLabel : undefined}
-                >
-                    {!isReady ? (
-                        <>
-                            <Icon name="loader-4" className="h-3.5 w-3.5 animate-spin text-muted-foreground flex-shrink-0" />
-                            {!compact && (
-                                <span className="typography-ui-label font-normal whitespace-nowrap text-muted-foreground">
-                                    {isUnavailable ? t('common.unavailable') : t('common.loading')}
-                                </span>
-                            )}
-                        </>
-                    ) : (
-                        <>
-                            {providerId ? <ProviderLogo providerId={providerId} className="h-3.5 w-3.5 flex-shrink-0" /> : <Icon name="pencil-ai" className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />}
-                            {!compact && (
-                                <span className="typography-ui-label min-w-0 flex-1 truncate text-left font-normal text-foreground">{triggerLabel}</span>
-                            )}
-                        </>
-                    )}
-                    {!compact && <Icon name="arrow-down-s" className="h-4 w-4 flex-shrink-0 text-muted-foreground/50" />}
-                </div>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent className="w-[min(380px,calc(100vw-2rem))] p-0 flex flex-col" align="start" portalToBody={dropdownPortalToBody}>
-                {picker}
-            </DropdownMenuContent>
-        </DropdownMenu>
     );
 };

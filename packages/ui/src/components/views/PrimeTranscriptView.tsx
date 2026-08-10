@@ -2,13 +2,23 @@ import React from 'react';
 
 import { useMobileAppActions } from '@/apps/mobileAppContext';
 import { SimpleMarkdownRenderer } from '@/components/chat/MarkdownRenderer';
+import { useComposerDraft } from '@/components/chat/composer/state/useComposerDraft';
+import { UserMessage } from '@/components/chat/message/UserMessage';
 import { ReasoningTimelineBlock } from '@/components/chat/message/parts/ReasoningPart';
 import { PrimeToolPart } from '@/components/chat/message/parts/PrimeToolPart';
 import { PrimeControlSelectors } from '@/components/chat/PrimeControlSelectors';
+import {
+  ComposerEditor,
+  type ComposerEditorHandle,
+} from '@/components/chat/composer/editor/ComposerEditor';
+import { ComposerActionButtons } from '@/components/chat/composer/ui/ComposerActionButtons';
+import { PromptNavigatorRail } from '@/components/chat/components/PromptNavigatorRail';
+import ScrollToBottomButton from '@/components/chat/components/ScrollToBottomButton';
+import { getTextPreview } from '@/components/chat/lib/messagePreview';
 import { Icon } from '@/components/icon/Icon';
-import { StopIcon } from '@/components/icons/StopIcon';
 import { Button } from '@/components/ui/button';
-import { Textarea } from '@/components/ui/textarea';
+import { OverlayScrollbar } from '@/components/ui/OverlayScrollbar';
+import { ScrollShadow } from '@/components/ui/ScrollShadow';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { toast } from '@/components/ui';
 import { usePrimeRuntimeStatus } from '@/hooks/usePrimeRuntimeStatus';
@@ -23,7 +33,14 @@ import type {
   PrimeTranscript,
   PrimeTranscriptItem,
 } from '@/lib/api/types';
+import {
+  clearChatDraftIfTextMatches,
+  createHarnessChatDraftIdentity,
+  readChatDraft,
+} from '@/lib/chatDraftPersistence';
 import { copyTextToClipboard } from '@/lib/clipboard';
+import { isVSCodeRuntime } from '@/lib/desktop';
+import { useDeviceInfo } from '@/lib/device';
 import { getCurrentIntlLocale, useI18n } from '@/lib/i18n';
 import { formatDateTimeForPreference } from '@/lib/timeFormat';
 import { cn } from '@/lib/utils';
@@ -52,22 +69,49 @@ const identityKey = (identity: HarnessSessionIdentity | null | undefined) => ide
   : null;
 
 const transcriptItemClass = (item: PrimeTranscriptItem) => {
-  if (item.role === 'user') return 'ml-auto max-w-[85%] bg-interactive-hover';
   if (item.role === 'system') return 'border border-border/40 bg-[var(--surface-muted)] text-muted-foreground';
   return '';
 };
 
-const PrimeTranscriptSession: React.FC<{ target: PrimeSessionSummary }> = ({ target }) => {
+interface PrimeTranscriptSessionProps {
+  target: PrimeSessionSummary;
+  initialPrompt?: string;
+  onInitialPromptConsumed?: () => void;
+  onForked: (session: PrimeSessionSummary, selectedText: string | null) => void;
+}
+
+const PrimeTranscriptSession: React.FC<PrimeTranscriptSessionProps> = ({
+  target,
+  initialPrompt,
+  onInitialPromptConsumed,
+  onForked,
+}) => {
   const { t } = useI18n();
+  const { isMobile, isTablet, hasTouchInput } = useDeviceInfo();
   const primeAPI = useRuntimeAPIs().prime;
   const mobileAppActions = useMobileAppActions();
   const setPrimeTranscriptTarget = useUIStore((state) => state.setPrimeTranscriptTarget);
   const setSettingsDialogOpen = useUIStore((state) => state.setSettingsDialogOpen);
   const setSettingsPage = useUIStore((state) => state.setSettingsPage);
   const timeFormatPreference = useUIStore((state) => state.timeFormatPreference);
+  const promptNavigatorEnabled = useUIStore((state) => state.promptNavigatorEnabled);
+  const persistChatDraft = useUIStore((state) => state.persistChatDraft);
+  const stickyUserHeader = useUIStore((state) => state.stickyUserHeader);
   const targetID = target.id;
   const targetIdentity = target.identity;
   const targetIdentityKey = identityKey(targetIdentity)!;
+  const composerDraftIdentity = React.useMemo(
+    () => createHarnessChatDraftIdentity(
+      targetIdentity.runtimeKey,
+      targetIdentity.harness,
+      targetIdentity.sessionID,
+    ),
+    [targetIdentity.harness, targetIdentity.runtimeKey, targetIdentity.sessionID],
+  );
+  const initialComposerDraft = React.useMemo(
+    () => readChatDraft(composerDraftIdentity),
+    [composerDraftIdentity],
+  );
   const [transcript, setTranscript] = React.useState<PrimeTranscript | null>(null);
   const [controls, setControls] = React.useState<PrimeSessionControls | null>(null);
   const [isAttached, setIsAttached] = React.useState(false);
@@ -76,15 +120,24 @@ const PrimeTranscriptSession: React.FC<{ target: PrimeSessionSummary }> = ({ tar
   const [loadRevision, setLoadRevision] = React.useState(0);
   const [controlsRevision, setControlsRevision] = React.useState(0);
   const [visibleItemCount, setVisibleItemCount] = React.useState(INITIAL_VISIBLE_ITEMS);
-  const [prompt, setPrompt] = React.useState('');
+  const [prompt, setPromptState] = React.useState(() => initialPrompt ?? initialComposerDraft.text);
+  const promptRef = React.useRef(prompt);
+  const confirmedMentionsRef = React.useRef(initialComposerDraft.confirmedMentions);
+  const setPrompt = React.useCallback((nextPrompt: string) => {
+    promptRef.current = nextPrompt;
+    setPromptState(nextPrompt);
+  }, []);
   const [selectedCommandIndex, setSelectedCommandIndex] = React.useState(0);
   const [commandsDismissed, setCommandsDismissed] = React.useState(false);
   const [activity, setActivity] = React.useState<'working' | 'idle'>(target.activity);
   const [isSending, setIsSending] = React.useState(false);
   const [isAborting, setIsAborting] = React.useState(false);
   const [updatingControl, setUpdatingControl] = React.useState<'model' | 'thinking' | null>(null);
+  const [branchingItemID, setBranchingItemID] = React.useState<string | null>(null);
   const [copiedItemID, setCopiedItemID] = React.useState<string | null>(null);
-  const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
+  const [activePromptID, setActivePromptID] = React.useState<string | null>(null);
+  const [showScrollToBottom, setShowScrollToBottom] = React.useState(false);
+  const composerRef = React.useRef<ComposerEditorHandle | null>(null);
   const transcriptScrollRef = React.useRef<HTMLDivElement | null>(null);
   const transcriptContentRef = React.useRef<HTMLDivElement | null>(null);
   const followLatestRef = React.useRef(true);
@@ -93,7 +146,28 @@ const PrimeTranscriptSession: React.FC<{ target: PrimeSessionSummary }> = ({ tar
   const attachedIdentityRef = React.useRef(false);
   const sendOperationRef = React.useRef(0);
   const abortOperationRef = React.useRef(0);
+  const branchOperationRef = React.useRef(0);
   const isMountedRef = React.useRef(true);
+  const { persistNow: persistPromptImmediately } = useComposerDraft({
+    message: prompt,
+    messageRef: promptRef,
+    setMessage: setPrompt,
+    confirmedMentionsRef,
+    identity: composerDraftIdentity,
+    persistEnabled: persistChatDraft,
+    initialDraft: {
+      text: initialComposerDraft.text,
+      identity: composerDraftIdentity,
+    },
+    onDraftRestored: () => composerRef.current?.selectAll(),
+  });
+  const initialPromptHandledRef = React.useRef(false);
+  React.useEffect(() => {
+    if (initialPromptHandledRef.current || initialPrompt === undefined) return;
+    initialPromptHandledRef.current = true;
+    onInitialPromptConsumed?.();
+    if (initialPrompt) requestAnimationFrame(() => composerRef.current?.selectAll());
+  }, [initialPrompt, onInitialPromptConsumed]);
   const {
     status: runtimeStatus,
     isLoading: statusLoading,
@@ -104,6 +178,93 @@ const PrimeTranscriptSession: React.FC<{ target: PrimeSessionSummary }> = ({ tar
   const runtimeReady = !statusLoadFailed && runtimeStatus?.state === 'ready' && runtimeStatus.interactive;
   const statusPending = !statusLoadFailed
     && (statusLoading || runtimeStatus === null || runtimeStatus.state === 'starting');
+  const isVSCode = isVSCodeRuntime();
+  const footerIconButtonClass = cn(
+    'flex cursor-pointer items-center justify-center text-foreground transition-none outline-none focus:outline-none flex-shrink-0 disabled:cursor-not-allowed',
+    isMobile ? 'h-8 w-8' : isVSCode ? 'h-5 w-5' : 'h-6 w-6',
+  );
+  const visibleItems = React.useMemo(
+    () => transcript?.items.slice(-visibleItemCount) ?? [],
+    [transcript, visibleItemCount],
+  );
+  const promptTurnIDs = React.useMemo(
+    () => visibleItems.filter((item) => item.role === 'user').map((item) => item.id),
+    [visibleItems],
+  );
+  const promptPreviewsByTurnID = React.useMemo(
+    () => new Map(
+      visibleItems
+        .filter((item) => item.role === 'user')
+        .map((item) => [item.id, getTextPreview(item.text, 160)] as const),
+    ),
+    [visibleItems],
+  );
+
+  const updateActivePrompt = React.useCallback((scrollContainer: HTMLDivElement) => {
+    const prompts = Array.from(
+      scrollContainer.querySelectorAll<HTMLElement>('[data-prime-prompt-id]'),
+    );
+    if (prompts.length === 0) {
+      setActivePromptID(null);
+      return;
+    }
+    const isAtBottom = scrollContainer.scrollHeight - scrollContainer.scrollTop - scrollContainer.clientHeight <= 48;
+    let nextPromptID = prompts[0]?.dataset.primePromptId ?? null;
+    if (isAtBottom) {
+      nextPromptID = prompts.at(-1)?.dataset.primePromptId ?? nextPromptID;
+    } else {
+      const activationLine = scrollContainer.getBoundingClientRect().top
+        + Math.min(200, scrollContainer.clientHeight * 0.35);
+      for (const promptElement of prompts) {
+        if (promptElement.getBoundingClientRect().top > activationLine) break;
+        nextPromptID = promptElement.dataset.primePromptId ?? nextPromptID;
+      }
+    }
+    setActivePromptID((current) => current === nextPromptID ? current : nextPromptID);
+  }, []);
+
+  const handleTranscriptScroll = React.useCallback((event: React.UIEvent<HTMLDivElement>) => {
+    const scrollContainer = event.currentTarget;
+    const isAtBottom = scrollContainer.scrollHeight - scrollContainer.scrollTop - scrollContainer.clientHeight <= 48;
+    if (isAtBottom) {
+      followLatestRef.current = true;
+    } else if (event.nativeEvent.isTrusted) {
+      followLatestRef.current = false;
+    }
+    setShowScrollToBottom(!isAtBottom);
+    updateActivePrompt(scrollContainer);
+  }, [updateActivePrompt]);
+
+  const selectPrompt = React.useCallback((promptID: string) => {
+    const scrollContainer = transcriptScrollRef.current;
+    if (!scrollContainer) return;
+    const promptElement = Array.from(
+      scrollContainer.querySelectorAll<HTMLElement>('[data-prime-prompt-id]'),
+    ).find((element) => element.dataset.primePromptId === promptID);
+    if (!promptElement) return;
+    followLatestRef.current = false;
+    setShowScrollToBottom(true);
+    setActivePromptID(promptID);
+    scrollContainer.scrollTo({ top: Math.max(0, promptElement.offsetTop - 16), behavior: 'smooth' });
+  }, []);
+
+  const scrollToLatest = React.useCallback(() => {
+    const scrollContainer = transcriptScrollRef.current;
+    if (!scrollContainer) return;
+    followLatestRef.current = true;
+    setShowScrollToBottom(false);
+    scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: 'smooth' });
+  }, []);
+  const showPromptNavigator = !isMobile
+    && !isVSCode
+    && promptNavigatorEnabled
+    && promptTurnIDs.length >= 2;
+
+  React.useEffect(() => {
+    if (!showPromptNavigator) {
+      useUIStore.getState().setPromptNavigatorPanelOpen(false);
+    }
+  }, [showPromptNavigator]);
 
   React.useEffect(() => {
     isMountedRef.current = true;
@@ -195,9 +356,13 @@ const PrimeTranscriptSession: React.FC<{ target: PrimeSessionSummary }> = ({ tar
 
   React.useLayoutEffect(() => {
     const scrollContainer = transcriptScrollRef.current;
-    if (!scrollContainer || !transcript || !followLatestRef.current) return;
-    scrollContainer.scrollTop = scrollContainer.scrollHeight;
-  }, [controls, transcript]);
+    if (!scrollContainer || !transcript) return;
+    if (followLatestRef.current) {
+      scrollContainer.scrollTop = scrollContainer.scrollHeight;
+      setShowScrollToBottom(false);
+    }
+    updateActivePrompt(scrollContainer);
+  }, [controls, transcript, updateActivePrompt, visibleItemCount]);
 
   React.useEffect(() => {
     const scrollContainer = transcriptScrollRef.current;
@@ -286,6 +451,14 @@ const PrimeTranscriptSession: React.FC<{ target: PrimeSessionSummary }> = ({ tar
     }
     return [...commandsByName.values()].sort((left, right) => left.name.localeCompare(right.name));
   }, [controls?.commands]);
+  const composerLanguageContext = React.useMemo(() => ({
+    inputMode: 'normal' as const,
+    knownAgentNames: new Set<string>(),
+    confirmedMentions: new Set<string>(),
+    knownSlashNames: new Set(composerCommands.map((command) => command.name.toLowerCase())),
+    knownSnippetTriggers: new Set<string>(),
+    attachmentFilenames: [],
+  }), [composerCommands]);
   const slashCommandQuery = prompt.match(/^\/([^\s/]*)$/)?.[1].toLowerCase() ?? null;
   const matchingCommands = slashCommandQuery === null || commandsDismissed
     ? []
@@ -301,7 +474,7 @@ const PrimeTranscriptSession: React.FC<{ target: PrimeSessionSummary }> = ({ tar
   const selectCommand = (command: PrimeComposerCommand) => {
     setPrompt(`/${command.name}${command.argumentHint ? ' ' : ''}`);
     setCommandsDismissed(true);
-    requestAnimationFrame(() => textareaRef.current?.focus());
+    requestAnimationFrame(() => composerRef.current?.focus());
   };
 
   const changeControl = async (change: PrimeControlChange) => {
@@ -322,7 +495,13 @@ const PrimeTranscriptSession: React.FC<{ target: PrimeSessionSummary }> = ({ tar
       if (!ownsTarget()) return;
       setControls((current) => {
         if (!current) return current;
-        if (change.kind === 'model') return { ...current, model: change.model };
+        if (change.kind === 'model') {
+          return {
+            ...current,
+            model: change.model,
+            thinkingLevel: change.model.reasoning === false ? 'off' : current.thinkingLevel,
+          };
+        }
         return { ...current, thinkingLevel: change.level };
       });
       setControlsRevision((current) => current + 1);
@@ -352,7 +531,8 @@ const PrimeTranscriptSession: React.FC<{ target: PrimeSessionSummary }> = ({ tar
   };
 
   const sendPrompt = async () => {
-    const nextPrompt = prompt.trim();
+    const dispatchedDraft = prompt;
+    const nextPrompt = dispatchedDraft.trim();
     if (!targetIdentity || !targetIdentityKey || !primeAPI || !runtimeReady || !nextPrompt || isSending) return;
     const operationID = sendOperationRef.current + 1;
     sendOperationRef.current = operationID;
@@ -360,22 +540,26 @@ const PrimeTranscriptSession: React.FC<{ target: PrimeSessionSummary }> = ({ tar
       && sendOperationRef.current === operationID
       && identityKey(useUIStore.getState().primeTranscriptTarget?.identity) === targetIdentityKey;
     const markPromptAsDispatched = () => {
+      if (persistChatDraft) {
+        clearChatDraftIfTextMatches(composerDraftIdentity, dispatchedDraft, true);
+      }
       if (!ownsOperation()) return;
       setPrompt('');
+      persistPromptImmediately(composerDraftIdentity, '');
       activityRevisionRef.current += 1;
       setActivity('working');
       setLoadRevision((current) => current + 1);
     };
+    if (persistChatDraft) persistPromptImmediately(composerDraftIdentity, dispatchedDraft);
     setIsSending(true);
     try {
       await primeAPI.sendPrompt({ identity: targetIdentity, prompt: nextPrompt });
       markPromptAsDispatched();
     } catch (error) {
-      if (!ownsOperation()) return;
       if (isAmbiguousMutationError(error)) {
         markPromptAsDispatched();
-        toast.warning(t('prime.composer.ambiguous'));
-      } else {
+        if (ownsOperation()) toast.warning(t('prime.composer.ambiguous'));
+      } else if (ownsOperation()) {
         toast.error(t('prime.composer.sendFailed'));
       }
     } finally {
@@ -403,6 +587,30 @@ const PrimeTranscriptSession: React.FC<{ target: PrimeSessionSummary }> = ({ tar
     }
   };
 
+  const forkFromItem = async (item: PrimeTranscriptItem) => {
+    if (!item.branchEntryID || !primeAPI || !runtimeReady || activity !== 'idle' || branchingItemID !== null) return;
+    const operationID = branchOperationRef.current + 1;
+    branchOperationRef.current = operationID;
+    const ownsOperation = () => isMountedRef.current
+      && branchOperationRef.current === operationID
+      && identityKey(useUIStore.getState().primeTranscriptTarget?.identity) === targetIdentityKey;
+    setBranchingItemID(item.id);
+    try {
+      const result = await primeAPI.forkSession({
+        identity: targetIdentity,
+        entryID: item.branchEntryID,
+      });
+      if (!ownsOperation() || result.cancelled) return;
+      onForked(result.session, result.selectedText);
+    } catch (error) {
+      if (!ownsOperation()) return;
+      if (isAmbiguousMutationError(error)) toast.warning(t('prime.composer.ambiguous'));
+      else toast.error(t('common.unavailable'));
+    } finally {
+      if (ownsOperation()) setBranchingItemID(null);
+    }
+  };
+
   const copyItem = async (item: PrimeTranscriptItem) => {
     const result = await copyTextToClipboard(item.text);
     if (!result.ok) return;
@@ -412,31 +620,30 @@ const PrimeTranscriptSession: React.FC<{ target: PrimeSessionSummary }> = ({ tar
 
   return (
     <div className="absolute inset-0 z-10 flex min-h-0 flex-col bg-background">
-      <div
-        ref={transcriptScrollRef}
-        className="min-h-0 flex-1 overflow-y-auto"
-        onScroll={(event) => {
-          const element = event.currentTarget;
-          if (element.scrollHeight - element.scrollTop - element.clientHeight <= 48) {
-            followLatestRef.current = true;
-          }
-        }}
-        onWheel={(event) => {
-          if (event.deltaY < 0) followLatestRef.current = false;
-        }}
-        onTouchStart={() => {
-          followLatestRef.current = false;
-        }}
-        onPointerDown={(event) => {
-          if (event.target === event.currentTarget) followLatestRef.current = false;
-        }}
-        onKeyDown={(event) => {
-          if (event.key === 'ArrowUp' || event.key === 'PageUp' || event.key === 'Home') {
+      <div className="relative min-h-0 flex-1">
+        <ScrollShadow
+          ref={transcriptScrollRef}
+          className="absolute inset-0 overflow-y-auto overflow-x-hidden overlay-scrollbar-target"
+          onScroll={handleTranscriptScroll}
+          onWheel={(event) => {
+            if (event.deltaY < 0) followLatestRef.current = false;
+          }}
+          onTouchStart={() => {
             followLatestRef.current = false;
-          }
-        }}
-      >
-        <div ref={transcriptContentRef} className="mx-auto flex w-full max-w-[920px] flex-col gap-4 px-4 py-6 sm:px-8">
+          }}
+          onPointerDown={(event) => {
+            if (event.target === event.currentTarget) followLatestRef.current = false;
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'ArrowUp' || event.key === 'PageUp' || event.key === 'Home') {
+              followLatestRef.current = false;
+            }
+          }}
+          tabIndex={0}
+          data-scroll-shadow="true"
+          data-scrollbar="chat"
+        >
+          <div ref={transcriptContentRef} className="chat-message-column mx-auto flex w-full max-w-[920px] flex-col gap-4 px-4 py-6 sm:px-8">
           <div className="flex self-center items-center gap-1.5 rounded-full bg-[var(--surface-elevated)] px-2.5 py-1 typography-micro text-muted-foreground">
             <Icon name="chat-ai-3" className="h-4 w-4" />
             <span>Prime Agent</span>
@@ -482,7 +689,7 @@ const PrimeTranscriptSession: React.FC<{ target: PrimeSessionSummary }> = ({ tar
             </div>
           )}
 
-          {transcript?.items.slice(-visibleItemCount).map((item) => {
+          {visibleItems.map((item) => {
             if (item.role === 'reasoning') {
               return (
                 <ReasoningTimelineBlock
@@ -496,6 +703,32 @@ const PrimeTranscriptSession: React.FC<{ target: PrimeSessionSummary }> = ({ tar
             }
             if (item.role === 'tool' || (item.role === 'system' && item.label === 'agent_message')) {
               return <PrimeToolPart key={item.id} item={item} />;
+            }
+            if (item.role === 'user') {
+              const messageCreatedAt = item.timestamp ? Date.parse(item.timestamp) : Number.NaN;
+              return (
+                <article key={item.id} data-prime-prompt-id={item.id} className="group/message w-full">
+                  <UserMessage
+                    messageCreatedAt={Number.isFinite(messageCreatedAt) ? messageCreatedAt : null}
+                    isMobile={isMobile}
+                    isTablet={isTablet}
+                    hasTouchInput={hasTouchInput}
+                    hasCopyableText={Boolean(item.text)}
+                    copiedMessage={copiedItemID === item.id}
+                    onCopyMessage={() => copyItem(item)}
+                    onFork={item.branchEntryID && runtimeReady && activity === 'idle' ? () => void forkFromItem(item) : undefined}
+                    branchActionsDisabled={branchingItemID !== null}
+                    stickyUserHeaderEnabled={stickyUserHeader}
+                  >
+                    <SimpleMarkdownRenderer
+                      content={item.text}
+                      variant="assistant"
+                      className="typography-markdown-body"
+                      enableFileReferences={false}
+                    />
+                  </UserMessage>
+                </article>
+              );
             }
             const timestamp = item.timestamp ? Date.parse(item.timestamp) : Number.NaN;
             const formattedTime = Number.isFinite(timestamp)
@@ -567,11 +800,28 @@ const PrimeTranscriptSession: React.FC<{ target: PrimeSessionSummary }> = ({ tar
               </article>
             );
           })}
-        </div>
+          </div>
+        </ScrollShadow>
+        <OverlayScrollbar containerRef={transcriptScrollRef} userIntentOnly observeMutations={false} />
+        {showPromptNavigator ? (
+          <PromptNavigatorRail
+            turnIds={promptTurnIDs}
+            previewsByTurnId={promptPreviewsByTurnID}
+            activeTurnId={activePromptID}
+            onSelectTurn={selectPrompt}
+            canLoadEarlier={Boolean(transcript && transcript.items.length > visibleItemCount)}
+            isLoadingOlder={false}
+            onLoadEarlier={() => {
+              if (!transcript) return;
+              setVisibleItemCount((count) => Math.min(transcript.items.length, count + INITIAL_VISIBLE_ITEMS));
+            }}
+          />
+        ) : null}
       </div>
 
       <div className="shrink-0 border-t border-border/70 bg-background px-4 py-3 sm:px-8">
-        <div className="mx-auto w-full max-w-[920px]">
+        <div className="relative mx-auto w-full max-w-[920px]">
+          <ScrollToBottomButton visible={showScrollToBottom} onClick={scrollToLatest} />
           {runtimeReady ? (
             <form
               className="relative flex flex-col gap-1 rounded-[var(--radius-xl)] border border-border/80 bg-[var(--surface-elevated)] p-2 focus-within:ring-1 focus-within:ring-primary/50"
@@ -609,13 +859,12 @@ const PrimeTranscriptSession: React.FC<{ target: PrimeSessionSummary }> = ({ tar
                   ))}
                 </div>
               )}
-              <Textarea
-                ref={textareaRef}
-                simple
-                rows={2}
+              <ComposerEditor
+                ref={composerRef}
                 value={prompt}
-                onChange={(event) => {
-                  setPrompt(event.target.value);
+                languageContext={composerLanguageContext}
+                onChange={({ value }) => {
+                  setPrompt(value);
                   setCommandsDismissed(false);
                 }}
                 onKeyDown={(event) => {
@@ -623,33 +872,40 @@ const PrimeTranscriptSession: React.FC<{ target: PrimeSessionSummary }> = ({ tar
                     if (event.key === 'ArrowDown') {
                       event.preventDefault();
                       setSelectedCommandIndex((current) => (current + 1) % matchingCommands.length);
-                      return;
+                      return true;
                     }
                     if (event.key === 'ArrowUp') {
                       event.preventDefault();
                       setSelectedCommandIndex((current) => (current - 1 + matchingCommands.length) % matchingCommands.length);
-                      return;
+                      return true;
                     }
                     if ((event.key === 'Enter' && !event.shiftKey && !event.metaKey && !event.ctrlKey) || event.key === 'Tab') {
                       event.preventDefault();
                       const command = matchingCommands[visibleCommandIndex];
                       if (command) selectCommand(command);
-                      return;
+                      return true;
                     }
                     if (event.key === 'Escape') {
                       event.preventDefault();
                       setCommandsDismissed(true);
-                      return;
+                      return true;
                     }
                   }
                   if (event.key === 'Enter' && !event.shiftKey && (event.metaKey || event.ctrlKey)) {
                     event.preventDefault();
                     void sendPrompt();
+                    return true;
                   }
+                  return false;
                 }}
                 placeholder={t('prime.composer.placeholder')}
-                disabled={isSending}
-                className="min-h-12 py-2"
+                aria-label={t('prime.composer.placeholder')}
+                editable={!isSending}
+                autoCorrect={isMobile}
+                autoCapitalize={isMobile ? 'sentences' : 'none'}
+                spellCheck
+                maxLines={8}
+                className="min-h-12 px-2 py-2 typography-markdown md:typography-ui-label"
               />
               <div className="flex min-w-0 items-center gap-1.5">
                 {controls ? (
@@ -658,6 +914,8 @@ const PrimeTranscriptSession: React.FC<{ target: PrimeSessionSummary }> = ({ tar
                     model={controls.model}
                     thinkingLevel={controls.thinkingLevel}
                     disabled={updatingControl !== null}
+                    shortcutScope="transcript"
+                    onRequestFocus={() => composerRef.current?.focus()}
                     onModelChange={(model) => void changeModel(model)}
                     onThinkingLevelChange={(level) => void changeThinkingLevel(level)}
                   />
@@ -681,26 +939,20 @@ const PrimeTranscriptSession: React.FC<{ target: PrimeSessionSummary }> = ({ tar
                   <Icon name="loader-4" className="ml-2 size-3.5 animate-spin text-muted-foreground" />
                 )}
                 <span className="min-w-0 flex-1" />
-                {activity === 'working' && (
-                  <Button
-                    type="button"
-                    variant="destructive"
-                    size="icon"
-                    disabled={isAborting}
-                    onClick={() => void abortSession()}
-                    aria-label={t('chat.chatInput.actions.stopGeneratingAria')}
-                  >
-                    <StopIcon className="size-4" />
-                  </Button>
-                )}
-                <Button
-                  type="submit"
-                  size="icon"
-                  disabled={!prompt.trim() || isSending}
-                  aria-label={t('chat.chatInput.actions.sendMessageAria')}
-                >
-                  <Icon name="send-plane-2" className="size-4" />
-                </Button>
+                <ComposerActionButtons
+                  isMobile={isMobile}
+                  footerIconButtonClass={footerIconButtonClass}
+                  sendIconSizeClass={isMobile ? 'h-4 w-4' : isVSCode ? 'h-3.5 w-3.5' : 'h-4 w-4'}
+                  stopIconSizeClass={isMobile ? 'h-6 w-6' : isVSCode ? 'h-4 w-4' : 'h-5 w-5'}
+                  canSend={Boolean(prompt.trim()) && !isSending}
+                  canAbort={activity === 'working'}
+                  hasContent={Boolean(prompt.trim())}
+                  currentSessionId={targetID}
+                  newSessionDraftOpen={false}
+                  onPrimaryAction={() => void sendPrompt()}
+                  onQueueMessage={() => void sendPrompt()}
+                  onAbort={() => void abortSession()}
+                />
               </div>
             </form>
           ) : (
@@ -728,6 +980,32 @@ const PrimeTranscriptSession: React.FC<{ target: PrimeSessionSummary }> = ({ tar
 
 export const PrimeTranscriptView: React.FC = () => {
   const target = useUIStore((state) => state.primeTranscriptTarget);
+  const setPrimeTranscriptTarget = useUIStore((state) => state.setPrimeTranscriptTarget);
+  const pendingForkPromptRef = React.useRef<{ identityKey: string; text: string } | null>(null);
+  const handleForked = React.useCallback((session: PrimeSessionSummary, selectedText: string | null) => {
+    const nextIdentityKey = identityKey(session.identity);
+    pendingForkPromptRef.current = selectedText === null || !nextIdentityKey
+      ? null
+      : { identityKey: nextIdentityKey, text: selectedText };
+    setPrimeTranscriptTarget(session);
+  }, [setPrimeTranscriptTarget]);
+
   if (!target) return null;
-  return <PrimeTranscriptSession key={identityKey(target.identity)} target={target} />;
+  const targetIdentityKey = identityKey(target.identity);
+  const initialPrompt = pendingForkPromptRef.current?.identityKey === targetIdentityKey
+    ? pendingForkPromptRef.current.text
+    : undefined;
+  return (
+    <PrimeTranscriptSession
+      key={targetIdentityKey}
+      target={target}
+      initialPrompt={initialPrompt}
+      onInitialPromptConsumed={() => {
+        if (pendingForkPromptRef.current?.identityKey === targetIdentityKey) {
+          pendingForkPromptRef.current = null;
+        }
+      }}
+      onForked={handleForked}
+    />
+  );
 };

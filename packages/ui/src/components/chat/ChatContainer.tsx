@@ -53,6 +53,7 @@ import { isVSCodeRuntime } from '@/lib/desktop';
 import { getEmbeddedSessionChatOriginSessionId } from '@/components/layout/contextPanelEmbeddedChat';
 import { isFullySyntheticMessage } from '@/lib/messages/synthetic';
 import { normalizeUserDisplayParts } from './message/normalizeUserDisplayParts';
+import { getMessagePreview } from './lib/messagePreview';
 import { findShellCommandForMessage, isUserShellMarkerMessage } from './lib/shellBridge';
 import { resolveChatPromptReadOnly } from './chatPromptReadOnly';
 import { getRuntimeKey } from '@/lib/runtime-switch';
@@ -213,20 +214,10 @@ const ChatViewport = React.memo(({
     onLoadEarlierPrompts,
 }: ChatViewportProps) => {
     const { t } = useI18n();
-    const promptPreviewsByTurnIdRef = React.useRef<Map<string, Part[]>>(new Map());
-    // Cache normalized parts per source array so unchanged messages keep the
-    // same reference and the memo below can bail out to the previous map.
+    const promptPreviewsByTurnIdRef = React.useRef<Map<string, string>>(new Map());
     const normalizedPromptPartsCache = React.useRef(new WeakMap<Part[], Part[]>());
-    // Shell-mode prompts show their extracted command; cache by message id so
-    // the parts array reference is stable while the command is unchanged.
-    const shellPreviewCache = React.useRef(new Map<string, { command: string; parts: Part[] }>());
-    const shellPreviewSessionRef = React.useRef(currentSessionId);
-    if (shellPreviewSessionRef.current !== currentSessionId) {
-        shellPreviewSessionRef.current = currentSessionId;
-        shellPreviewCache.current.clear();
-    }
     const promptPreviewsByTurnId = React.useMemo(() => {
-        const next = new Map<string, Part[]>();
+        const next = new Map<string, string>();
         for (let index = 0; index < renderedMessages.length; index += 1) {
             const message = renderedMessages[index];
             if (message.info.role !== 'user') {
@@ -234,14 +225,7 @@ const ChatViewport = React.memo(({
             }
             if (isUserShellMarkerMessage(message)) {
                 const command = findShellCommandForMessage(renderedMessages, index) ?? '';
-                const cached = shellPreviewCache.current.get(message.info.id);
-                if (cached && cached.command === command) {
-                    next.set(message.info.id, cached.parts);
-                } else {
-                    const parts = [{ type: 'text', text: command ? `$ ${command}` : '/shell' } as Part];
-                    shellPreviewCache.current.set(message.info.id, { command, parts });
-                    next.set(message.info.id, parts);
-                }
+                next.set(message.info.id, command ? `$ ${command}` : '/shell');
                 continue;
             }
             // Other fully synthetic user messages (loop continuations,
@@ -258,13 +242,13 @@ const ChatViewport = React.memo(({
             if (displayParts.length === 0) {
                 continue;
             }
-            next.set(message.info.id, displayParts);
+            next.set(message.info.id, getMessagePreview(displayParts, 160));
         }
         const prev = promptPreviewsByTurnIdRef.current;
         if (prev.size === next.size) {
             let unchanged = true;
-            for (const [id, parts] of next) {
-                if (prev.get(id) !== parts) {
+            for (const [id, preview] of next) {
+                if (prev.get(id) !== preview) {
                     unchanged = false;
                     break;
                 }

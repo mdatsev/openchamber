@@ -15,6 +15,11 @@ import { readEmbeddedThemeSearchParams } from '@/contexts/theme-embedded-bootstr
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { getCycledPrimaryAgentName } from '@/components/chat/mobileControlsUtils';
+import {
+  PRIME_CYCLE_THINKING_EVENT,
+  PRIME_OPEN_MODEL_SELECTOR_EVENT,
+  type PrimeControlShortcutScope,
+} from '@/components/chat/primeControlModel';
 import { focusChatInput } from '@/components/chat/composer/editor/dom';
 import { addSelectionToChat } from '@/lib/addSelectionToChat';
 import { hasOpenDropdown } from './keyboard-shortcut-dom';
@@ -489,6 +494,7 @@ export const useKeyboardShortcuts = () => {
           isAboutDialogOpen,
           activeMainTab,
           isModelSelectorOpen,
+          primeTranscriptTarget,
         } = useUIStore.getState();
 
         // Skip if settings open
@@ -505,7 +511,19 @@ export const useKeyboardShortcuts = () => {
         }
 
         e.preventDefault();
-        setModelSelectorOpen(!isModelSelectorOpen);
+        const draft = useSessionUIStore.getState().newSessionDraft;
+        const primeScope: PrimeControlShortcutScope | null = primeTranscriptTarget
+          ? 'transcript'
+          : draft.open && draft.harness === 'prime'
+            ? 'draft'
+            : null;
+        if (primeScope) {
+          window.dispatchEvent(new CustomEvent(PRIME_OPEN_MODEL_SELECTOR_EVENT, {
+            detail: { scope: primeScope },
+          }));
+        } else {
+          setModelSelectorOpen(!isModelSelectorOpen);
+        }
         return;
       }
 
@@ -518,6 +536,7 @@ export const useKeyboardShortcuts = () => {
           isSessionSwitcherOpen,
           isAboutDialogOpen,
           activeMainTab,
+          primeTranscriptTarget,
         } = useUIStore.getState();
 
         if (isSettingsDialogOpen) {
@@ -528,6 +547,20 @@ export const useKeyboardShortcuts = () => {
         const isChatActive = activeMainTab === 'chat';
 
         if (hasOverlay || !isChatActive) {
+          return;
+        }
+
+        const draft = useSessionUIStore.getState().newSessionDraft;
+        const primeScope: PrimeControlShortcutScope | null = primeTranscriptTarget
+          ? 'transcript'
+          : draft.open && draft.harness === 'prime'
+            ? 'draft'
+            : null;
+        if (primeScope) {
+          e.preventDefault();
+          window.dispatchEvent(new CustomEvent(PRIME_CYCLE_THINKING_EVENT, {
+            detail: { scope: primeScope },
+          }));
           return;
         }
 

@@ -1,11 +1,9 @@
 import React from 'react';
-import type { Part } from '@opencode-ai/sdk/v2';
 
 import { Icon } from '@/components/icon/Icon';
 import { useI18n } from '@/lib/i18n';
 import { useUIStore } from '@/stores/useUIStore';
 import { cn } from '@/lib/utils';
-import { getMessagePreview } from '../lib/messagePreview';
 
 type PromptEntry = {
     turnId: string;
@@ -13,8 +11,8 @@ type PromptEntry = {
 };
 
 type PromptNavigatorRailProps = {
-    turnIds: string[];
-    previewsByTurnId: Map<string, Part[]>;
+    turnIds: readonly string[];
+    previewsByTurnId: ReadonlyMap<string, string>;
     activeTurnId: string | null;
     onSelectTurn: (turnId: string) => void;
     canLoadEarlier: boolean;
@@ -22,7 +20,6 @@ type PromptNavigatorRailProps = {
     onLoadEarlier: () => void;
 };
 
-const PREVIEW_MAX_CHARS = 160;
 // The whole gutter is one hover/click target: the cursor's vertical position
 // maps to the nearest tick, so tick density never demands pointer precision.
 // When the centered message column extends under the full-width gutter (narrow
@@ -56,16 +53,13 @@ const PANEL_SCROLL_MARGIN_ROWS = 2;
 const PANEL_HIDE_DELAY_MS = 160;
 
 const buildPromptEntries = (
-    turnIds: string[],
-    previewsByTurnId: Map<string, Part[]>,
+    turnIds: readonly string[],
+    previewsByTurnId: ReadonlyMap<string, string>,
 ): PromptEntry[] => {
-    return turnIds.map((turnId) => {
-        const parts = previewsByTurnId.get(turnId) ?? [];
-        return {
-            turnId,
-            preview: getMessagePreview(parts, PREVIEW_MAX_CHARS),
-        };
-    });
+    return turnIds.map((turnId) => ({
+        turnId,
+        preview: previewsByTurnId.get(turnId) ?? '',
+    }));
 };
 
 // Codex-style wave: the highlighted tick stretches, neighbours taper off.

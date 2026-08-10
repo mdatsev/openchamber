@@ -1255,6 +1255,7 @@ export type PrimeSessionsResult =
 
 export interface PrimeTranscriptItem {
   id: string;
+  branchEntryID: string | null;
   role: 'user' | 'assistant' | 'reasoning' | 'tool' | 'system';
   text: string;
   timestamp: string | null;
@@ -1335,6 +1336,12 @@ export type PrimeEvent =
       catalogChanged: boolean;
     };
 
+export interface PrimeSessionBranchResult {
+  session: PrimeSessionSummary;
+  selectedText: string | null;
+  cancelled: boolean;
+}
+
 export interface PrimeAPI {
   getStatus(signal?: AbortSignal): Promise<PrimeRuntimeStatus>;
   reconnect(signal?: AbortSignal): Promise<PrimeRuntimeStatus>;
@@ -1354,6 +1361,10 @@ export interface PrimeAPI {
     thinkingLevel?: PrimeThinkingLevel;
   }, signal?: AbortSignal): Promise<PrimeSessionSummary>;
   sendPrompt(input: { identity: PrimeSessionIdentity; prompt: string }, signal?: AbortSignal): Promise<void>;
+  forkSession(input: {
+    identity: PrimeSessionIdentity;
+    entryID: string;
+  }, signal?: AbortSignal): Promise<PrimeSessionBranchResult>;
   abortSession(identity: PrimeSessionIdentity, signal?: AbortSignal): Promise<void>;
   subscribe(listener: (event: PrimeEvent) => void): Subscription;
 }

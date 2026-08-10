@@ -2577,12 +2577,19 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                 model={primeDraftControls.model}
                 thinkingLevel={primeDraftControls.thinkingLevel}
                 disabled={isPrimeCreating}
+                shortcutScope="draft"
+                mobilePanel={mobileControlsPanel}
+                onMobilePanelChange={(panel) => {
+                    if (panel) handleOpenMobilePanel(panel);
+                    else setMobileControlsPanel(null);
+                }}
+                onRequestFocus={() => composerRef.current?.focus()}
                 onModelChange={(model) => setPrimeDraftControlState((current) => (
                     current?.key === primeDraftControlKey
                         ? {
                             ...current,
                             model,
-                            thinkingLevel: model.reasoning ? current.thinkingLevel : 'off',
+                            thinkingLevel: model.reasoning === false ? 'off' : current.thinkingLevel,
                         }
                         : current
                 ))}

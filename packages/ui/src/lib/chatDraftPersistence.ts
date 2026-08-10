@@ -6,6 +6,7 @@ export type ChatDraftIdentity = {
   runtimeKey: string;
   directory: string;
   sessionId: string | null;
+  harness?: string;
 };
 
 export type ChatDraftSnapshot = {
@@ -27,7 +28,10 @@ type PersistedChatDraftEnvelope = {
 const STORAGE_KEY = 'openchamber.chatDrafts.v2';
 const MAX_DRAFTS = 50;
 const storage = getDeferredSafeStorage();
-const deletionListeners = new Set<(identity: ChatDraftIdentity) => void>();
+const deletionListeners = new Set<(
+  identity: ChatDraftIdentity,
+  expectedText?: string,
+) => void>();
 let cachedRawEnvelope: string | null | undefined;
 let cachedEnvelope: PersistedChatDraftEnvelope | undefined;
 
@@ -41,8 +45,17 @@ export const createChatDraftIdentity = (
   return { runtimeKey, directory: normalizedDirectory, sessionId };
 };
 
-export const getChatDraftIdentityKey = (identity: ChatDraftIdentity): string =>
-  JSON.stringify([identity.runtimeKey, identity.directory, identity.sessionId]);
+export const createHarnessChatDraftIdentity = (
+  runtimeKey: string,
+  harness: string,
+  sessionId: string,
+): ChatDraftIdentity => ({ runtimeKey, directory: '', harness, sessionId });
+
+export const getChatDraftIdentityKey = (identity: ChatDraftIdentity): string => (
+  'harness' in identity
+    ? JSON.stringify([identity.runtimeKey, 'harness', identity.harness, identity.sessionId])
+    : JSON.stringify([identity.runtimeKey, identity.directory, identity.sessionId])
+);
 
 const readEnvelope = (): PersistedChatDraftEnvelope => {
   const raw = storage.getItem(STORAGE_KEY);
@@ -119,7 +132,24 @@ export const clearChatDraft = (identity: ChatDraftIdentity, notify = false): voi
   if (notify) deletionListeners.forEach((listener) => listener(identity));
 };
 
-export const subscribeChatDraftDeletion = (listener: (identity: ChatDraftIdentity) => void): (() => void) => {
+export const clearChatDraftIfTextMatches = (
+  identity: ChatDraftIdentity,
+  expectedText: string,
+  notify = false,
+): boolean => {
+  const current = readChatDraft(identity);
+  if (current.text !== expectedText || current.confirmedMentions.size > 0) return false;
+  writeChatDraft(identity, '', []);
+  if (notify) {
+    deletionListeners.forEach((listener) => listener(identity, expectedText));
+  }
+  return true;
+};
+
+export const subscribeChatDraftDeletion = (listener: (
+  identity: ChatDraftIdentity,
+  expectedText?: string,
+) => void): (() => void) => {
   deletionListeners.add(listener);
   return () => deletionListeners.delete(listener);
 };

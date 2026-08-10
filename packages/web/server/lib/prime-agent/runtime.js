@@ -10,6 +10,9 @@ const MUTATION_COMMANDS = new Set([
   'kill',
   'set_model',
   'set_thinking_level',
+  'fork',
+  'export_jsonl',
+  'switch_session',
 ]);
 const MAX_DAEMON_LINE_BYTES = 16 * 1024 * 1024;
 const MAX_LIVE_MESSAGES = 50_000;
@@ -19,6 +22,7 @@ const SESSION_EVENT_COALESCE_MS = 100;
 const MAX_REMEMBERED_ATTACHMENTS = 100;
 const MAX_MUTATION_ACKS = 1_000;
 const MAX_LIVE_TOOL_EXECUTIONS = 1_000;
+const MAX_PENDING_SESSION_FORKS = 100;
 const DRAFT_CONTROLS_MAX_AGE_MS = 30_000;
 const MAX_DRAFT_CONTROLS_ENTRIES = 20;
 
@@ -158,6 +162,7 @@ export const createPrimeAgentRuntime = (dependencies) => {
     buildAugmentedPath,
     searchPathFor,
     isExecutable,
+    fileSystem,
     onEvent,
     env = processLike.env,
   } = dependencies;
@@ -177,6 +182,7 @@ export const createPrimeAgentRuntime = (dependencies) => {
   const mutationResultsAwaitingAck = new Map();
   const draftControlsCache = new Map();
   const draftControlsPromises = new Map();
+  const pendingSessionForks = new Map();
   let socket = null;
   let socketBuffer = '';
   let hello = null;
@@ -307,6 +313,50 @@ export const createPrimeAgentRuntime = (dependencies) => {
     });
   };
 
+  const assertSessionMutationAllowed = (activeSessionID) => {
+    if (pendingSessionForks.has(activeSessionID)) {
+      throw runtimeError('Prime Agent session fork is still being finalized', 'session-fork-in-progress');
+    }
+  };
+
+  const ensureSessionSnapshotWaiter = (current, snapshotID) => {
+    if (current.completedSnapshotID === snapshotID) return Promise.resolve();
+    if (current.failedSnapshotID === snapshotID) {
+      return Promise.reject(new Error('Prime Agent session snapshot failed'));
+    }
+    if (current.snapshotWaiter?.id === snapshotID) return current.snapshotWaiter.promise;
+    if (current.snapshotWaiter) {
+      current.snapshotWaiter.reject(new Error('Prime Agent replaced an incomplete session snapshot'));
+    }
+    let resolve;
+    let reject;
+    const promise = new Promise((resolvePromise, rejectPromise) => {
+      resolve = resolvePromise;
+      reject = rejectPromise;
+    });
+    void promise.catch(() => {});
+    current.snapshotWaiter = { id: snapshotID, promise, resolve, reject };
+    return promise;
+  };
+
+  const completeSessionSnapshot = (current, snapshotID) => {
+    current.completedSnapshotID = snapshotID;
+    current.failedSnapshotID = null;
+    if (current.snapshotWaiter?.id === snapshotID) {
+      current.snapshotWaiter.resolve();
+      delete current.snapshotWaiter;
+    }
+  };
+
+  const failSessionSnapshot = (current, snapshotID, error) => {
+    current.failedSnapshotID = snapshotID ?? current.snapshotWaiter?.id ?? null;
+    current.completedSnapshotID = null;
+    if (current.snapshotWaiter && (!snapshotID || current.snapshotWaiter.id === snapshotID)) {
+      current.snapshotWaiter.reject(error);
+      delete current.snapshotWaiter;
+    }
+  };
+
   const rememberAttachment = (sessionID, sessionPath) => {
     rememberedAttachments.delete(sessionID);
     rememberedAttachments.set(sessionID, sessionPath ?? null);
@@ -320,17 +370,35 @@ export const createPrimeAgentRuntime = (dependencies) => {
     for (const current of liveSessions.values()) {
       current.attachedGeneration = 0;
       current.attachingGeneration = 0;
-      delete current.snapshotMessages;
+      failSessionSnapshot(current, null, new Error('Prime Agent daemon connection closed during session snapshot'));
+      delete current.snapshotAssembly;
+    }
+    for (const forkState of pendingSessionForks.values()) {
+      
+      forkState.resolveSnapshot?.();
+      forkState.resolveSnapshot = null;
+      forkState.snapshotPromise = null;
     }
   };
 
   const updateLiveSummary = (summary, expectedSessionID = null) => {
-    const normalized = normalizeSummary(summary);
+    let normalized = normalizeSummary(summary);
     if (!normalized) return null;
     if (expectedSessionID && normalized.id !== expectedSessionID) {
       throw runtimeError('Prime Agent returned a different root session than requested', 'session-identity-mismatch');
     }
     const current = liveSessions.get(normalized.id);
+    if (current) {
+      normalized = {
+        ...normalized,
+        createdAt: asString(summary?.created ?? summary?.createdAt)
+          ? normalized.createdAt
+          : current.summary.createdAt,
+        updatedAt: asString(summary?.modified ?? summary?.updatedAt)
+          ? normalized.updatedAt
+          : current.summary.updatedAt,
+      };
+    }
     const previousActiveSessionID = current?.summary?.activeSessionID ?? null;
     const preservesAttachment = Boolean(
       current
@@ -365,6 +433,281 @@ export const createPrimeAgentRuntime = (dependencies) => {
       retiredEventGenerations: preservesAttachment ? current.retiredEventGenerations : new Set(),
     });
     return normalized;
+  };
+
+  const stageForkReplacement = (forkState, summary, messages) => {
+    const normalized = normalizeSummary(summary);
+    if (
+      !normalized
+      || normalized.id === forkState.sourceSessionID
+      || normalized.activeSessionID !== forkState.activeSessionID
+    ) {
+      throw runtimeError('Prime Agent returned an invalid forked session identity', 'session-identity-mismatch');
+    }
+    if (forkState.candidate && forkState.candidate.id !== normalized.id) {
+      throw runtimeError('Prime Agent changed the pending fork identity', 'session-identity-mismatch');
+    }
+
+    const expectedSessionPath = forkState.sessionPathForID(normalized.id);
+    if (
+      !normalized.sessionFile
+      || !sameResolvedPath(path.dirname(normalized.sessionFile), path.dirname(expectedSessionPath))
+    ) {
+      throw runtimeError('Prime Agent forked the session outside the configured session directory', 'session-identity-mismatch');
+    }
+
+    const activeOwner = activeSessionToSession.get(forkState.activeSessionID);
+    if (
+      activeOwner
+      && activeOwner !== forkState.sourceSessionID
+      && activeOwner !== normalized.id
+    ) {
+      throw runtimeError('Prime Agent fork replacement did not match the requested session', 'session-identity-mismatch');
+    }
+    if (!forkState.candidate && liveSessions.has(normalized.id) && activeOwner !== normalized.id) {
+      throw runtimeError('Prime Agent fork collided with an existing session identity', 'session-identity-mismatch');
+    }
+
+    forkState.candidate = normalized;
+    if (Array.isArray(messages)) forkState.candidateMessages = messages.slice(-MAX_LIVE_MESSAGES);
+    return normalized;
+  };
+
+  const applyForkReplacement = (forkState, summary, messages) => {
+    const normalized = stageForkReplacement(forkState, summary, messages);
+    const expectedSessionPath = forkState.sessionPathForID(normalized.id);
+    if (!sameResolvedPath(normalized.sessionFile, expectedSessionPath)) {
+      throw runtimeError('Prime Agent fork did not reach its canonical session path', 'session-identity-mismatch');
+    }
+    const replacementSummary = {
+      ...summary,
+      createdAt: asString(summary?.created ?? summary?.createdAt) ? normalized.createdAt : forkState.startedAt,
+      updatedAt: asString(summary?.modified ?? summary?.updatedAt) ? normalized.updatedAt : forkState.startedAt,
+    };
+
+    const activeOwner = activeSessionToSession.get(forkState.activeSessionID);
+    if (activeOwner === normalized.id) {
+      const current = liveSessions.get(normalized.id);
+      const updated = updateLiveSummary(replacementSummary, normalized.id) ?? normalized;
+      const next = liveSessions.get(normalized.id);
+      if (current && next && Array.isArray(messages)) {
+        next.messages = messages.slice(-MAX_LIVE_MESSAGES);
+        next.toolExecutions.clear();
+        next.streamingContent = null;
+        next.attachedGeneration = connectionGeneration;
+        next.attachingGeneration = 0;
+      }
+      rememberAttachment(normalized.id, updated.sessionFile);
+      forkState.replacement = updated;
+      if (pendingSessionForks.get(forkState.activeSessionID) === forkState) {
+        pendingSessionForks.delete(forkState.activeSessionID);
+      }
+      return updated;
+    }
+    if (activeOwner && activeOwner !== forkState.sourceSessionID) {
+      throw runtimeError('Prime Agent fork replacement did not match the requested session', 'session-identity-mismatch');
+    }
+
+    const previous = liveSessions.get(forkState.sourceSessionID);
+    if (!previous) {
+      throw runtimeError('Prime Agent source session state is unavailable', 'session-identity-mismatch');
+    }
+    const oldTimer = sessionEventTimers.get(forkState.sourceSessionID);
+    if (oldTimer) clearTimeout(oldTimer);
+    sessionEventTimers.delete(forkState.sourceSessionID);
+    liveSessions.delete(forkState.sourceSessionID);
+    rememberedAttachments.delete(forkState.sourceSessionID);
+    attachmentPromises.delete(forkState.sourceSessionID);
+    sessionResyncs.delete(forkState.sourceSessionID);
+    activeSessionToSession.delete(forkState.activeSessionID);
+
+    const replacement = updateLiveSummary(replacementSummary, normalized.id) ?? normalized;
+    const next = liveSessions.get(normalized.id);
+    if (!next) {
+      throw runtimeError('Prime Agent fork replacement state is unavailable', 'session-identity-mismatch');
+    }
+    next.messages = Array.isArray(messages) ? messages.slice(-MAX_LIVE_MESSAGES) : [];
+    next.toolExecutions.clear();
+    next.streamingContent = null;
+    next.attachedGeneration = connectionGeneration;
+    next.attachingGeneration = 0;
+    next.lastEventCursor = previous.lastEventCursor;
+    next.lastEventSequence = previous.lastEventSequence;
+    next.retiredEventGenerations = previous.retiredEventGenerations;
+    rememberAttachment(normalized.id, replacement.sessionFile);
+    forkState.replacement = replacement;
+    if (pendingSessionForks.get(forkState.activeSessionID) === forkState) {
+      pendingSessionForks.delete(forkState.activeSessionID);
+    }
+    return replacement;
+  };
+
+  const readForkExportSessionID = (sessionPath) => {
+    const flags = fileSystem.constants.O_RDONLY | (fileSystem.constants.O_NOFOLLOW ?? 0);
+    const descriptor = fileSystem.openSync(sessionPath, flags);
+    try {
+      const stat = fileSystem.fstatSync(descriptor);
+      if (!stat.isFile()) {
+        throw runtimeError('Prime Agent fork export is not a regular file', 'session-identity-mismatch');
+      }
+      const buffer = Buffer.alloc(64 * 1024);
+      const bytesRead = fileSystem.readSync(descriptor, buffer, 0, buffer.length, 0);
+      const firstLineEnd = buffer.indexOf(0x0a, 0);
+      if (bytesRead <= 0 || firstLineEnd < 0 || firstLineEnd >= bytesRead) {
+        throw runtimeError('Prime Agent fork export has an invalid header', 'session-identity-mismatch');
+      }
+      let header;
+      try {
+        header = JSON.parse(buffer.subarray(0, firstLineEnd).toString('utf8'));
+      } catch {
+        throw runtimeError('Prime Agent fork export has an invalid header', 'session-identity-mismatch');
+      }
+      return header?.type === 'session' ? asString(header.id) : null;
+    } finally {
+      fileSystem.closeSync(descriptor);
+    }
+  };
+
+  const promoteForkExport = (forkState, exportedPath, expectedPath) => {
+    const candidate = forkState.candidate;
+    if (!candidate || !sameResolvedPath(exportedPath, expectedPath)) {
+      throw runtimeError('Prime Agent returned an unexpected fork export path', 'session-identity-mismatch');
+    }
+    const canonicalSessionPath = forkState.sessionPathForID(candidate.id);
+    let copied = false;
+    try {
+      if (readForkExportSessionID(exportedPath) !== candidate.id) {
+        throw runtimeError('Prime Agent fork export identity did not match its target', 'session-identity-mismatch');
+      }
+      try {
+        fileSystem.copyFileSync(exportedPath, canonicalSessionPath, fileSystem.constants.COPYFILE_EXCL);
+        copied = true;
+      } catch (error) {
+        if (error?.code === 'EEXIST') {
+          throw runtimeError('Prime Agent fork collided with an existing session file', 'session-identity-mismatch');
+        }
+        throw error;
+      }
+      if (readForkExportSessionID(canonicalSessionPath) !== candidate.id) {
+        throw runtimeError('Prime Agent canonical fork identity is invalid', 'session-identity-mismatch');
+      }
+      forkState.canonicalExported = true;
+    } catch (error) {
+      if (copied) {
+        try {
+          fileSystem.unlinkSync(canonicalSessionPath);
+        } catch {}
+      }
+      throw error;
+    } finally {
+      try {
+        fileSystem.unlinkSync(exportedPath);
+      } catch {}
+      if (sameResolvedPath(forkState.pendingExportPath, expectedPath)) {
+        forkState.pendingExportPath = null;
+      }
+    }
+  };
+
+  const abandonCancelledFork = (forkState) => {
+    if (forkState.abandonPromise) return forkState.abandonPromise;
+    const operation = request({
+      type: 'kill',
+      activeSessionId: forkState.activeSessionID,
+    }).then(() => {
+      if (pendingSessionForks.get(forkState.activeSessionID) === forkState) {
+        pendingSessionForks.delete(forkState.activeSessionID);
+      }
+      publishSessionChanged(forkState.sourceSessionID, { immediate: true, catalogChanged: true });
+      if (forkState.candidate) {
+        publishSessionChanged(forkState.candidate.id, { immediate: true, catalogChanged: true });
+      }
+    });
+    forkState.abandonPromise = operation;
+    return operation;
+  };
+
+  const canonicalizeForkReplacement = (forkState, summary = null) => {
+    if (summary) stageForkReplacement(forkState, summary);
+    if (forkState.replacement) return Promise.resolve(forkState.replacement);
+    if (forkState.canonicalizationPromise) return forkState.canonicalizationPromise;
+
+    const operation = (async () => {
+      if (forkState.switchCancelled) {
+        await abandonCancelledFork(forkState);
+        throw new Error('Prime Agent cancelled fork finalization');
+      }
+      let candidate = forkState.candidate;
+      if (!candidate || forkState.refreshCandidate) {
+        const connectionState = await request({
+          type: 'get_connection_state',
+          activeSessionId: forkState.activeSessionID,
+        });
+        candidate = stageForkReplacement(forkState, connectionState);
+        forkState.refreshCandidate = false;
+      }
+      if (forkState.snapshotPromise) await forkState.snapshotPromise;
+
+      const canonicalSessionPath = forkState.sessionPathForID(candidate.id);
+      if (!sameResolvedPath(candidate.sessionFile, canonicalSessionPath)) {
+        if (!forkState.canonicalExported) {
+          const pendingExportPath = forkState.pendingExportPath;
+          if (pendingExportPath && fileSystem.existsSync(pendingExportPath)) {
+            promoteForkExport(forkState, pendingExportPath, pendingExportPath);
+          } else {
+            const exportPath = path.join(
+              path.dirname(canonicalSessionPath),
+              `.${path.basename(canonicalSessionPath)}.fork-${crypto.randomUUID()}.tmp`,
+            );
+            forkState.pendingExportPath = exportPath;
+            const exported = await request({
+              type: 'export_jsonl',
+              activeSessionId: forkState.activeSessionID,
+              outputPath: exportPath,
+            });
+            if (forkState.canonicalExported) {
+              try {
+                fileSystem.unlinkSync(exportPath);
+              } catch {}
+              if (sameResolvedPath(forkState.pendingExportPath, exportPath)) {
+                forkState.pendingExportPath = null;
+              }
+            } else {
+              promoteForkExport(forkState, asString(exported?.path), exportPath);
+            }
+          }
+        }
+        const switched = await request({
+          type: 'switch_session',
+          activeSessionId: forkState.activeSessionID,
+          sessionPath: canonicalSessionPath,
+        });
+        if (switched?.cancelled === true) {
+          forkState.switchCancelled = true;
+          await abandonCancelledFork(forkState);
+          throw new Error('Prime Agent cancelled fork finalization');
+        }
+      }
+
+      const [connectionState, messagesResult] = await Promise.all([
+        request({ type: 'get_connection_state', activeSessionId: forkState.activeSessionID }),
+        request({ type: 'get_messages', activeSessionId: forkState.activeSessionID }),
+      ]);
+      const replacement = applyForkReplacement(forkState, connectionState, messagesResult?.messages);
+      publishSessionChanged(forkState.sourceSessionID, { immediate: true, catalogChanged: true });
+      publishSessionChanged(replacement.id, { immediate: true, catalogChanged: true });
+      return replacement;
+    })();
+
+    forkState.canonicalizationPromise = operation;
+    void operation.catch((error) => {
+      forkState.canonicalizationError = error;
+    }).finally(() => {
+      if (!forkState.replacement && forkState.canonicalizationPromise === operation) {
+        forkState.canonicalizationPromise = null;
+      }
+    });
+    return operation;
   };
 
   const isStaleEvent = (current, message) => {
@@ -428,7 +771,8 @@ export const createPrimeAgentRuntime = (dependencies) => {
     if (!current) return;
     current.attachedGeneration = 0;
     current.attachingGeneration = 0;
-    delete current.snapshotMessages;
+    failSessionSnapshot(current, null, new Error('Prime Agent session snapshot was superseded'));
+    delete current.snapshotAssembly;
     sessionResyncs.add(sessionID);
     publishSessionChanged(sessionID, { immediate: true });
     void Promise.resolve().then(async () => {
@@ -444,7 +788,10 @@ export const createPrimeAgentRuntime = (dependencies) => {
 
   const applySessionEvent = (message) => {
     const activeSessionID = asString(message.activeSessionId);
-    const sessionID = activeSessionID ? activeSessionToSession.get(activeSessionID) : null;
+    const forkState = activeSessionID ? pendingSessionForks.get(activeSessionID) : null;
+    const sessionID = activeSessionID
+      ? activeSessionToSession.get(activeSessionID) ?? forkState?.sourceSessionID ?? null
+      : null;
     if (!sessionID) return;
     const current = liveSessions.get(sessionID);
     if (
@@ -452,31 +799,116 @@ export const createPrimeAgentRuntime = (dependencies) => {
       || (current.attachedGeneration !== connectionGeneration && current.attachingGeneration !== connectionGeneration)
     ) return;
 
+    if (forkState?.candidate && !forkState.replacement) {
+      if (message.type === 'session_snapshot_begin') {
+        forkState.snapshotID = asString(message.snapshotId);
+        return;
+      }
+      if (message.type === 'session_snapshot_chunk') return;
+      if (message.type === 'session_snapshot_end' || message.type === 'session_snapshot_failed') {
+        if (forkState.snapshotID && asString(message.snapshotId) !== forkState.snapshotID) return;
+        forkState.snapshotID = null;
+        forkState.resolveSnapshot?.();
+        forkState.resolveSnapshot = null;
+        void canonicalizeForkReplacement(forkState).catch(() => {});
+        return;
+      }
+    }
+
+
     if (message.type === 'session_snapshot_begin') {
-      current.snapshotMessages = [];
+      const snapshotID = asString(message.snapshotId);
+      const messageCount = Number.isInteger(message.messageCount) && message.messageCount >= 0
+        ? message.messageCount
+        : null;
+      if (!snapshotID || !message.snapshot || typeof message.snapshot !== 'object' || messageCount === null) {
+        failSessionSnapshot(current, null, new Error('Prime Agent sent an invalid session snapshot'));
+        delete current.snapshotAssembly;
+        current.attachedGeneration = 0;
+        current.attachingGeneration = 0;
+        publishSessionChanged(sessionID, { immediate: true });
+        return;
+      }
+      ensureSessionSnapshotWaiter(current, snapshotID);
+      current.snapshotAssembly = {
+        id: snapshotID,
+        snapshot: message.snapshot,
+        expectedMessageCount: messageCount,
+        receivedMessageCount: 0,
+        nextChunkIndex: 0,
+        messages: [],
+      };
       return;
     }
     if (message.type === 'session_snapshot_chunk') {
-      if (!Array.isArray(message.messages) || !Array.isArray(current.snapshotMessages)) return;
-      current.snapshotMessages.push(...message.messages);
-      if (current.snapshotMessages.length > MAX_LIVE_MESSAGES) {
-        current.snapshotMessages = current.snapshotMessages.slice(-MAX_LIVE_MESSAGES);
+      const assembly = current.snapshotAssembly;
+      if (!assembly) return;
+      if (
+        asString(message.snapshotId) !== assembly.id
+        || !Number.isInteger(message.index)
+        || message.index !== assembly.nextChunkIndex
+        || !Array.isArray(message.messages)
+      ) {
+        failSessionSnapshot(current, assembly.id, new Error('Prime Agent sent an incomplete session snapshot'));
+        delete current.snapshotAssembly;
+        current.attachedGeneration = 0;
+        current.attachingGeneration = 0;
+        publishSessionChanged(sessionID, { immediate: true });
+        return;
+      }
+      assembly.nextChunkIndex += 1;
+      assembly.receivedMessageCount += message.messages.length;
+      assembly.messages.push(...message.messages);
+      if (assembly.messages.length > MAX_LIVE_MESSAGES) {
+        assembly.messages = assembly.messages.slice(-MAX_LIVE_MESSAGES);
       }
       return;
     }
     if (message.type === 'session_snapshot_end') {
-      if (Array.isArray(current.snapshotMessages)) {
-        current.messages = current.snapshotMessages;
-        current.toolExecutions.clear();
-        current.streamingContent = null;
+      const assembly = current.snapshotAssembly;
+      if (!assembly || asString(message.snapshotId) !== assembly.id) return;
+      delete current.snapshotAssembly;
+      if (
+        !Number.isInteger(message.chunkCount)
+        || message.chunkCount !== assembly.nextChunkIndex
+        || assembly.receivedMessageCount !== assembly.expectedMessageCount
+      ) {
+        failSessionSnapshot(current, assembly.id, new Error('Prime Agent sent an incomplete session snapshot'));
+        current.attachedGeneration = 0;
+        current.attachingGeneration = 0;
+        publishSessionChanged(sessionID, { immediate: true });
+        return;
       }
-      delete current.snapshotMessages;
-      observeEventPosition(current, message.lastEventCursor, message.lastEventSequence);
-      publishSessionChanged(sessionID, { immediate: true });
+      updateLiveSummary(assembly.snapshot.summary, sessionID);
+      const next = liveSessions.get(sessionID);
+      if (!next) return;
+      next.messages = assembly.messages;
+      const streamingMessage = assembly.snapshot.summary?.streamingMessage;
+      if (streamingMessage) next.messages = replaceOrAppendMessage(next.messages, streamingMessage);
+      next.toolExecutions.clear();
+      next.streamingContent = streamingMessage
+        ? { messageIdentity: messageIdentity(streamingMessage), contentIndex: Math.max(0, (streamingMessage.content?.length ?? 1) - 1) }
+        : null;
+      next.attachedGeneration = connectionGeneration;
+      next.attachingGeneration = 0;
+      observeEventPosition(
+        next,
+        message.lastEventCursor ?? assembly.snapshot.lastEventCursor,
+        message.lastEventSequence ?? assembly.snapshot.lastEventSequence,
+      );
+      completeSessionSnapshot(next, assembly.id);
+      publishSessionChanged(sessionID, { immediate: true, catalogChanged: true });
       return;
     }
     if (message.type === 'session_snapshot_failed') {
-      delete current.snapshotMessages;
+      const snapshotID = asString(message.snapshotId);
+      const assembly = current.snapshotAssembly;
+      if (!snapshotID || (assembly && snapshotID !== assembly.id)) return;
+      failSessionSnapshot(current, snapshotID, new Error(asString(message.error) || 'Prime Agent session snapshot failed'));
+      if (assembly?.id === snapshotID) delete current.snapshotAssembly;
+      current.attachedGeneration = 0;
+      current.attachingGeneration = 0;
+      publishSessionChanged(sessionID, { immediate: true });
       return;
     }
     if (isStaleEvent(current, message)) return;
@@ -490,6 +922,30 @@ export const createPrimeAgentRuntime = (dependencies) => {
     }
     observeEventPosition(current, message.meta?.cursor ?? message.cursor, message.meta?.sequence ?? message.sequence);
     if (message.type === 'session_replaced') {
+      const replacementSummary = normalizeSummary(message.state);
+      if (replacementSummary && replacementSummary.id !== sessionID) {
+        if (!forkState || forkState.sourceSessionID !== sessionID) {
+          throw runtimeError('Prime Agent unexpectedly replaced the session identity', 'session-identity-mismatch');
+        }
+        const candidate = stageForkReplacement(forkState, message.state, message.messages);
+        const canonicalSessionPath = forkState.sessionPathForID(candidate.id);
+        if (sameResolvedPath(candidate.sessionFile, canonicalSessionPath)) {
+          const replacement = applyForkReplacement(forkState, message.state, message.messages);
+          publishSessionChanged(sessionID, { immediate: true, catalogChanged: true });
+          publishSessionChanged(replacement.id, { immediate: true, catalogChanged: true });
+          return;
+        }
+        if (message.snapshotFollows === true) {
+          if (!forkState.snapshotPromise) {
+            forkState.snapshotPromise = new Promise((resolve) => {
+              forkState.resolveSnapshot = resolve;
+            });
+          }
+        } else {
+          void canonicalizeForkReplacement(forkState).catch(() => {});
+        }
+        return;
+      }
       if (message.state) updateLiveSummary(message.state, sessionID);
       const next = liveSessions.get(sessionID);
       if (next && Array.isArray(message.messages)) {
@@ -519,6 +975,7 @@ export const createPrimeAgentRuntime = (dependencies) => {
       current.summary = { ...current.summary, activity: 'idle', isSessionActive: false, activeSessionID: null };
       current.attachedGeneration = 0;
       current.attachingGeneration = 0;
+      rememberedAttachments.delete(sessionID);
       if (activeSessionID && activeSessionToSession.get(activeSessionID) === sessionID) {
         activeSessionToSession.delete(activeSessionID);
       }
@@ -630,11 +1087,47 @@ export const createPrimeAgentRuntime = (dependencies) => {
           mutationResultsAwaitingAck.delete(commandID);
           acknowledgeResult(commandID);
           const activeSessionID = asString(lateCommand.activeSessionId);
-          const sessionID = activeSessionID ? activeSessionToSession.get(activeSessionID) : null;
+          const forkState = activeSessionID ? pendingSessionForks.get(activeSessionID) : null;
+          if (forkState && lateCommand.type === 'fork') {
+            if (message.success === true && message.data?.cancelled !== true) {
+              forkState.forkSucceeded = true;
+              forkState.selectedText = typeof message.data?.selectedText === 'string'
+                ? message.data.selectedText
+                : forkState.selectedText;
+              void canonicalizeForkReplacement(forkState).catch(() => {});
+            } else {
+              pendingSessionForks.delete(activeSessionID);
+            }
+          } else if (forkState && message.success === true && lateCommand.type === 'export_jsonl') {
+            const exportPath = asString(lateCommand.outputPath);
+            try {
+              if (!forkState.canonicalExported) {
+                promoteForkExport(forkState, asString(message.data?.path), exportPath);
+              } else if (exportPath) {
+                try {
+                  fileSystem.unlinkSync(exportPath);
+                } catch {}
+              }
+              void canonicalizeForkReplacement(forkState).catch(() => {});
+            } catch (error) {
+              forkState.canonicalizationError = error;
+            }
+          } else if (forkState && message.success === true && lateCommand.type === 'switch_session') {
+            if (message.data?.cancelled === true) {
+              forkState.switchCancelled = true;
+              void abandonCancelledFork(forkState).catch(() => {});
+            } else {
+              forkState.refreshCandidate = true;
+              void canonicalizeForkReplacement(forkState).catch(() => {});
+            }
+          }
+          const sessionID = activeSessionID
+            ? activeSessionToSession.get(activeSessionID) ?? forkState?.sourceSessionID ?? null
+            : null;
           if (message.success === true && sessionID) {
             publishSessionChanged(sessionID, {
               immediate: true,
-              catalogChanged: lateCommand.type === 'prompt',
+              catalogChanged: lateCommand.type === 'prompt' || lateCommand.type === 'fork',
             });
           }
         }
@@ -712,10 +1205,20 @@ export const createPrimeAgentRuntime = (dependencies) => {
           socketBuffer = socketBuffer.slice(newline + 1);
           if (line.endsWith('\r')) line = line.slice(0, -1);
           if (!line) continue;
+          let message;
           try {
-            handleMessage(JSON.parse(line), settled ? null : helloHandlers);
+            message = JSON.parse(line);
           } catch {
             candidate.destroy(new Error('Prime Agent daemon sent invalid JSON'));
+            return;
+          }
+          try {
+            handleMessage(message, settled ? null : helloHandlers);
+          } catch (error) {
+            candidate.destroy(error instanceof Error
+              ? error
+              : new Error('Prime Agent daemon sent an invalid frame'));
+            return;
           }
         }
       });
@@ -908,8 +1411,12 @@ export const createPrimeAgentRuntime = (dependencies) => {
         });
         try {
           const summaries = await listSessions({ scheduleReattach: false, includeChildren: true });
+          const pendingForkSources = new Set(
+            [...pendingSessionForks.values()].map((forkState) => forkState.sourceSessionID),
+          );
           for (const [sessionID, sessionPath] of rememberedAttachments) {
             if (status.state !== 'ready') break;
+            if (pendingForkSources.has(sessionID)) continue;
             await attachSession(sessionID, sessionPath, { summaries, remember: false }).catch(() => {});
           }
         } catch {
@@ -964,6 +1471,12 @@ export const createPrimeAgentRuntime = (dependencies) => {
     for (const summary of summaries) {
       const next = normalizeSummary(summary);
       if (!next) continue;
+      const forkState = next.activeSessionID ? pendingSessionForks.get(next.activeSessionID) : null;
+      if (forkState && next.id !== forkState.sourceSessionID && !forkState.replacement) {
+        stageForkReplacement(forkState, summary);
+        void canonicalizeForkReplacement(forkState).catch(() => {});
+        continue;
+      }
       updateLiveSummary(summary);
       if (next.isChild && options.includeChildren !== true) continue;
       normalized.push(next);
@@ -990,15 +1503,11 @@ export const createPrimeAgentRuntime = (dependencies) => {
     let summaries = options.summaries ?? await listSessions({ scheduleReattach: false, includeChildren: true });
     let summary = summaries.find((candidate) => candidate.id === sessionID) ?? null;
     if (!summary?.activeSessionID) {
-      if (summary?.isChild) {
-        summary = { ...summary, activeSessionID: summary.id };
-      } else {
-        if (!sessionPath) throw new Error('Prime Agent session is not active and has no saved transcript path');
-        const created = await request({ type: 'create', sessionPath, lifecycle: 'resident' });
-        summary = updateLiveSummary(created, sessionID);
-        if (!summary?.activeSessionID) throw new Error('Prime Agent did not return an active session');
-        summaries = [summary, ...summaries.filter((candidate) => candidate.id !== summary.id)];
-      }
+      if (!sessionPath) throw new Error('Prime Agent session is not active and has no saved transcript path');
+      const created = await request({ type: 'create', sessionPath, lifecycle: 'resident' });
+      summary = updateLiveSummary(created, sessionID);
+      if (!summary?.activeSessionID) throw new Error('Prime Agent did not return an active session');
+      summaries = [summary, ...summaries.filter((candidate) => candidate.id !== summary.id)];
     }
 
     if (sessionPath && !sameResolvedPath(summary.sessionFile, sessionPath)) {
@@ -1023,30 +1532,47 @@ export const createPrimeAgentRuntime = (dependencies) => {
       }
       const current = liveSessions.get(sessionID);
       if (current) {
-        current.messages = Array.isArray(attached?.snapshot?.messages)
-          ? attached.snapshot.messages.slice(-MAX_LIVE_MESSAGES)
-          : current.messages;
-        const streamingMessage = attached?.snapshot?.summary?.streamingMessage;
-        if (streamingMessage) current.messages = replaceOrAppendMessage(current.messages, streamingMessage);
-        current.toolExecutions.clear();
-        current.streamingContent = streamingMessage
-          ? { messageIdentity: messageIdentity(streamingMessage), contentIndex: Math.max(0, (streamingMessage.content?.length ?? 1) - 1) }
-          : null;
-        current.attachedGeneration = connectionGeneration;
-        current.attachingGeneration = 0;
-        observeEventPosition(
-          current,
-          attached?.snapshot?.lastEventCursor ?? attached?.lastEventCursor,
-          attached?.snapshot?.lastEventSequence ?? attached?.lastEventSequence,
-        );
+        const streamedSnapshotID = asString(attached?.snapshotStream?.id);
+        if (!streamedSnapshotID) {
+          current.messages = Array.isArray(attached?.snapshot?.messages)
+            ? attached.snapshot.messages.slice(-MAX_LIVE_MESSAGES)
+            : current.messages;
+          const streamingMessage = attached?.snapshot?.summary?.streamingMessage;
+          if (streamingMessage) current.messages = replaceOrAppendMessage(current.messages, streamingMessage);
+          current.toolExecutions.clear();
+          current.streamingContent = streamingMessage
+            ? { messageIdentity: messageIdentity(streamingMessage), contentIndex: Math.max(0, (streamingMessage.content?.length ?? 1) - 1) }
+            : null;
+          current.attachedGeneration = connectionGeneration;
+          current.attachingGeneration = 0;
+          observeEventPosition(
+            current,
+            attached?.snapshot?.lastEventCursor ?? attached?.lastEventCursor,
+            attached?.snapshot?.lastEventSequence ?? attached?.lastEventSequence,
+          );
+        } else {
+          if (current.attachedGeneration !== connectionGeneration) {
+            current.attachingGeneration = connectionGeneration;
+          }
+          await ensureSessionSnapshotWaiter(current, streamedSnapshotID);
+          const finalized = liveSessions.get(sessionID);
+          if (!finalized || finalized.attachedGeneration !== connectionGeneration) {
+            throw new Error('Prime Agent session snapshot did not complete');
+          }
+          if (finalized.completedSnapshotID === streamedSnapshotID) {
+            finalized.completedSnapshotID = null;
+          }
+        }
       }
+
       if (options.remember !== false) rememberAttachment(sessionID, sessionPath ?? normalized.sessionFile);
       return normalized;
     } catch (error) {
       const current = liveSessions.get(sessionID);
       if (current?.attachingGeneration === connectionGeneration) {
         current.attachingGeneration = 0;
-        delete current.snapshotMessages;
+        if (current.snapshotWaiter) failSessionSnapshot(current, current.snapshotWaiter.id, error);
+        delete current.snapshotAssembly;
       }
       throw error;
     }
@@ -1164,6 +1690,7 @@ export const createPrimeAgentRuntime = (dependencies) => {
 
   const sendPrompt = async ({ sessionID, sessionPath, prompt }) => {
     const summary = await attachSession(sessionID, sessionPath);
+    assertSessionMutationAllowed(summary.activeSessionID);
     await request({
       type: 'prompt',
       activeSessionId: summary.activeSessionID,
@@ -1174,8 +1701,81 @@ export const createPrimeAgentRuntime = (dependencies) => {
     publishSessionChanged(sessionID, { immediate: true, catalogChanged: true });
   };
 
+  const forkSession = async ({
+    sessionID,
+    sessionPath,
+    entryID,
+    position,
+    sessionPathForID,
+    selectedText = null,
+  }) => {
+    const source = await attachSession(sessionID, sessionPath);
+    if (pendingSessionForks.has(source.activeSessionID)) {
+      throw new Error('Prime Agent session fork is already in progress');
+    }
+    const forkState = {
+      sourceSessionID: sessionID,
+      activeSessionID: source.activeSessionID,
+      sessionPathForID,
+      selectedText,
+      startedAt: new Date().toISOString(),
+      candidate: null,
+      candidateMessages: null,
+      replacement: null,
+      snapshotPromise: null,
+      resolveSnapshot: null,
+      snapshotID: null,
+      canonicalizationPromise: null,
+      canonicalizationError: null,
+      canonicalExported: false,
+      pendingExportPath: null,
+      switchCancelled: false,
+      abandonPromise: null,
+      refreshCandidate: false,
+      forkSucceeded: false,
+    };
+    pendingSessionForks.set(source.activeSessionID, forkState);
+    trimOldestEntries(pendingSessionForks, MAX_PENDING_SESSION_FORKS);
+    let retainForLateResult = false;
+    try {
+      const result = await request({
+        type: 'fork',
+        activeSessionId: source.activeSessionID,
+        entryId: entryID,
+        position,
+      });
+      if (result?.cancelled === true) {
+        return { session: source, selectedText: null, cancelled: true };
+      }
+      forkState.forkSucceeded = true;
+      if (typeof result?.selectedText === 'string') forkState.selectedText = result.selectedText;
+
+      const replacement = await canonicalizeForkReplacement(forkState);
+      return {
+        session: replacement,
+        selectedText: forkState.selectedText,
+        cancelled: false,
+      };
+    } catch (error) {
+      const forkMayHaveApplied = forkState.forkSucceeded
+        || forkState.candidate !== null
+        || error?.ambiguous === true;
+      if (forkMayHaveApplied && error && typeof error === 'object') {
+        error.ambiguous = true;
+        if (error.code === 'connection-closed') error.code = 'command-result-uncertain';
+      }
+      retainForLateResult = forkMayHaveApplied;
+      throw error;
+    } finally {
+      if (!retainForLateResult && pendingSessionForks.get(source.activeSessionID) === forkState) {
+        pendingSessionForks.delete(source.activeSessionID);
+      }
+    }
+  };
+
   const abortSession = async ({ sessionID, sessionPath }) => {
     const summary = await attachSession(sessionID, sessionPath);
+    assertSessionMutationAllowed(summary.activeSessionID);
     await request({ type: 'abort', activeSessionId: summary.activeSessionID });
     publishSessionChanged(sessionID, { immediate: true });
   };
@@ -1215,12 +1815,14 @@ export const createPrimeAgentRuntime = (dependencies) => {
 
   const setSessionModel = async ({ sessionID, sessionPath, provider, modelID }) => {
     const summary = await attachSession(sessionID, sessionPath);
+    assertSessionMutationAllowed(summary.activeSessionID);
     await request({ type: 'set_model', activeSessionId: summary.activeSessionID, provider, modelId: modelID });
     publishSessionChanged(sessionID, { immediate: true });
   };
 
   const setSessionThinkingLevel = async ({ sessionID, sessionPath, level }) => {
     const summary = await attachSession(sessionID, sessionPath);
+    assertSessionMutationAllowed(summary.activeSessionID);
     await request({ type: 'set_thinking_level', activeSessionId: summary.activeSessionID, level });
     publishSessionChanged(sessionID, { immediate: true });
   };
@@ -1268,6 +1870,7 @@ export const createPrimeAgentRuntime = (dependencies) => {
     hello = null;
     invalidateAttachmentAuthority();
     attachmentPromises.clear();
+    pendingSessionForks.clear();
     draftControlsCache.clear();
     draftControlsPromises.clear();
     clearPending(new Error('Prime Agent runtime stopped'));
@@ -1285,6 +1888,7 @@ export const createPrimeAgentRuntime = (dependencies) => {
     getDraftControls,
     createSession,
     sendPrompt,
+    forkSession,
     abortSession,
     getSessionControls,
     setSessionModel,

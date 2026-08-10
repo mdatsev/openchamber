@@ -32,6 +32,7 @@ import type { SessionNode } from './types';
 import { formatProjectLabel, formatSessionCompactDateLabel, formatSessionDateLabel, normalizePath, renderHighlightedText } from './utils';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useSessionDisplayStore } from '@/stores/useSessionDisplayStore';
+import { useUIStore } from '@/stores/useUIStore';
 import { getGitHubPrStatusKey, usePrVisualSummary } from '@/stores/useGitHubPrStatusStore';
 import { useSessionUnseenCount } from '@/sync/notification-store';
 import { useSessionMultiSelectStore } from '@/stores/useSessionMultiSelectStore';
@@ -390,7 +391,9 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
         return null;
     }
   }, [prSummary, t]);
-  const isActive = useSessionUIStore((state) => state.currentSessionId === session.id);
+  const isCurrentSession = useSessionUIStore((state) => state.currentSessionId === session.id);
+  const isPrimeTranscriptSelected = useUIStore((state) => state.primeTranscriptTarget !== null);
+  const isActive = isCurrentSession && !isPrimeTranscriptSelected;
 
   const sessionDirectory =
     normalizePath((session as Session & { directory?: string | null }).directory ?? null)

@@ -66,6 +66,7 @@ export const createVSCodeAPIs = (): RuntimeAPIs => ({
     setSessionThinkingLevel: primeControlsUnsupported,
     createSession: primeUnsupported,
     sendPrompt: primeUnsupported,
+    forkSession: primeUnsupported,
     abortSession: primeUnsupported,
     subscribe: () => ({ close: () => {} }),
   },

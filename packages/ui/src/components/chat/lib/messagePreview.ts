@@ -7,8 +7,11 @@ export function getFullText(parts: Part[]): string {
         .join('\n');
 }
 
-export function getMessagePreview(parts: Part[], maxLength = 80): string {
-    const full = getFullText(parts);
-    const singleLine = full.replace(/\n/g, ' ');
+export function getTextPreview(text: string, maxLength = 80): string {
+    const singleLine = text.replace(/\n/g, ' ');
     return singleLine.length > maxLength ? `${singleLine.slice(0, maxLength)}…` : singleLine;
+}
+
+export function getMessagePreview(parts: Part[], maxLength = 80): string {
+    return getTextPreview(getFullText(parts), maxLength);
 }

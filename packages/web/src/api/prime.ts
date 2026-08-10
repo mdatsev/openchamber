@@ -44,6 +44,7 @@ const transcriptSchema = z.object({
   branchEntryCount: z.number().int().nonnegative(),
   items: z.array(z.object({
     id: z.string(),
+    branchEntryID: z.string().nullable(),
     role: z.enum(['user', 'assistant', 'reasoning', 'tool', 'system']),
     text: z.string(),
     timestamp: z.string().nullable(),
@@ -87,6 +88,13 @@ const createSessionSchema = z.object({
 const acceptedSchema = z.object({
   schemaVersion: z.literal(1),
   accepted: z.literal(true),
+});
+
+const branchSessionSchema = z.object({
+  schemaVersion: z.literal(1),
+  session: sessionSummarySchema,
+  selectedText: z.string().nullable(),
+  cancelled: z.boolean(),
 });
 
 const thinkingLevelSchema = z.enum(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
@@ -309,6 +317,20 @@ export const createWebPrimeAPI = (): PrimeAPI => ({
         body: { prompt: input.prompt },
       },
     );
+  },
+
+  async forkSession(input, signal) {
+    const result = await requestPrimeSession(
+      input.identity, 'fork', 'Failed to fork Prime Agent session', signal, {
+        method: 'POST',
+        body: { entryID: input.entryID },
+        schema: branchSessionSchema,
+      },
+    );
+    return {
+      ...result,
+      session: withIdentity(result.session, input.identity.runtimeKey),
+    };
   },
 
   async abortSession(identity, signal) {

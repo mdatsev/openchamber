@@ -1,9 +1,12 @@
 const MAX_CATALOG_FILES = 5_000;
+const MAX_ARTIFACT_DIRECTORIES = 10_000;
+const MAX_ARTIFACT_METADATA_BYTES = 16 * 1024 * 1024;
 const CATALOG_MAX_AGE_MS = 10_000;
 const SESSION_PREVIEW_BYTES = 64 * 1024;
 const SESSION_TAIL_BYTES = 64 * 1024;
 const MAX_TRANSCRIPT_BYTES = 16 * 1024 * 1024;
 const MAX_TRANSCRIPT_TEXT_BYTES = 8 * 1024 * 1024;
+const MAX_LIVE_TRANSCRIPT_SOURCE_BYTES = 4 * 1024 * 1024;
 const MAX_TRANSCRIPT_ITEMS = 5_000;
 const MAX_SESSION_RECORDS = 50_000;
 const MAX_DIRECTORY_LENGTH = 4_096;
@@ -132,7 +135,7 @@ const parsePreviewRecords = (source, completeAtEnd) => {
   return records;
 };
 
-const readSessionSummary = async ({ filePath, fsPromises, expectedSessionID, expectedStats }) => {
+const readSessionSummary = async ({ filePath, fsPromises, expectedSessionID, expectedStats, allowChild = false }) => {
   const fileHandle = await fsPromises.open(filePath, 'r');
   try {
     const stats = await fileHandle.stat();
@@ -148,7 +151,7 @@ const readSessionSummary = async ({ filePath, fsPromises, expectedSessionID, exp
     if (!isValidSessionHeader(header, expectedSessionID)) {
       throw new Error('Invalid Prime Agent session header');
     }
-    if (!isRootSessionHeader(header)) return null;
+    if (!isRootSessionHeader(header) && !allowChild) return null;
 
     let firstMessage = '';
     for (const record of firstRecords.slice(1)) {
@@ -180,6 +183,7 @@ const readSessionSummary = async ({ filePath, fsPromises, expectedSessionID, exp
 
     return {
       signature: fileSignature(stats),
+      header,
       summary: {
         id: header.id,
         title: resolveSessionTitle(sessionName, firstMessage),
@@ -285,6 +289,148 @@ const listPrimeSessions = async ({ sessionDirectory, fsPromises, path, summaryCa
       .map((candidate) => candidate.summary.id)
       .sort(),
   };
+};
+
+const isPathWithin = (path, rootPath, candidatePath) => {
+  const relative = path.relative(rootPath, candidatePath);
+  return relative.length > 0 && !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative);
+};
+
+const listArtifactChildSessions = async ({ sessionDirectory, rootSessionIDs, fsPromises, path }) => {
+  const artifactDirectory = path.join(path.dirname(sessionDirectory), 'session-artifacts');
+  let artifactRoots;
+  try {
+    artifactRoots = await fsPromises.readdir(artifactDirectory, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === 'ENOENT') return [];
+    throw error;
+  }
+
+  const latestRecordsByPath = new Map();
+  let visitedDirectoryCount = 0;
+  let metadataBytesRead = 0;
+  for (const artifactRoot of artifactRoots) {
+    if (!artifactRoot.isDirectory() || !rootSessionIDs.has(artifactRoot.name)) continue;
+    const rootPath = path.join(artifactDirectory, artifactRoot.name);
+    const pendingDirectories = [rootPath];
+    while (pendingDirectories.length > 0 && visitedDirectoryCount < MAX_ARTIFACT_DIRECTORIES) {
+      const directory = pendingDirectories.pop();
+      visitedDirectoryCount += 1;
+      let entries;
+      try {
+        entries = await fsPromises.readdir(directory, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const entry of entries) {
+        const entryPath = path.join(directory, entry.name);
+        if (entry.isDirectory()) {
+          pendingDirectories.push(entryPath);
+          continue;
+        }
+        if (!entry.isFile() || entry.name !== 'rlm-subagents.jsonl') continue;
+        let handle;
+        try {
+          const before = await fsPromises.lstat(entryPath);
+          if (!before.isFile() || before.isSymbolicLink()) continue;
+          if (before.size > MAX_ARTIFACT_METADATA_BYTES - metadataBytesRead) continue;
+          handle = await fsPromises.open(entryPath, 'r');
+          const after = await handle.stat();
+          if (!after.isFile() || (before.ino !== 0 && (before.dev !== after.dev || before.ino !== after.ino))) continue;
+          const source = await readWindow(handle, 0, after.size);
+          metadataBytesRead += after.size;
+          for (const line of source.split('\n')) {
+            if (!line.trim()) continue;
+            let record;
+            try {
+              record = parseJsonObject(line);
+            } catch {
+              continue;
+            }
+            if (record.type !== 'rlm_subagent') continue;
+            const sessionFile = asNonEmptyString(record.sessionFile);
+            if (!sessionFile) continue;
+            const resolvedSessionFile = path.resolve(sessionFile);
+            if (!isPathWithin(path, rootPath, resolvedSessionFile)) continue;
+            latestRecordsByPath.set(resolvedSessionFile, { record, rootID: artifactRoot.name, rootPath });
+            if (latestRecordsByPath.size >= MAX_CATALOG_FILES) break;
+          }
+        } catch {
+          // One damaged artifact registry must not hide unrelated sessions.
+        } finally {
+          await handle?.close().catch(() => {});
+        }
+        if (latestRecordsByPath.size >= MAX_CATALOG_FILES || metadataBytesRead >= MAX_ARTIFACT_METADATA_BYTES) break;
+      }
+      if (latestRecordsByPath.size >= MAX_CATALOG_FILES || metadataBytesRead >= MAX_ARTIFACT_METADATA_BYTES) break;
+    }
+    if (latestRecordsByPath.size >= MAX_CATALOG_FILES || metadataBytesRead >= MAX_ARTIFACT_METADATA_BYTES) break;
+  }
+
+  const candidates = [];
+  for (const [sessionFile, metadata] of latestRecordsByPath) {
+    if (metadata.record.status === 'deleted') continue;
+    const extension = path.extname(sessionFile);
+    const sessionID = extension === '.jsonl' ? path.basename(sessionFile, extension) : null;
+    if (!sessionID || !PRIME_SESSION_ID_PATTERN.test(sessionID)) continue;
+    try {
+      const stats = await fsPromises.lstat(sessionFile);
+      if (!stats.isFile() || stats.isSymbolicLink()) continue;
+      const result = await readSessionSummary({
+        filePath: sessionFile,
+        fsPromises,
+        expectedSessionID: sessionID,
+        expectedStats: stats,
+        allowChild: true,
+      });
+      if (!result || isRootSessionHeader(result.header)) continue;
+      const parentPath = asNonEmptyString(result.header.parentSession);
+      const parentExtension = parentPath ? path.extname(parentPath) : '';
+      const parentID = parentExtension === '.jsonl' ? path.basename(parentPath, parentExtension) : null;
+      const depth = result.header.rlmDepth;
+      if (
+        !parentID
+        || !PRIME_SESSION_ID_PATTERN.test(parentID)
+        || !Number.isSafeInteger(depth)
+        || depth < 1
+        || (asNonEmptyString(metadata.record.parentSessionId) ?? parentID) !== parentID
+      ) continue;
+      if (depth > 1 && !isPathWithin(path, metadata.rootPath, path.resolve(parentPath))) continue;
+      candidates.push({
+        ...result.summary,
+        title: resolveSessionTitle(asNonEmptyString(metadata.record.sessionName), result.summary.title),
+        parentID,
+        depth,
+        activity: metadata.record.status === 'running' ? 'working' : 'idle',
+        isSessionActive: false,
+        activeSessionID: null,
+        sessionFile,
+        isChild: true,
+        raw: { status: metadata.record.status },
+        rootID: metadata.rootID,
+      });
+    } catch {
+      // Artifact metadata is best-effort per child.
+    }
+  }
+
+  const byID = new Map(candidates.map((candidate) => [candidate.id, candidate]));
+  const hasValidAncestry = (candidate) => {
+    let current = candidate;
+    const visited = new Set();
+    while (current.parentID !== current.rootID) {
+      if (visited.has(current.id)) return false;
+      visited.add(current.id);
+      const parent = byID.get(current.parentID);
+      if (!parent || parent.rootID !== current.rootID || parent.depth !== current.depth - 1) return false;
+      current = parent;
+    }
+    return current.depth === 1;
+  };
+
+  return candidates
+    .filter(hasValidAncestry)
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || left.id.localeCompare(right.id));
 };
 
 const createRouteError = (statusCode, code, message) => Object.assign(new Error(message), { statusCode, code });
@@ -432,7 +578,7 @@ const normalizeUsage = (usage) => {
   };
 };
 
-const transcriptItemsFromBranch = (branch) => {
+const transcriptItemsFromBranch = (branch, options = {}) => {
   const transcriptItems = [];
   const toolItemIndexes = new Map();
   let transcriptTextBytes = 0;
@@ -454,6 +600,7 @@ const transcriptItemsFromBranch = (branch) => {
       throw createRouteError(413, 'transcript-too-large', 'Prime Agent transcript is too large to display');
     }
     transcriptItems.push({
+      branchEntryID: null,
       streaming: false,
       toolCallID: null,
       toolInput: null,
@@ -481,7 +628,8 @@ const transcriptItemsFromBranch = (branch) => {
 
   for (let entryIndex = 0; entryIndex < branch.length; entryIndex += 1) {
     const entry = branch[entryIndex];
-    const entryID = typeof entry.id === 'string' ? entry.id : `entry-${entryIndex}`;
+    const storedEntryID = typeof entry.id === 'string' && entry.id.trim() ? entry.id : null;
+    const entryID = storedEntryID ?? `entry-${entryIndex}`;
     const timestamp = typeof entry.timestamp === 'string'
       ? entry.timestamp.slice(0, MAX_TIMESTAMP_LENGTH)
       : null;
@@ -499,7 +647,16 @@ const transcriptItemsFromBranch = (branch) => {
       const itemMetadata = currentMetadata();
       if (message.role === 'user') {
         const text = extractTextContent(message.content);
-        if (text) appendItem({ id: `${entryID}:user`, role: 'user', text, timestamp, label: null, isError: false, ...itemMetadata });
+        if (text) appendItem({
+          id: `${entryID}:user`,
+          branchEntryID: options.actionableEntries === true ? storedEntryID : null,
+          role: 'user',
+          text,
+          timestamp,
+          label: null,
+          isError: false,
+          ...itemMetadata,
+        });
         continue;
       }
       if (message.role === 'assistant') {
@@ -726,8 +883,27 @@ const summaryFromLiveSession = (liveSummary, fallbackTitle = null) => ({
   depth: liveSummary.depth ?? 0,
 });
 
+const selectRecentLiveMessages = (messages) => {
+  const selected = [];
+  let selectedBytes = 0;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    let messageBytes;
+    try {
+      messageBytes = Buffer.byteLength(JSON.stringify(messages[index]), 'utf8');
+    } catch {
+      continue;
+    }
+    if (messageBytes > MAX_LIVE_TRANSCRIPT_SOURCE_BYTES) continue;
+    if (selectedBytes + messageBytes > MAX_LIVE_TRANSCRIPT_SOURCE_BYTES) break;
+    selected.unshift(messages[index]);
+    selectedBytes += messageBytes;
+  }
+  return selected;
+};
+
 const transcriptFromLiveSession = (live, fallbackTranscript = null) => {
-  const liveItems = transcriptItemsFromMessages(live.messages, live.toolExecutions, live.streamingContent);
+  const recentMessages = selectRecentLiveMessages(live.messages);
+  const liveItems = transcriptItemsFromMessages(recentMessages, live.toolExecutions, live.streamingContent);
   const items = fallbackTranscript ? [...fallbackTranscript.items] : [];
   const idIndexes = new Map(items.map((item, index) => [item.id, index]));
   const itemIndexes = new Map();
@@ -747,7 +923,10 @@ const transcriptFromLiveSession = (live, fallbackTranscript = null) => {
   for (const item of liveItems) {
     const matchingIDIndex = idIndexes.get(item.id);
     if (matchingIDIndex !== undefined) {
-      items[matchingIDIndex] = item;
+      items[matchingIDIndex] = {
+        ...item,
+        branchEntryID: items[matchingIDIndex].branchEntryID,
+      };
       continue;
     }
     const identity = transcriptItemIdentity(item);
@@ -770,7 +949,10 @@ const transcriptFromLiveSession = (live, fallbackTranscript = null) => {
       }
       items.push(item);
     } else {
-      items[existingIndex] = item;
+      items[existingIndex] = {
+        ...item,
+        branchEntryID: items[existingIndex].branchEntryID,
+      };
     }
   }
   return {
@@ -859,7 +1041,7 @@ const readPrimeTranscript = async ({ sessionID, sessionDirectory, fsPromises, pa
     sourceVersion: version,
     totalEntryCount: entries.length,
     branchEntryCount: activeBranch.length,
-    items: transcriptItemsFromBranch(activeBranch),
+    items: transcriptItemsFromBranch(activeBranch, { actionableEntries: true }),
   };
 };
 
@@ -882,6 +1064,10 @@ export const registerPrimeAgentRoutes = (app, dependencies) => {
   let catalogCacheTimestamp = 0;
   let catalogDirectorySignature = null;
   let catalogLoad = null;
+  let artifactCatalogCache = null;
+  let artifactCatalogCacheKey = null;
+  let artifactCatalogTimestamp = 0;
+  let artifactCatalogLoad = null;
   const sameResolvedPath = (left, right) => Boolean(
     left && right && path.resolve(left) === path.resolve(right),
   );
@@ -917,6 +1103,29 @@ export const registerPrimeAgentRoutes = (app, dependencies) => {
       return catalogCache;
     } finally {
       catalogLoad = null;
+    }
+  };
+
+  const getArtifactCatalog = async (catalog = null) => {
+    const resolvedCatalog = catalog ?? await getCatalog();
+    const rootSessionIDs = new Set(resolvedCatalog.sessions.map((session) => session.id));
+    const cacheKey = [...rootSessionIDs].sort().join('\0');
+    if (
+      artifactCatalogCache
+      && artifactCatalogCacheKey === cacheKey
+      && Date.now() - artifactCatalogTimestamp < CATALOG_MAX_AGE_MS
+    ) {
+      return artifactCatalogCache;
+    }
+    if (artifactCatalogLoad) return artifactCatalogLoad;
+    artifactCatalogLoad = listArtifactChildSessions({ sessionDirectory, rootSessionIDs, fsPromises, path });
+    try {
+      artifactCatalogCache = await artifactCatalogLoad;
+      artifactCatalogCacheKey = cacheKey;
+      artifactCatalogTimestamp = Date.now();
+      return artifactCatalogCache;
+    } finally {
+      artifactCatalogLoad = null;
     }
   };
 
@@ -964,13 +1173,14 @@ export const registerPrimeAgentRoutes = (app, dependencies) => {
     return transcript;
   };
   const resolveAuthorizedSessionPath = async (sessionID) => {
-    try {
-      await readStoredTranscript(sessionID);
-      return getSessionPath(sessionID);
-    } catch (error) {
-      if (error?.statusCode !== 404 || !await getAuthorizedLiveChild(sessionID)) throw error;
-      return null;
-    }
+    const sessionPath = getSessionPath(sessionID);
+    const catalog = await getCatalog();
+    if (catalog.sessions.some((session) => session.id === sessionID)) return sessionPath;
+    const artifactChild = (await getArtifactCatalog(catalog)).find((session) => session.id === sessionID);
+    if (artifactChild?.sessionFile) return artifactChild.sessionFile;
+    const child = await getAuthorizedLiveChild(sessionID);
+    if (child?.sessionFile) return child.sessionFile;
+    throw createRouteError(404, 'session-not-found', 'Prime Agent session not found');
   };
 
   const requireAllowedOrigin = async (req, res) => {
@@ -1073,6 +1283,13 @@ export const registerPrimeAgentRoutes = (app, dependencies) => {
         activity: 'idle',
         interactive: runtimeStatus?.interactive === true,
       }]));
+      const artifactChildren = await getArtifactCatalog(catalog);
+      for (const child of artifactChildren) {
+        sessionsByID.set(child.id, {
+          ...summaryFromLiveSession(child),
+          interactive: runtimeStatus?.interactive === true,
+        });
+      }
       for (const liveSession of liveSessions.filter((session) => !session.isChild)) {
         const current = sessionsByID.get(liveSession.id);
         if (!current) continue;
@@ -1257,6 +1474,43 @@ export const registerPrimeAgentRoutes = (app, dependencies) => {
       (input) => primeAgentRuntime.setSessionThinkingLevel(input),
       { level },
     );
+  });
+
+  app.post('/api/prime/sessions/:sessionId/fork', parsePromptJSON, async (req, res) => {
+    if (!await requireAllowedOrigin(req, res)) return;
+    const entryID = typeof req.body?.entryID === 'string' && PRIME_ENTRY_ID_PATTERN.test(req.body.entryID)
+      ? req.body.entryID
+      : null;
+    if (!entryID) {
+      return res.status(400).json({ schemaVersion: 1, error: 'Prime Agent fork target is invalid', code: 'invalid-fork-target' });
+    }
+    return await withAuthorizedSession(req, res, 'Failed to fork Prime Agent session', async (sessionID, sessionPath) => {
+      if (!sessionPath) {
+        return res.status(409).json({ schemaVersion: 1, error: 'Prime Agent child sessions cannot be forked here', code: 'unsupported' });
+      }
+      const authorizedTranscript = await readStoredTranscript(sessionID);
+      const authorizedEntry = authorizedTranscript?.items.find(
+        (item) => item.role === 'user' && item.branchEntryID === entryID,
+      ) ?? null;
+      if (!authorizedEntry) {
+        return res.status(409).json({ schemaVersion: 1, error: 'Prime Agent fork target is no longer active', code: 'stale-fork-target' });
+      }
+      const result = await primeAgentRuntime.forkSession({
+        sessionID,
+        sessionPath,
+        entryID,
+        position: 'before',
+        selectedText: authorizedEntry.text,
+        sessionPathForID: getSessionPath,
+      });
+      catalogCacheTimestamp = 0;
+      return res.json({
+        schemaVersion: 1,
+        session: summaryFromLiveSession(result.session),
+        selectedText: result.selectedText,
+        cancelled: result.cancelled,
+      });
+    });
   });
 
   app.post('/api/prime/sessions/:sessionId/abort', async (req, res) => {

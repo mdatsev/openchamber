@@ -166,13 +166,14 @@ export function useComposerDraft(options: ComposerDraftOptions): ComposerDraftCo
 
     // A draft deleted elsewhere (session deleted, drafts cleared) clears the
     // composer if it is the one on screen.
-    React.useEffect(() => subscribeChatDraftDeletion((deleted) => {
+    React.useEffect(() => subscribeChatDraftDeletion((deleted, expectedText) => {
         const deletedKey = getChatDraftIdentityKey(deleted);
         // Record the empty signature so a queued write does not resurrect it.
         lastPersistedRef.current.set(deletedKey, draftSignature('', []));
 
         const current = currentIdentityRef.current;
         if (!current || getChatDraftIdentityKey(current) !== deletedKey) return;
+        if (expectedText !== undefined && messageRef.current !== expectedText) return;
 
         clearPending();
         skipNextPersistRef.current = true;

@@ -7,6 +7,10 @@ Use this doc when you ask an agent to change tool/header/description behavior.
 ## High-level flow
 
 - Message parts are rendered from `MessageBody.tsx`.
+- User-message chrome and its timestamp/copy/revert/fork/pin action row are
+  harness-neutral in `../UserMessage.tsx`. OpenCode supplies SDK-part content
+  and mutations; Prime supplies its own transcript text and only the mutations
+  its daemon can perform truthfully.
 - There are two tool rendering paths:
   - **Static grouped tools** -> `StaticToolRow` in `ProgressiveGroup.tsx`
   - **Expandable tools** -> `ToolPart.tsx`

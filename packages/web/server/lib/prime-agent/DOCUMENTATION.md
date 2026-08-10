@@ -35,9 +35,16 @@ Prime child agents remain Prime-owned sessions. Their durable `sessionId` and
 `activeSessionId` values are routing aliases only. Catalog responses include a
 child only when its complete parent chain reaches a saved root whose daemon
 path equals OpenChamber's canonical root path. Child filesystem paths and RLM
-node IDs are never exposed. Selecting a child lazily attaches that child, so its
-own transcript and events stream independently without injecting it into
-OpenCode session state.
+node IDs are never exposed. Completed children may be **inactive** (their worker
+has been released and no active routing alias exists) while their transcript is
+still durable and discoverable; this differs from **idle**, which means a
+resident worker is attached but has no turn in progress. Selecting an inactive
+child reopens its server-authorized artifact as a resident Prime session, then
+attaches and waits for its complete chunked snapshot before transcript or
+context refresh. Its own events stream independently without injecting it into
+OpenCode session state. Root and child authorization comes from the validated catalog
+and complete live ancestry rather than requiring a full transcript parse;
+actions that target a stored branch entry perform their own full revalidation.
 
 Live attachment authority is scoped to the current daemon socket generation.
 Cached messages survive a disconnect for continuity, but they are not served as
@@ -53,18 +60,32 @@ a fresh authoritative snapshot.
 
 Prime events carry `{ generation, sequence }` cursors. Duplicate events and
 events from retired generations are ignored. A gap inside the current
-generation revokes live authority and requests a full attachment snapshot;
-snapshot replacement remains authoritative when incremental replay is not
-available.
+generation revokes live authority and requests a full attachment snapshot.
+Chunked snapshots are assembled by snapshot ID with contiguous indexes and
+verified chunk/message totals. Slim attach responses never install their empty
+placeholder over a pending stream; only a complete snapshot becomes live
+authority, while disconnect, failure, or an incomplete stream revokes it.
 
-Create, prompt, abort, model selection, and thinking-level selection are
-mutations. Every daemon mutation response is acknowledged with `ack_result`,
+Create, prompt, abort, model selection, thinking-level selection, and session
+fork are mutations. Every daemon mutation response is acknowledged with `ack_result`,
 including a late response after the browser-facing request timed out. A
 disconnect or timeout after dispatch is reported as ambiguous and is never
 automatically replayed; a late successful response publishes reconciliation for
 the affected attached root. If session creation succeeded before the initial
 prompt became ambiguous, the error carries that session identity so the UI can
-open it rather than create a duplicate.
+open it rather than create a duplicate. A fork keeps the daemon's private active
+routing alias but creates a new durable root identity. Only an action-scoped
+pending fork may perform that rekey. Prime can initially defer an empty branch
+to a noncanonical filename, so the runtime records that replacement without
+exposing it. Other source mutations are fenced while that private alias belongs
+to the pending fork. The runtime exports to an unpredictable same-directory
+temporary file, verifies its regular-file header identity, copies it to the
+canonical path with no-replace semantics, switches the same private worker to
+that canonical file, and only then moves attachment and cache ownership
+atomically. Export and switch are part of the same mutation state machine and
+any post-fork interruption remains ambiguous; late replacement or mutation
+results continue reconciliation and refresh the catalog. Unsolicited
+root-identity replacement fails closed.
 
 ## HTTP and event contract
 
@@ -82,6 +103,7 @@ Prime's internal daemon frames:
 - `POST /api/prime/sessions/:sessionId/controls`
 - `POST /api/prime/sessions/:sessionId/model`
 - `POST /api/prime/sessions/:sessionId/thinking-level`
+- `POST /api/prime/sessions/:sessionId/fork`
 - `POST /api/prime/sessions/:sessionId/abort`
 
 Mutation routes, including explicit attachment, enforce the normal
@@ -97,6 +119,17 @@ The client throttles transcript refreshes during streaming and refreshes
 immediately when a session becomes idle. Event-stream readiness is also a
 reconciliation edge: clients refetch status, catalog, and the selected
 transcript to repair events missed while disconnected.
+
+Stored active-branch user items expose a separate opaque `branchEntryID`; the UI
+never parses rendered item IDs or matches prompt text. Fork requests accept only
+that entry ID, revalidate that it is still a user entry on the authorized saved
+root's active branch, and invoke Prime's native editable fork (`position: before`).
+The source transcript remains unchanged; the UI opens the returned new composite
+identity and seeds the selected user text into its composer. Live-only rows
+without an authoritative saved entry omit the action, as do daemon-unavailable,
+currently working, and child-session rows. Prime has no equivalent
+to OpenCode's reversible session revert and workspace-diff rollback, so the
+shared Revert action is intentionally not wired to a misleading mutation.
 
 Client session ownership is the composite `{ runtimeKey, harness, sessionID }`.
 Prime API reads and mutations require that identity, reject runtime mismatch
@@ -156,16 +189,25 @@ session file equals the canonical configured path. A live-list failure fails the
 catalog refresh instead of publishing stored entries as authoritative idle
 state; clients retain their prior runtime-scoped catalog and expose Retry.
 Authorized live descendants are appended beneath those roots using durable
-parent IDs. A missing or cyclic parent chain is omitted rather than presented
-as an unrelated root.
+parent IDs. Completed descendants can disappear from Prime's resident daemon
+list, so discovery also reads bounded `rlm-subagents.jsonl` registries beneath
+each authorized root artifact directory. Every artifact path, session header,
+depth, and complete parent chain is revalidated server-side; deleted, escaped,
+missing, malformed, and cyclic rows are omitted. This recursive catalog is what
+keeps children of children visible without waking every historical worker, and
+artifact paths never cross the browser API boundary.
 
 Transcript reads reconstruct the current Prime branch from entry parent IDs,
-including sessions with multiple root branches. Responses are bounded to 50,000
-source records, 8 MB of rendered text, and 5,000 rendered items. Live daemon
-snapshots take precedence while attached; saved transcripts remain readable
-when the daemon is unavailable, and a failed refresh does not erase an already
-rendered transcript. Stored history is merged with bounded live snapshots so a
-partial live view cannot erase earlier turns; identity and near-timestamp
+including sessions with multiple root branches. Stored responses are bounded to
+50,000 source records, 16 MB of source data, 8 MB of rendered text, and 5,000
+rendered items. An attached session larger than that remains usable through an
+explicit bounded recent live view: the server selects at most 4 MB of recent
+message source while retaining full total/branch counts, and omits an individual
+oversized message rather than turning the whole session into Unavailable. Live
+daemon snapshots take precedence while attached; saved transcripts within the
+bounds remain readable when the daemon is unavailable, and a failed refresh
+does not erase an already rendered transcript. Stored history is merged with
+bounded live snapshots when the fallback is available; identity and near-timestamp
 deduplication prevent the same turn from appearing twice.
 Failure to read an optional stored fallback never suppresses an already
 authoritative live snapshot.

@@ -6,7 +6,6 @@ import {
     DropdownMenu,
     DropdownMenuContent,
     DropdownMenuItem,
-    DropdownMenuLabel,
     DropdownMenuSeparator,
     DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
@@ -18,6 +17,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { Icon } from "@/components/icon/Icon";
 import type { IconName } from "@/components/icon/icons";
 import { ModelPickerList, type ModelPickerEntry, type ModelPickerProvider } from '@/components/model-picker/ModelPickerList';
+import { ModelSelectorTrigger } from '@/components/model-picker/ControlledModelSelector';
 import { useIsVSCodeRuntime } from '@/hooks/useRuntimeAPIs';
 import { isDesktopShell } from '@/lib/desktop';
 import { getAgentColor } from '@/lib/agentColors';
@@ -35,6 +35,7 @@ import { useSync } from '@/sync/use-sync';
 import { useUIStore } from '@/stores/useUIStore';
 import { useModelLists } from '@/hooks/useModelLists';
 import { useIsTextTruncated } from '@/hooks/useIsTextTruncated';
+import { ControlledThinkingSelector } from './ControlledThinkingSelector';
 import { formatEffortLabel, getCycledPrimaryAgentName, isPrimaryMode, type MobileControlsPanel } from './mobileControlsUtils';
 import { getCurrentIntlLocale, useI18n } from '@/lib/i18n';
 import { useOpenCodeReadiness } from '@/hooks/useOpenCodeReadiness';
@@ -378,6 +379,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
     const addRecentAgent = useUIStore((state) => state.addRecentAgent);
     const addRecentEffort = useUIStore((state) => state.addRecentEffort);
     const isModelSelectorOpen = useUIStore((state) => state.isModelSelectorOpen);
+    const isPrimeTranscriptOpen = useUIStore((state) => state.primeTranscriptTarget !== null);
     const setModelSelectorOpen = useUIStore((state) => state.setModelSelectorOpen);
     const setSettingsDialogOpen = useUIStore((state) => state.setSettingsDialogOpen);
     const setSettingsPage = useUIStore((state) => state.setSettingsPage);
@@ -424,7 +426,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         return initial;
     });
     // Use global state for model selector (allows Ctrl+M shortcut)
-    const agentMenuOpen = isModelSelectorOpen;
+    const agentMenuOpen = isModelSelectorOpen && !isPrimeTranscriptOpen;
     const setAgentMenuOpen = setModelSelectorOpen;
     const openAddProviderSettings = React.useCallback(() => {
         setSelectedProvider(ADD_PROVIDER_ID);
@@ -2268,51 +2270,16 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                     <DropdownMenu open={isReady && agentMenuOpen} onOpenChange={isReady ? handleModelMenuOpenChange : undefined}>
                         <TooltipTrigger asChild>
                             <DropdownMenuTrigger asChild>
-                                <div
-                                    className={cn(
-                                        'model-controls__model-trigger flex items-center gap-1.5 cursor-pointer hover:bg-transparent hover:opacity-70 min-w-0',
-                                        buttonHeight
-                                    )}
-                                >
-                                    {!isReady ? (
-                                        <>
-                                            <Icon name="loader-4" className={cn(controlIconSize, 'animate-spin text-muted-foreground flex-shrink-0')} />
-                                            <span className={cn(
-                                                'model-controls__model-label',
-                                                controlTextSize,
-                                                'font-medium whitespace-nowrap text-muted-foreground min-w-0'
-                                            )}>
-                                                {readinessLabel}
-                                            </span>
-                                        </>
-                                    ) : currentProviderId ? (
-                                        <>
-                                            <ProviderLogo
-                                                providerId={currentProviderId}
-                                                className={cn(controlIconSize, 'flex-shrink-0')}
-                                            />
-                                            <Icon name="pencil-ai" className={cn(controlIconSize, 'text-primary/60 hidden')} />
-                                        </>
-                                    ) : (
-                                        <Icon name="pencil-ai" className={cn(controlIconSize, 'text-muted-foreground')} />
-                                    )}
-                                    {isReady && (
-                                        <span
-                                            ref={modelLabelRef}
-                                            key={`${currentProviderId}-${currentModelId}`}
-                                            className={cn(
-                                                'model-controls__model-label overflow-hidden',
-                                                controlTextSize,
-                                                'font-medium whitespace-nowrap text-foreground min-w-0',
-                                                'max-w-[260px]'
-                                            )}
-                                        >
-                                            <span className={cn('marquee-text', isModelLabelTruncated && 'marquee-text--active')}>
-                                                {currentModelDisplayName}
-                                            </span>
-                                        </span>
-                                    )}
-                                </div>
+                                <ModelSelectorTrigger
+                                    providerID={currentProviderId ?? null}
+                                    label={currentModelDisplayName}
+                                    loadingLabel={readinessLabel}
+                                    ready={isReady}
+                                    appearance="composer"
+                                    size={sizeVariant}
+                                    labelRef={modelLabelRef}
+                                    labelTruncated={isModelLabelTruncated}
+                                />
                             </DropdownMenuTrigger>
                         </TooltipTrigger>
                         <DropdownMenuContent
@@ -2381,50 +2348,21 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                         </DropdownMenuContent>
                     </DropdownMenu>
                 ) : (
-                    <button
-                        type="button"
+                    <ModelSelectorTrigger
+                        providerID={currentProviderId ?? null}
+                        label={currentModelDisplayName}
+                        loadingLabel={readinessLabel}
+                        ready={isReady}
+                        mobile={isMobile}
+                        appearance="composer"
+                        size={sizeVariant}
+                        labelRef={modelLabelRef}
+                        labelTruncated={isModelLabelTruncated}
                         onClick={isReady ? () => setActiveMobilePanel('model') : undefined}
                         onTouchStart={isReady ? () => handleLongPressStart('model') : undefined}
                         onTouchEnd={isReady ? handleLongPressEnd : undefined}
                         onTouchCancel={isReady ? handleLongPressEnd : undefined}
-                        disabled={!isReady}
-                        className={cn(
-                            'model-controls__model-trigger flex items-center gap-1.5 min-w-0 focus:outline-none',
-                            isReady ? 'cursor-pointer hover:bg-transparent hover:opacity-70' : 'opacity-60 cursor-not-allowed',
-                            buttonHeight
-                        )}
-                    >
-                        {!isReady ? (
-                            <>
-                                <Icon name="loader-4" className={cn(controlIconSize, 'animate-spin text-muted-foreground flex-shrink-0')} />
-                                <span className="typography-micro font-medium text-muted-foreground min-w-0">
-                                    {readinessLabel}
-                                </span>
-                            </>
-                        ) : (
-                            <>
-                                {currentProviderId ? (
-                                    <ProviderLogo
-                                        providerId={currentProviderId}
-                                        className={cn(controlIconSize, 'flex-shrink-0')}
-                                    />
-                                ) : (
-                                    <Icon name="pencil-ai" className={cn(controlIconSize, 'text-muted-foreground')} />
-                                )}
-                                <span
-                                    ref={modelLabelRef}
-                                    className={cn(
-                                        'model-controls__model-label typography-micro font-medium overflow-hidden min-w-0',
-                                        isMobile ? 'max-w-[120px]' : 'max-w-[220px]',
-                                    )}
-                                >
-                                    <span className={cn('marquee-text', isModelLabelTruncated && 'marquee-text--active')}>
-                                        {currentModelDisplayName}
-                                    </span>
-                                </span>
-                            </>
-                        )}
-                    </button>
+                    />
                 )}
                 {renderModelTooltipContent()}
             </Tooltip>
@@ -2563,94 +2501,27 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             return null;
         }
 
-        const displayVariant = currentVariant ?? t('chat.modelControls.default');
-        const isDefault = !currentVariant;
-        const colorClass = isDefault ? 'text-muted-foreground' : 'text-[color:var(--status-info)]';
-
-        if (isCompact) {
-            return (
-                <button
-                    type="button"
-                    onClick={() => setActiveMobilePanel('variant')}
-                    className={cn(
-                        'model-controls__variant-trigger flex items-center gap-1.5 transition-opacity min-w-0 focus:outline-none',
-                        buttonHeight,
-                        'cursor-pointer hover:bg-transparent hover:opacity-70',
-                    )}
-                >
-                    <Icon name="brain-ai-3" className={cn(controlIconSize, 'flex-shrink-0', colorClass)} />
-                    <span className={cn(
-                        'model-controls__variant-label',
-                        controlTextSize,
-                        'font-medium truncate min-w-0',
-                        isMobile && 'max-w-[60px]',
-                        colorClass
-                    )}>
-                        {displayVariant}
-                    </span>
-                </button>
-            );
-        }
-
         return (
-            <Tooltip delayDuration={600}>
-                <DropdownMenu>
-                    <TooltipTrigger asChild>
-                        <DropdownMenuTrigger asChild>
-                            <div
-                                className={cn(
-                                    'model-controls__variant-trigger flex items-center gap-1.5 transition-colors cursor-pointer hover:bg-transparent hover:opacity-70 min-w-0',
-                                    buttonHeight,
-                                )}
-                            >
-                                <Icon name="brain-ai-3" className={cn(controlIconSize, 'flex-shrink-0', colorClass)} />
-                                <span
-                                    className={cn(
-                                        'model-controls__variant-label',
-                                        controlTextSize,
-                                        'font-medium min-w-0 truncate',
-                                        isDesktop ? 'max-w-[180px]' : undefined,
-                                        colorClass,
-                                    )}
-                                >
-                                    {displayVariant}
-                                </span>
-                            </div>
-                        </DropdownMenuTrigger>
-                    </TooltipTrigger>
-                    <DropdownMenuContent align="end" alignOffset={-40} className="w-[min(180px,calc(100vw-2rem))]">
-                        <DropdownMenuLabel className="typography-ui-header font-semibold text-foreground">{t('chat.modelControls.thinking')}</DropdownMenuLabel>
-                        <DropdownMenuItem className="typography-meta" onSelect={() => handleVariantSelect(undefined)}>
-                            <div className="flex items-center justify-between gap-2 w-full min-w-0">
-                                <span className="typography-meta font-medium text-foreground truncate min-w-0">{t('chat.modelControls.default')}</span>
-                                {isDefault && <Icon name="check" className="size-4 text-primary flex-shrink-0" />}
-                            </div>
-                        </DropdownMenuItem>
-                        {availableVariants.length > 0 && <DropdownMenuSeparator />}
-                        {availableVariants.map((variant) => {
-                            const selected = currentVariant === variant;
-                            const label = variant.charAt(0).toUpperCase() + variant.slice(1);
-                            return (
-                                <DropdownMenuItem
-                                    key={variant}
-                                    className="typography-meta"
-                                    onSelect={() => handleVariantSelect(variant)}
-                                >
-                                    <div className="flex items-center justify-between gap-2 w-full min-w-0">
-                                        <span className="typography-meta font-medium text-foreground truncate min-w-0">{label}</span>
-                                        {selected && <Icon name="check" className="size-4 text-primary flex-shrink-0" />}
-                                    </div>
-                                </DropdownMenuItem>
-                            );
-                        })}
-                    </DropdownMenuContent>
-                </DropdownMenu>
-                <TooltipContent side="top">
-                    <p className="typography-meta">Thinking: {displayVariant}</p>
-                </TooltipContent>
-            </Tooltip>
+            <ControlledThinkingSelector
+                value={currentVariant ?? ''}
+                options={availableVariants}
+                onChange={(value) => handleVariantSelect(value || undefined)}
+                title={t('chat.modelControls.thinking')}
+                defaultLabel={t('chat.modelControls.default')}
+                formatLabel={formatEffortLabel}
+                includeDefault
+                mobile={isCompact}
+                size={sizeVariant}
+                open={isCompact ? activeMobilePanel === 'variant' : undefined}
+                onOpenChange={isCompact ? (open) => {
+                    if (open) setActiveMobilePanel('variant');
+                    else closeMobilePanel();
+                } : undefined}
+                renderMobileOverlay={false}
+            />
         );
     };
+
 
     const renderAgentSelector = () => {
         if (!isCompact) {

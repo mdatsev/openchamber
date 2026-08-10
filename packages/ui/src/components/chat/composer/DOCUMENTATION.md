@@ -106,15 +106,24 @@ and the send path reading the same grammar.
   oldest queued message becomes primary; **inline comments attach to the last
   body the user authored** rather than becoming their own part; PR instructions
   precede the PR diff.
-- `state/useComposerDraft.ts` — a draft belongs to a (runtime, directory,
-  session) identity. Writes are debounced while typing but forced at every edge
-  where the page may stop running, because a pending timer is not a saved
-  draft. Two orderings are load-bearing: the debounced write is skipped once
-  while a draft is being restored, and a deleted draft's empty signature is
-  recorded before a queued write could resurrect it. A successful submission
-  that closes or retargets the draft must also clear `messageRef` synchronously
-  before changing identity; clearing only React state lets the identity-switch
-  flush persist the just-submitted prompt into the next harness or session.
+- `state/useComposerDraft.ts` — OpenCode drafts belong to a (runtime,
+  directory, session) identity, while Prime transcript drafts belong to the
+  harness-owned (runtime, harness, session) identity. The tagged harness key
+  leaves existing OpenCode persistence keys unchanged and never depends on
+  mutable directory presentation metadata. Writes are debounced while typing
+  but forced at every edge where the page may stop running, because a pending
+  timer is not a saved draft. Two orderings are load-bearing: the debounced
+  write is skipped once while a draft is being restored, and a deleted draft's
+  empty signature is recorded before a queued write could resurrect it. A
+  successful submission that closes or retargets the draft must also clear
+  `messageRef` synchronously before changing identity; clearing only React state
+  lets the identity-switch flush persist the just-submitted prompt into the next
+  harness or session. Prime send completion clears the captured draft only when
+  its stored/local text still matches, so a late accepted send cannot erase a
+  newer draft typed after switching away and back. Native Prime editable forks
+  seed their returned selected text directly into the new keyed composer rather
+  than routing it through OpenCode input state; normal draft persistence takes
+  ownership after that composer mounts.
 - `state/useDraftTarget.ts` — the draft can target a directory that does not
   exist yet (a worktree being created). It must survive not appearing in the
   branch list, or the selector snaps back to the project root mid-creation.

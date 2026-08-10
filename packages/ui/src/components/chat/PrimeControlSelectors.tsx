@@ -1,20 +1,37 @@
 import React from 'react';
 
-import { Icon } from '@/components/icon/Icon';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import {
+  ControlledModelSelector,
+  type ControlledModelSelectorLabels,
+} from '@/components/model-picker/ControlledModelSelector';
+import type { ModelPickerEntry } from '@/components/model-picker/ModelPickerList';
 import type { PrimeModel, PrimeSessionControls, PrimeThinkingLevel } from '@/lib/api/types';
+import { useDeviceInfo } from '@/lib/device';
 import { useI18n } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
-import { formatEffortLabel } from './mobileControlsUtils';
-
-const primeModelKey = (provider: string, modelID: string) => JSON.stringify([provider, modelID]);
+import { useUIStore } from '@/stores/useUIStore';
+import { ControlledThinkingSelector } from './ControlledThinkingSelector';
+import { formatEffortLabel, type MobileControlsPanel } from './mobileControlsUtils';
+import {
+  buildPrimeModelPickerCatalog,
+  getNextPrimeThinkingLevel,
+  getPrimeThinkingOptions,
+  PRIME_CYCLE_THINKING_EVENT,
+  PRIME_OPEN_MODEL_SELECTOR_EVENT,
+  primeModelKey,
+  type PrimeControlShortcutScope,
+} from './primeControlModel';
 
 interface PrimeControlSelectorsProps {
   controls: PrimeSessionControls;
   model: PrimeModel | null;
   thinkingLevel: PrimeThinkingLevel;
   disabled: boolean;
+  shortcutScope: PrimeControlShortcutScope;
   className?: string;
+  mobilePanel?: MobileControlsPanel;
+  onMobilePanelChange?: (panel: MobileControlsPanel) => void;
+  onRequestFocus?: () => void;
   onModelChange: (model: PrimeModel) => void;
   onThinkingLevelChange: (level: PrimeThinkingLevel) => void;
 }
@@ -24,67 +41,118 @@ export function PrimeControlSelectors({
   model,
   thinkingLevel,
   disabled,
+  shortcutScope,
   className,
+  mobilePanel,
+  onMobilePanelChange,
+  onRequestFocus,
   onModelChange,
   onThinkingLevelChange,
 }: PrimeControlSelectorsProps) {
   const { t } = useI18n();
+  const { isMobile: deviceIsMobile } = useDeviceInfo();
+  const uiIsMobile = useUIStore((state) => state.isMobile);
+  const [modelSelectorOpen, setModelSelectorOpen] = React.useState(false);
+  const isMobile = deviceIsMobile || uiIsMobile;
+  const catalog = React.useMemo(() => buildPrimeModelPickerCatalog(controls.models), [controls.models]);
+  const thinkingOptions = React.useMemo(
+    () => getPrimeThinkingOptions(model, controls.availableThinkingLevels),
+    [controls.availableThinkingLevels, model],
+  );
+  const selectedModel = model ? { providerID: model.provider, modelID: model.id } : null;
+  const usesExternalMobilePanel = isMobile && onMobilePanelChange !== undefined;
+
+  React.useEffect(() => {
+    const cycleThinking = (event: Event) => {
+      if ((event as CustomEvent<{ scope?: PrimeControlShortcutScope }>).detail?.scope !== shortcutScope || disabled) return;
+      const nextLevel = getNextPrimeThinkingLevel(thinkingOptions, thinkingLevel);
+      if (nextLevel) onThinkingLevelChange(nextLevel);
+    };
+    window.addEventListener(PRIME_CYCLE_THINKING_EVENT, cycleThinking);
+    return () => window.removeEventListener(PRIME_CYCLE_THINKING_EVENT, cycleThinking);
+  }, [disabled, onThinkingLevelChange, shortcutScope, thinkingLevel, thinkingOptions]);
+
+  const labels = React.useMemo<ControlledModelSelectorLabels>(() => ({
+    title: t('chat.modelControls.selectModel'),
+    searchPlaceholder: t('chat.modelControls.searchModels'),
+    noResults: t('chat.modelControls.noModelsFound'),
+    favorites: t('chat.modelControls.favorites'),
+    recent: t('chat.modelControls.recent'),
+    keyboardHint: t('chat.modelControls.keyboardHintNavigate'),
+    notSelected: t('chat.modelControls.selectModel'),
+    loading: t('common.loading'),
+    unavailable: t('common.unavailable'),
+    capabilities: t('chat.modelControls.capabilities'),
+    capabilityToolCalling: t('chat.modelControls.capability.toolCalling'),
+    capabilityReasoning: t('chat.modelControls.capability.reasoning'),
+    input: t('chat.modelControls.input'),
+    output: t('chat.modelControls.output'),
+    costPerMillion: t('chat.modelControls.costPerMillion'),
+  }), [t]);
+
+  const handleModelSelect = React.useCallback((entry: ModelPickerEntry) => {
+    const selected = catalog.modelsByKey.get(primeModelKey(entry.providerID, entry.modelID));
+    if (selected) onModelChange(selected);
+  }, [catalog.modelsByKey, onModelChange]);
+
+  const handleModelPickerOpenChange = React.useCallback((open: boolean) => {
+    if (usesExternalMobilePanel) {
+      onMobilePanelChange?.(open ? 'model' : null);
+    } else {
+      setModelSelectorOpen(open);
+    }
+  }, [onMobilePanelChange, usesExternalMobilePanel]);
+
+  const handleThinkingPickerOpenChange = React.useCallback((open: boolean) => {
+    if (usesExternalMobilePanel) onMobilePanelChange?.(open ? 'variant' : null);
+  }, [onMobilePanelChange, usesExternalMobilePanel]);
+
+  React.useEffect(() => {
+    const toggleModelSelector = (event: Event) => {
+      if ((event as CustomEvent<{ scope?: PrimeControlShortcutScope }>).detail?.scope !== shortcutScope || disabled) return;
+      if (usesExternalMobilePanel) {
+        onMobilePanelChange?.(mobilePanel === 'model' ? null : 'model');
+      } else {
+        setModelSelectorOpen((open) => !open);
+      }
+    };
+    window.addEventListener(PRIME_OPEN_MODEL_SELECTOR_EVENT, toggleModelSelector);
+    return () => window.removeEventListener(PRIME_OPEN_MODEL_SELECTOR_EVENT, toggleModelSelector);
+  }, [disabled, mobilePanel, onMobilePanelChange, shortcutScope, usesExternalMobilePanel]);
+
   return (
-    <div className={cn('flex min-w-0 items-center gap-1.5', className)}>
-      {controls.models.length > 0 && (
-        <Select
-          value={model ? primeModelKey(model.provider, model.id) : undefined}
+    <div className={cn('flex min-w-0 items-center gap-3', className)}>
+      <ControlledThinkingSelector
+        value={thinkingLevel}
+        options={thinkingOptions}
+        onChange={(value) => onThinkingLevelChange(value as PrimeThinkingLevel)}
+        title={t('chat.modelControls.thinking')}
+        defaultLabel={t('chat.modelControls.default')}
+        formatLabel={formatEffortLabel}
+        includeDefault={false}
+        disabled={disabled}
+        mobile={isMobile}
+        open={usesExternalMobilePanel ? mobilePanel === 'variant' : undefined}
+        onOpenChange={handleThinkingPickerOpenChange}
+        onRequestFocus={onRequestFocus}
+      />
+      {catalog.providers.length > 0 ? (
+        <ControlledModelSelector
+          providers={catalog.providers}
+          modelsMetadata={catalog.metadata}
+          selectedModel={selectedModel}
+          onSelect={handleModelSelect}
+          labels={labels}
+          status="ready"
           disabled={disabled}
-          onValueChange={(value) => {
-            const selected = controls.models.find((candidate) => primeModelKey(candidate.provider, candidate.id) === value);
-            if (selected) onModelChange(selected);
-          }}
-        >
-          <SelectTrigger
-            size="chip"
-            className="max-w-[min(55vw,18rem)] border-0 bg-transparent px-2 shadow-none"
-            aria-label={t('chat.modelControls.selectModel')}
-          >
-            <Icon name="chat-ai-3" className="size-3.5" />
-            <SelectValue placeholder={t('chat.modelControls.selectModel')}>
-              {model?.name ?? t('chat.modelControls.selectModel')}
-            </SelectValue>
-          </SelectTrigger>
-          <SelectContent
-            side="top"
-            align="start"
-            className="max-h-80 max-w-[min(90vw,28rem)]"
-            scrollClassName="max-h-80"
-          >
-            {controls.models.map((candidate) => (
-              <SelectItem key={primeModelKey(candidate.provider, candidate.id)} value={primeModelKey(candidate.provider, candidate.id)}>
-                {candidate.name} · {candidate.provider}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      )}
-      {controls.availableThinkingLevels.length > 0 && (
-        <Select<PrimeThinkingLevel>
-          value={thinkingLevel}
-          disabled={disabled}
-          onValueChange={onThinkingLevelChange}
-        >
-          <SelectTrigger
-            size="chip"
-            className="border-0 bg-transparent px-2 shadow-none"
-            aria-label={t('chat.unifiedControls.effort.title')}
-          >
-            <Icon name="brain-ai-3" className="size-3.5" />
-            <SelectValue>{formatEffortLabel(thinkingLevel)}</SelectValue>
-          </SelectTrigger>
-          <SelectContent side="top" align="start" fitContent>
-            {controls.availableThinkingLevels.map((level) => (
-              <SelectItem key={level} value={level}>{formatEffortLabel(level)}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      )}
+          mobile={isMobile}
+          appearance="composer"
+          open={usesExternalMobilePanel ? mobilePanel === 'model' : modelSelectorOpen}
+          onOpenChange={handleModelPickerOpenChange}
+          onRequestFocus={onRequestFocus}
+          tooltipsEnabled
+        />
+      ) : null}
     </div>
   );
 }

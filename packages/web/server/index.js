@@ -1192,6 +1192,7 @@ const primeAgentRuntime = createPrimeAgentRuntime({
   buildAugmentedPath,
   searchPathFor,
   isExecutable,
+  fileSystem: fs,
   onEvent: emitPrimeAgentEvent,
 });
 const scheduledTaskService = createScheduledTaskService({
