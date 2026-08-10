@@ -27,7 +27,7 @@ If instructions materially conflict and their ownership does not resolve the con
 
 ## Upstream Synchronization
 
-- Before implementing any new fix or feature, check upstream issues, pull requests, and changes newer than the fork's current upstream base for related discussion or an existing implementation. Use those findings to avoid duplicating work or creating unnecessary fork divergence.
+- Before implementing any new fix or feature, check upstream issues, pull requests, and changes newer than the fork's current upstream base for related discussion or an existing implementation. Use those findings to decide whether and how the request should be implemented: identify existing workflows that already achieve the goal, alternative formulations or solutions, prior design trade-offs, constraints, pitfalls, edge cases, and reasons earlier proposals were not implemented. This review must inform the implementation approach as well as avoid duplicating work and unnecessary fork divergence.
 - Fast-forward `main` to `upstream/main`.
 - Integrate normal fork updates by merging the selected stable upstream release tag into `custom` so the source installation follows published releases rather than unreleased `upstream/main` changes.
 - Merge unreleased upstream commits into `custom` only when the user explicitly requests them.
