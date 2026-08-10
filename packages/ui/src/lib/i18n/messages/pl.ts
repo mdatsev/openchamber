@@ -1906,6 +1906,8 @@ export const dict: Record<I18nKey, string> = {
   'gitView.changes.revertDirectoryDialogTitle': 'Cofnąć zmiany w folderze?',
   'gitView.changes.revertDirectoryTooltip': 'Cofnij zmiany w folderze',
   'gitView.changes.revertFileAria': 'Cofnij plik',
+  'gitView.changes.revertFileDescription': 'Lokalne zmiany w pliku {path} zostaną odrzucone. Tej operacji nie można cofnąć.',
+  'gitView.changes.revertFileDialogTitle': 'Cofnąć zmiany w pliku?',
   'gitView.changes.revertFileTooltip': 'Cofnij zmiany',
   'gitView.changes.reverting': 'Cofanie...',
   'gitView.changes.selectAllAria': 'Zaznacz wszystkie pliki',

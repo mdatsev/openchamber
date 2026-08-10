@@ -38,7 +38,7 @@ export interface ChangesGroupConfig {
   onActionFile: (path: string) => void;
   onActionAll: (paths: string[]) => void;
   onViewDiff: (path: string) => void;
-  onRevertFile: (path: string) => void;
+  onRevertFile: (path: string) => Promise<void> | void;
   showRevertActions?: boolean;
   /** Visually mark this group as "ready to commit". */
   accent?: boolean;
@@ -74,6 +74,11 @@ type PendingDirectoryRevert = {
   count: number;
 };
 
+type PendingFileRevert = {
+  groupId: string;
+  path: string;
+};
+
 const expandedKey = (groupId: string, path: string): string => `${groupId} ${path}`;
 
 export const ChangesPanel: React.FC<ChangesPanelProps> = ({
@@ -96,6 +101,7 @@ export const ChangesPanel: React.FC<ChangesPanelProps> = ({
   const [collapsedGroups, setCollapsedGroups] = React.useState<Set<string>>(new Set());
   const [expandedDirectories, setExpandedDirectories] = React.useState<Set<string>>(new Set());
   const [revertAllOpen, setRevertAllOpen] = React.useState(false);
+  const [pendingFileRevert, setPendingFileRevert] = React.useState<PendingFileRevert | null>(null);
   const [pendingDirectoryRevert, setPendingDirectoryRevert] = React.useState<PendingDirectoryRevert | null>(null);
 
   const trees = React.useMemo(
@@ -286,6 +292,9 @@ export const ChangesPanel: React.FC<ChangesPanelProps> = ({
     return Array.from(seen);
   }, [visibleGroups]);
   const revertAllCount = allChangePaths.length;
+  const isPendingFileReverting = pendingFileRevert
+    ? revertingPaths.has(pendingFileRevert.path)
+    : false;
   const isPendingDirectoryReverting = pendingDirectoryRevert
     ? isRevertingAll || pendingDirectoryRevert.paths.some((path) => revertingPaths.has(path))
     : false;
@@ -297,6 +306,21 @@ export const ChangesPanel: React.FC<ChangesPanelProps> = ({
     await onRevertAll(allChangePaths);
     setRevertAllOpen(false);
   }, [allChangePaths, isRevertingAll, onRevertAll]);
+
+  const handleConfirmRevertFile = React.useCallback(async () => {
+    if (!pendingFileRevert || isPendingFileReverting) {
+      return;
+    }
+
+    const group = visibleGroups.find(({ id }) => id === pendingFileRevert.groupId);
+    if (!group || !group.entries.some(({ path }) => path === pendingFileRevert.path)) {
+      setPendingFileRevert(null);
+      return;
+    }
+
+    await group.onRevertFile(pendingFileRevert.path);
+    setPendingFileRevert(null);
+  }, [isPendingFileReverting, pendingFileRevert, visibleGroups]);
 
   const handleConfirmRevertDirectory = React.useCallback(async () => {
     if (!onRevertDirectory || !pendingDirectoryRevert || isPendingDirectoryReverting) {
@@ -457,7 +481,7 @@ export const ChangesPanel: React.FC<ChangesPanelProps> = ({
           onAction={() => group.onActionFile(file.path)}
           stats={diffStats?.[file.path]}
           onViewDiff={() => group.onViewDiff(file.path)}
-          onRevert={() => group.onRevertFile(file.path)}
+          onRevert={() => setPendingFileRevert({ groupId: group.id, path: file.path })}
           isReverting={revertingPaths.has(file.path) || isRevertingAll}
           rowPaddingClassName={ROW_PADDING_CLASSNAME}
           indentPx={row.depth * TREE_INDENT_PX}
@@ -538,6 +562,37 @@ export const ChangesPanel: React.FC<ChangesPanelProps> = ({
         </ScrollShadow>
         <OverlayScrollbar containerRef={scrollRef} disableHorizontal />
       </div>
+
+      <Dialog
+        open={!!pendingFileRevert}
+        onOpenChange={(open) => {
+          if (!isPendingFileReverting && !open) setPendingFileRevert(null);
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t('gitView.changes.revertFileDialogTitle')}</DialogTitle>
+            <DialogDescription>
+              {pendingFileRevert
+                ? t('gitView.changes.revertFileDescription', { path: pendingFileRevert.path })
+                : null}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => setPendingFileRevert(null)} disabled={isPendingFileReverting}>
+              {t('gitView.common.cancel')}
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => void handleConfirmRevertFile()}
+              disabled={isPendingFileReverting || !pendingFileRevert}
+            >
+              {isPendingFileReverting ? t('gitView.changes.reverting') : t('gitView.changes.revertFileTooltip')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={revertAllOpen}

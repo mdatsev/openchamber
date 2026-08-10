@@ -700,6 +700,8 @@ export const dict = {
   'gitView.changes.revertDirectoryDialogTitle': 'Revert folder changes?',
   'gitView.changes.revertDirectoryTooltip': 'Revert folder changes',
   'gitView.changes.revertFileAria': 'Revert changes in {path}',
+  'gitView.changes.revertFileDescription': 'This will discard local changes in {path}. This cannot be undone.',
+  'gitView.changes.revertFileDialogTitle': 'Revert file changes?',
   'gitView.changes.revertFileTooltip': 'Revert changes',
   'gitView.changes.reverting': 'Reverting...',
   'gitView.changes.selectAllAria': 'Select all files',

@@ -714,6 +714,8 @@ export const dict: Record<I18nKey, string> = {
   'gitView.changes.revertDirectoryDialogTitle': '還原資料夾變更？',
   'gitView.changes.revertDirectoryTooltip': '還原資料夾變更',
   'gitView.changes.revertFileAria': '還原 {path} 的變更',
+  'gitView.changes.revertFileDescription': '這將捨棄 {path} 的本機變更。此操作無法復原。',
+  'gitView.changes.revertFileDialogTitle': '還原檔案變更？',
   'gitView.changes.revertFileTooltip': '還原變更',
   'gitView.changes.reverting': '正在還原...',
   'gitView.changes.selectAllAria': '全選檔案',
