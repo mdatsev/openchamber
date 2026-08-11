@@ -1,0 +1,27 @@
+[Unit]
+Description=OpenChamber CUSTOM interface for external OpenCode
+After=network-online.target opencode.service
+Wants=network-online.target
+Requires=opencode.service
+Conflicts=openchamber.service
+
+[Service]
+Type=simple
+WorkingDirectory=@CUSTOM_REPO@
+Environment="PATH=@SERVICE_PATH@"
+Environment="OPENCODE_HOST=http://127.0.0.1:4096"
+Environment="OPENCODE_SKIP_START=true"
+ExecStart=@NODE_BIN@ @CUSTOM_REPO@/packages/web/bin/cli.js serve --foreground --host 127.0.0.1 --port 8795
+Restart=on-failure
+RestartSec=5
+KillMode=control-group
+TimeoutStopSec=15
+MemoryAccounting=yes
+MemoryMax=3G
+MemorySwapMax=512M
+TasksAccounting=yes
+TasksMax=1024
+OOMPolicy=kill
+
+[Install]
+WantedBy=default.target

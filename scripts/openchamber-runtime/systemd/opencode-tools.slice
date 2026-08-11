@@ -1,0 +1,9 @@
+[Unit]
+Description=OpenCode tool command resource boundary
+
+[Slice]
+MemoryAccounting=yes
+MemoryMax=7G
+MemorySwapMax=1G
+TasksAccounting=yes
+TasksMax=2048

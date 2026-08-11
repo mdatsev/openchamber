@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+
+set -u -o pipefail
+
+real_shell="${OPENCHAMBER_REAL_SHELL:-/bin/bash}"
+memory_max="${OPENCHAMBER_TOOL_MEMORY_MAX:-3G}"
+memory_swap_max="${OPENCHAMBER_TOOL_MEMORY_SWAP_MAX:-512M}"
+tasks_max="${OPENCHAMBER_TOOL_TASKS_MAX:-512}"
+
+fail() {
+  printf 'OpenCode cgroup shell: %s\n' "$1" >&2
+  exit 125
+}
+
+validate_size() {
+  [[ "$2" =~ ^([0-9]+([KMGTPE])?|infinity)$ ]] || fail "$1 has an invalid systemd size: $2"
+}
+
+validate_count() {
+  [[ "$2" =~ ^[1-9][0-9]*$ ]] || fail "$1 must be a positive integer"
+}
+
+[[ -x "$real_shell" ]] || fail "real shell is not executable: $real_shell"
+validate_size OPENCHAMBER_TOOL_MEMORY_MAX "$memory_max"
+validate_size OPENCHAMBER_TOOL_MEMORY_SWAP_MAX "$memory_swap_max"
+validate_count OPENCHAMBER_TOOL_TASKS_MAX "$tasks_max"
+
+if [[ "${1:-}" != '-c' ]]; then
+  exec "$real_shell" "$@"
+fi
+
+[[ $# -ge 2 ]] || fail 'missing command after -c'
+shift
+command="$1"
+shift
+
+unit="opencode-tool-${PPID}-$$-${RANDOM}"
+scope="${unit}.scope"
+runner_pid=''
+
+terminate() {
+  local exit_code="$1"
+  trap - HUP INT TERM
+  systemctl --user stop "$scope" >/dev/null 2>&1 || true
+  if [[ -n "$runner_pid" ]] && kill -0 "$runner_pid" 2>/dev/null; then
+    kill -TERM "$runner_pid" 2>/dev/null || true
+    wait "$runner_pid" 2>/dev/null || true
+  fi
+  systemctl --user reset-failed "$scope" >/dev/null 2>&1 || true
+  exit "$exit_code"
+}
+
+trap 'terminate 129' HUP
+trap 'terminate 130' INT
+trap 'terminate 143' TERM
+
+systemd-run \
+  --user \
+  --scope \
+  --quiet \
+  --same-dir \
+  --expand-environment=no \
+  --unit="$unit" \
+  --slice=opencode-tools.slice \
+  --description='OpenCode tool command' \
+  --property=MemoryAccounting=yes \
+  --property="MemoryMax=$memory_max" \
+  --property="MemorySwapMax=$memory_swap_max" \
+  --property=TasksAccounting=yes \
+  --property="TasksMax=$tasks_max" \
+  --property=OOMPolicy=kill \
+  -- \
+  "$real_shell" -c "$command" "$@" &
+runner_pid=$!
+
+wait "$runner_pid" 2>/dev/null
+status=$?
+systemctl --user reset-failed "$scope" >/dev/null 2>&1 || true
+exit "$status"
