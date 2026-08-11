@@ -34,6 +34,7 @@ import { CSS } from '@dnd-kit/utilities';
 
 import { DirectoryExplorerDialog } from '@/components/session/DirectoryExplorerDialog';
 import { Icon } from '@/components/icon/Icon';
+import { WorktreeChangesIndicator } from '@/components/session/WorktreeChangesIndicator';
 import { NewWorktreeDialog } from '@/components/session/NewWorktreeDialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -1865,6 +1866,7 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
                                       >
                                         {bucket.label}
                                       </span>
+                                      <WorktreeChangesIndicator directory={bucket.path} showTooltip={false} />
                                       {isActiveWt ? (
                                         <ActiveDot ariaLabel={t('mobile.sessions.activeWorktreeAria')} />
                                       ) : null}

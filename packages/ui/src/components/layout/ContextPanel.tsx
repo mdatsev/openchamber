@@ -3126,10 +3126,11 @@ export const ContextPanel: React.FC = () => {
               stackedDefaultCollapsedAll
               pinSelectedFileHeaderToTopOnNavigate
               showOpenInEditorAction
-              diffScope={tab.diffScope ?? (tab.stagedDiff ? 'staged' : 'working')}
+              diffScope={tab.diffScope ?? (tab.stagedDiff ? 'staged' : 'all')}
               onDiffScopeChange={handleDiffScopeChange}
               targetFilePath={tab.targetPath}
               flushContent
+              isActive={isOpen && activeTab?.id === tab.id}
             />
           </div>
         ))}

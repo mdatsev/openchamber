@@ -6,9 +6,12 @@ import type {
   GitBranch,
   GitLogResponse,
   GitIdentitySummary,
+  GitWorktreeComparison,
+  GetGitWorktreeComparisonOptions,
 } from '@/lib/api/types';
 import { getDeferredSafeStorage } from '@/stores/utils/safeStorage';
 import { getRuntimeKey } from '@/lib/runtime-switch';
+import { runBackgroundNetworkTask } from '@/lib/background-network';
 
 const LOG_STALE_THRESHOLD = 10000;
 const REPO_CHECK_STALE_THRESHOLD = 60_000;
@@ -46,6 +49,12 @@ interface DirectoryGitState {
   isLoadingLog: boolean;
   isLoadingBranches: boolean;
   isLoadingIdentity: boolean;
+  worktreeComparisonSummary?: GitWorktreeComparison | null;
+  worktreeComparisonFull?: GitWorktreeComparison | null;
+  worktreeComparisonSummaryError?: string | null;
+  worktreeComparisonError?: string | null;
+  isLoadingWorktreeComparisonSummary?: boolean;
+  isLoadingWorktreeComparison?: boolean;
 }
 
 interface GitStore {
@@ -61,6 +70,11 @@ interface GitStore {
   fetchBranches: (directory: string, git: GitAPI) => Promise<void>;
   fetchLog: (directory: string, git: GitAPI, maxCount?: number) => Promise<void>;
   fetchIdentity: (directory: string, git: GitAPI) => Promise<void>;
+  fetchWorktreeComparison: (
+    directory: string,
+    git: GitAPI,
+    options?: GetGitWorktreeComparisonOptions,
+  ) => Promise<void>;
   fetchAll: (directory: string, git: GitAPI, options?: { force?: boolean; silentIfCached?: boolean }) => Promise<void>;
 
   ensureStatus: (directory: string, git: GitAPI) => Promise<void>;
@@ -95,12 +109,17 @@ interface GitAPI {
   getGitLog: (directory: string, options?: { maxCount?: number }) => Promise<GitLogResponse>;
   getCurrentGitIdentity: (directory: string) => Promise<GitIdentitySummary | null>;
   getGitFileDiff: (directory: string, options: { path: string }) => Promise<GitFileDiffResponse>;
+  getWorktreeComparison?: (
+    directory: string,
+    options?: GetGitWorktreeComparisonOptions,
+  ) => Promise<GitWorktreeComparison>;
 }
 
 const inFlightDiffFetchesByDirectory = new Map<string, Set<string>>();
 const diffFetchGenerationByDirectory = new Map<string, number>();
 const inFlightStatusFetches = new Map<string, Promise<boolean>>();
 const inFlightEnsureAllByDirectory = new Map<string, Promise<void>>();
+const inFlightWorktreeComparisons = new Map<string, Promise<void>>();
 const requestGenerationByChannel = new Map<string, number>();
 const statusMutationRevisionByDirectory = new Map<string, number>();
 let gitRuntimeGeneration = 0;
@@ -189,6 +208,12 @@ const createEmptyDirectoryState = (): DirectoryGitState => ({
   isLoadingLog: false,
   isLoadingBranches: false,
   isLoadingIdentity: false,
+  worktreeComparisonSummary: null,
+  worktreeComparisonFull: null,
+  worktreeComparisonSummaryError: null,
+  worktreeComparisonError: null,
+  isLoadingWorktreeComparisonSummary: false,
+  isLoadingWorktreeComparison: false,
 });
 
 // ---------------------------------------------------------------------------
@@ -557,6 +582,7 @@ export const useGitStore = create<GitStore>()(
         statusMutationRevisionByDirectory.clear();
         inFlightStatusFetches.clear();
         inFlightEnsureAllByDirectory.clear();
+        inFlightWorktreeComparisons.clear();
         inFlightDiffFetchesByDirectory.clear();
         diffFetchGenerationByDirectory.clear();
         set({ runtimeKey, directories: seedDirectoriesFromBranchCache(runtimeKey), activeDirectory: null });
@@ -919,6 +945,86 @@ export const useGitStore = create<GitStore>()(
           const d = newDirectories.get(directory) ?? createEmptyDirectoryState();
           newDirectories.set(directory, { ...d, isLoadingIdentity: false });
           set({ directories: newDirectories });
+        }
+      },
+
+      fetchWorktreeComparison: async (directory, git, options = {}) => {
+        if (!git.getWorktreeComparison) return;
+
+        const includePatches = options.includePatches === true;
+        const requestTier = includePatches ? 'full' : 'summary';
+        const runtimeKey = getRuntimeKey();
+        const requestKey = JSON.stringify([runtimeKey, directory, requestTier]);
+        const existing = inFlightWorktreeComparisons.get(requestKey);
+        if (existing) return existing;
+
+        const channel = `worktree-comparison-${requestTier}`;
+        const token = startRequest(directory, channel);
+        const request = (async () => {
+          {
+            const directories = new Map(get().directories);
+            const current = directories.get(directory) ?? createEmptyDirectoryState();
+            const loadingState = includePatches
+              ? { isLoadingWorktreeComparison: true, worktreeComparisonError: null }
+              : { isLoadingWorktreeComparisonSummary: true, worktreeComparisonSummaryError: null };
+            directories.set(directory, {
+              ...current,
+              ...loadingState,
+            });
+            set({ directories });
+          }
+
+          try {
+            const load = async () => {
+              if (!isRequestCurrent(token, directory)) return null;
+              return git.getWorktreeComparison?.(directory, options) ?? null;
+            };
+            const comparison = includePatches
+              ? await load()
+              : await runBackgroundNetworkTask(load);
+            if (!comparison || !isRequestCurrent(token, directory)) return;
+
+            const directories = new Map(get().directories);
+            const current = directories.get(directory) ?? createEmptyDirectoryState();
+            const loadedState = includePatches
+              ? {
+                  worktreeComparisonFull: comparison,
+                  worktreeComparisonError: null,
+                  isLoadingWorktreeComparison: false,
+                }
+              : {
+                  worktreeComparisonSummaryError: null,
+                  isLoadingWorktreeComparisonSummary: false,
+                };
+            directories.set(directory, {
+              ...current,
+              worktreeComparisonSummary: comparison,
+              ...loadedState,
+            });
+            set({ directories });
+          } catch (error) {
+            if (!isRequestCurrent(token, directory)) return;
+            const message = error instanceof Error ? error.message : String(error);
+            const directories = new Map(get().directories);
+            const current = directories.get(directory) ?? createEmptyDirectoryState();
+            const failedState = includePatches
+              ? { worktreeComparisonError: message, isLoadingWorktreeComparison: false }
+              : { worktreeComparisonSummaryError: message, isLoadingWorktreeComparisonSummary: false };
+            directories.set(directory, {
+              ...current,
+              ...failedState,
+            });
+            set({ directories });
+          }
+        })();
+
+        inFlightWorktreeComparisons.set(requestKey, request);
+        try {
+          await request;
+        } finally {
+          if (inFlightWorktreeComparisons.get(requestKey) === request) {
+            inFlightWorktreeComparisons.delete(requestKey);
+          }
         }
       },
 
@@ -1292,5 +1398,33 @@ export const useGitLoadingBranches = (directory: string | null) => {
   return useGitStore((state) => {
     if (!directory) return false;
     return state.directories.get(directory)?.isLoadingBranches ?? false;
+  });
+};
+
+export const useWorktreeComparisonSummary = (directory: string | null) => {
+  return useGitStore((state) => {
+    if (!directory) return null;
+    return state.directories.get(directory)?.worktreeComparisonSummary ?? null;
+  });
+};
+
+export const useWorktreeComparisonFull = (directory: string | null) => {
+  return useGitStore((state) => {
+    if (!directory) return null;
+    return state.directories.get(directory)?.worktreeComparisonFull ?? null;
+  });
+};
+
+export const useWorktreeComparisonError = (directory: string | null) => {
+  return useGitStore((state) => {
+    if (!directory) return null;
+    return state.directories.get(directory)?.worktreeComparisonError ?? null;
+  });
+};
+
+export const useWorktreeComparisonLoading = (directory: string | null) => {
+  return useGitStore((state) => {
+    if (!directory) return false;
+    return state.directories.get(directory)?.isLoadingWorktreeComparison ?? false;
   });
 };

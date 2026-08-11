@@ -131,6 +131,7 @@ Core model:
   - log
   - identity
   - diff cache
+  - linked-worktree comparison summary and full-patch caches
   - per-directory loading flags
   - freshness timestamps
 
@@ -140,6 +141,7 @@ Important properties:
 - loading state is per-directory, not global
 - `ensureStatus()` and `ensureAll()` are the preferred entry points for consumers
 - in-flight dedupe exists for status and `ensureAll()`
+- linked-worktree comparison requests dedupe independently for summary and full-patch payloads
 - runtime reset replaces all live entries with that runtime's persisted branch seeds and invalidates old completions
 - status, branches, log, identity, repository probes, and prefetch diffs commit through runtime and per-channel generations
 - status mutations advance a revision so older refreshes cannot undo optimistic or confirmed index changes
@@ -196,6 +198,8 @@ Good:
 - `useGitBranches(directory)`
 - `useGitBranchLabel(directory)`
 - `useGitRepoStatusMap(directories)`
+- `useWorktreeComparisonSummary(directory)`
+- `useWorktreeComparisonFull(directory)`
 - `usePrVisualSummaryByKeys(keys)`
 
 Bad:
@@ -236,6 +240,7 @@ Example already in use:
 
 - successful mutating tools emit a centralized Git refresh hint through `sessionEvents`
 - visible `GitView` / `DiffView` consume the hint and refresh current-directory status
+- linked-worktree headers consume summary comparisons, while visible desktop/mobile diff surfaces request full patches; both react to the same one-shot hints and never poll
 
 This is preferred over background polling.
 
@@ -261,6 +266,8 @@ Do not raise limits casually.
 Expected model:
 
 - `GitView` / `DiffView` ensure current-directory Git state when visible
+- `DiffView` and the mobile Changes surface request full linked-worktree comparisons only after repository detection succeeds; the branch scope is read-only and falls back to ordinary working-tree changes when the runtime or directory cannot provide a comparison
+- mounted visible worktree headers request the cheaper summary comparison for their indicators
 - explicit Git actions refresh status/branches/log as needed
 - a mounted file-mutating tool issues a one-shot Git refresh hint when it transitions from active to successfully finalized; remounting historical completed tools does not replay the hint
 - a successful dirty save from the in-app file editor issues a path-scoped Git refresh hint; clean autosave checks remain no-ops

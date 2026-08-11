@@ -2478,6 +2478,7 @@ export const GitView: React.FC<GitViewProps> = ({ isActive }) => {
                 fetchStatus(currentDirectory, git);
                 fetchBranches(currentDirectory, git);
                 fetchLog(currentDirectory, git, logMaxCountLocal);
+                sessionEvents.requestGitRefresh({ directory: currentDirectory });
               }}
             />
           ) : null}

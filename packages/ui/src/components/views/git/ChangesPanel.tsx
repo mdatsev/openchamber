@@ -40,6 +40,8 @@ export interface ChangesGroupConfig {
   onViewDiff: (path: string) => void;
   onRevertFile: (path: string) => Promise<void> | void;
   showRevertActions?: boolean;
+  /** Comparison-only group with no stage, unstage, or revert operations. */
+  readOnly?: boolean;
   /** Visually mark this group as "ready to commit". */
   accent?: boolean;
 }
@@ -288,7 +290,9 @@ export const ChangesPanel: React.FC<ChangesPanelProps> = ({
   // both, so dedupe). One revert-all discards all working-tree changes at once.
   const allChangePaths = React.useMemo(() => {
     const seen = new Set<string>();
-    visibleGroups.forEach((group) => group.entries.forEach((entry) => seen.add(entry.path)));
+    visibleGroups
+      .filter((group) => !group.readOnly)
+      .forEach((group) => group.entries.forEach((entry) => seen.add(entry.path)));
     return Array.from(seen);
   }, [visibleGroups]);
   const revertAllCount = allChangePaths.length;
@@ -313,7 +317,7 @@ export const ChangesPanel: React.FC<ChangesPanelProps> = ({
     }
 
     const group = visibleGroups.find(({ id }) => id === pendingFileRevert.groupId);
-    if (!group || !group.entries.some(({ path }) => path === pendingFileRevert.path)) {
+    if (!group || group.readOnly || !group.entries.some(({ path }) => path === pendingFileRevert.path)) {
       setPendingFileRevert(null);
       return;
     }
@@ -343,15 +347,21 @@ export const ChangesPanel: React.FC<ChangesPanelProps> = ({
             !isFirst && 'mt-1 border-t border-border/40'
           )}
         >
-          <button
-            type="button"
-            onClick={() => group.onActionAll(group.entries.map((entry) => entry.path))}
-            className="flex size-5 shrink-0 items-center justify-center rounded typography-micro font-semibold text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--interactive-focus-ring)]"
-            aria-label={group.actionAllLabel}
-            title={group.actionAllLabel}
-          >
-            {group.actionSymbol}
-          </button>
+          {group.readOnly ? (
+            <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground">
+              <Icon name="git-commit" className="size-3.5" />
+            </span>
+          ) : (
+            <button
+              type="button"
+              onClick={() => group.onActionAll(group.entries.map((entry) => entry.path))}
+              className="flex size-5 shrink-0 items-center justify-center rounded typography-micro font-semibold text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--interactive-focus-ring)]"
+              aria-label={group.actionAllLabel}
+              title={group.actionAllLabel}
+            >
+              {group.actionSymbol}
+            </button>
+          )}
 
           <button
             type="button"
@@ -405,7 +415,7 @@ export const ChangesPanel: React.FC<ChangesPanelProps> = ({
             </span>
             <span className="ml-auto shrink-0 typography-micro text-muted-foreground">{directory.files.length}</span>
           </button>
-          {group.showRevertActions !== false && onRevertDirectory ? (
+          {!group.readOnly && group.showRevertActions !== false && onRevertDirectory ? (
             <button
               type="button"
               onClick={() => setPendingDirectoryRevert({ path: directory.path, paths: directoryPaths, count: directoryPaths.length })}
@@ -421,21 +431,23 @@ export const ChangesPanel: React.FC<ChangesPanelProps> = ({
               )}
             </button>
           ) : null}
-          <button
-            type="button"
-            onClick={() => group.onActionAll(directory.files.map((file) => file.path))}
-            className="flex size-5 shrink-0 items-center justify-center rounded typography-micro font-semibold text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--interactive-focus-ring)]"
-            aria-label={t(
-              group.actionSymbol === '+' ? 'gitView.changes.stageDirectoryAria' : 'gitView.changes.unstageDirectoryAria',
-              { path: directory.path }
-            )}
-            title={t(
-              group.actionSymbol === '+' ? 'gitView.changes.stageDirectoryAria' : 'gitView.changes.unstageDirectoryAria',
-              { path: directory.path }
-            )}
-          >
-            {group.actionSymbol}
-          </button>
+          {!group.readOnly ? (
+            <button
+              type="button"
+              onClick={() => group.onActionAll(directory.files.map((file) => file.path))}
+              className="flex size-5 shrink-0 items-center justify-center rounded typography-micro font-semibold text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--interactive-focus-ring)]"
+              aria-label={t(
+                group.actionSymbol === '+' ? 'gitView.changes.stageDirectoryAria' : 'gitView.changes.unstageDirectoryAria',
+                { path: directory.path }
+              )}
+              title={t(
+                group.actionSymbol === '+' ? 'gitView.changes.stageDirectoryAria' : 'gitView.changes.unstageDirectoryAria',
+                { path: directory.path }
+              )}
+            >
+              {group.actionSymbol}
+            </button>
+          ) : null}
         </div>
       );
     },
@@ -486,7 +498,8 @@ export const ChangesPanel: React.FC<ChangesPanelProps> = ({
           rowPaddingClassName={ROW_PADDING_CLASSNAME}
           indentPx={row.depth * TREE_INDENT_PX}
           actionAtStart={!isTreeView}
-          showRevert={group.showRevertActions !== false}
+          showAction={!group.readOnly}
+          showRevert={!group.readOnly && group.showRevertActions !== false}
         />
       );
     },
