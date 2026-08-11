@@ -218,7 +218,9 @@ export const UpdateDialog: React.FC<UpdateDialogProps> = ({
 
   const isWebRuntime = runtimeType === 'web';
   const isMobileRuntime = runtimeType === 'mobile';
-  const isSourceRun = runtimeType === 'desktop' && info?.sourceRun === true;
+  const isSourceRun = (runtimeType === 'desktop' || runtimeType === 'web') && info?.sourceRun === true;
+  const canInstallDesktopUpdate = !isWebRuntime && !isMobileRuntime && !isSourceRun;
+  const canInstallWebUpdate = isWebRuntime && !isSourceRun;
   const updateCommand = info?.updateCommand || 'openchamber update';
 
   // Reset state when dialog closes
@@ -342,7 +344,7 @@ export const UpdateDialog: React.FC<UpdateDialogProps> = ({
         <div className="space-y-2">
 
           {/* Web update progress */}
-          {isWebRuntime && isWebUpdating && (
+          {canInstallWebUpdate && isWebUpdating && (
             <div className="rounded-lg bg-[var(--surface-elevated)]/30 p-5 border border-[var(--surface-subtle)]">
               <div className="flex items-center gap-3">
                 <Icon name="loader" className="h-5 w-5 animate-spin text-[var(--primary-base)]" />
@@ -424,7 +426,7 @@ export const UpdateDialog: React.FC<UpdateDialogProps> = ({
           )}
 
           {/* Web runtime fallback command */}
-          {isWebRuntime && webUpdateState === 'error' && (
+          {canInstallWebUpdate && webUpdateState === 'error' && (
             <div className="space-y-2 mt-4">
               <div className="flex items-center gap-2 typography-meta text-muted-foreground">
                 <Icon name="terminal" className="h-4 w-4" />
@@ -455,7 +457,7 @@ export const UpdateDialog: React.FC<UpdateDialogProps> = ({
           )}
 
           {/* Desktop progress bar */}
-          {!isWebRuntime && !isMobileRuntime && downloading && (
+          {canInstallDesktopUpdate && downloading && (
             <div className="space-y-2 mt-4">
               <div className="flex items-center justify-between text-sm">
                 <span className="text-muted-foreground">{t('updateDialog.status.downloadingPayload')}</span>
@@ -499,7 +501,7 @@ export const UpdateDialog: React.FC<UpdateDialogProps> = ({
             )}
 
             {/* Desktop Buttons */}
-            {!isWebRuntime && !isMobileRuntime && !isSourceRun && !downloaded && !downloading && (
+            {canInstallDesktopUpdate && !downloaded && !downloading && (
               <button
                 onClick={onDownload}
                 className="flex items-center justify-center gap-2 px-5 py-2 rounded-md text-sm font-medium bg-[var(--primary-base)] text-[var(--primary-foreground)] hover:opacity-90 transition-opacity"
@@ -509,7 +511,7 @@ export const UpdateDialog: React.FC<UpdateDialogProps> = ({
               </button>
             )}
 
-            {!isWebRuntime && !isMobileRuntime && downloading && (
+            {canInstallDesktopUpdate && downloading && (
               <button
                 disabled
                 className="flex items-center justify-center gap-2 px-5 py-2 rounded-md text-sm font-medium bg-[var(--primary-base)]/50 text-[var(--primary-foreground)] cursor-not-allowed"
@@ -519,7 +521,7 @@ export const UpdateDialog: React.FC<UpdateDialogProps> = ({
               </button>
             )}
 
-            {!isWebRuntime && !isMobileRuntime && downloaded && (
+            {canInstallDesktopUpdate && downloaded && (
               <button
                 onClick={onRestart}
                 className="flex items-center justify-center gap-2 px-5 py-2 rounded-md text-sm font-medium bg-[var(--status-success)] text-white hover:opacity-90 transition-opacity"
@@ -540,7 +542,7 @@ export const UpdateDialog: React.FC<UpdateDialogProps> = ({
               </Button>
             )}
 
-            {isWebRuntime && !isWebUpdating && (
+            {canInstallWebUpdate && !isWebUpdating && (
               <button
                 onClick={handleWebUpdate}
                 className="flex items-center justify-center gap-2 px-5 py-2 rounded-md text-sm font-medium bg-[var(--primary-base)] text-[var(--primary-foreground)] hover:opacity-90 transition-opacity"
@@ -550,7 +552,7 @@ export const UpdateDialog: React.FC<UpdateDialogProps> = ({
               </button>
             )}
 
-            {isWebRuntime && isWebUpdating && (
+            {canInstallWebUpdate && isWebUpdating && (
               <button
                 disabled
                 className="flex items-center justify-center gap-2 px-5 py-2 rounded-md text-sm font-medium bg-[var(--primary-base)]/50 text-[var(--primary-foreground)] cursor-not-allowed"

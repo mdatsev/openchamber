@@ -15,7 +15,7 @@ export const registerOpenChamberRoutes = (app, dependencies) => {
 
   app.get('/api/openchamber/update-check', async (req, res) => {
     try {
-      const { checkForUpdates } = await import('../package-manager.js');
+      const { checkForUpdates, isSourceCheckout } = await import('../package-manager.js');
       const parseString = (value) => (typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined);
       const parseReportUsage = (value) => {
         if (typeof value !== 'string') return true;
@@ -32,8 +32,9 @@ export const registerOpenChamberRoutes = (app, dependencies) => {
       };
       const userAgent = typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : '';
 
+      const appType = parseString(req.query.appType);
       const updateInfo = await checkForUpdates({
-        appType: parseString(req.query.appType),
+        appType,
         deviceClass: parseString(req.query.deviceClass) || inferDeviceClass(userAgent),
         platform: parseString(req.query.platform),
         arch: parseString(req.query.arch),
@@ -42,7 +43,10 @@ export const registerOpenChamberRoutes = (app, dependencies) => {
         installId: parseString(req.query.installId),
         reportUsage: parseReportUsage(parseString(req.query.reportUsage)),
       });
-      res.json(updateInfo);
+      res.json({
+        ...updateInfo,
+        sourceRun: appType === 'web' && isSourceCheckout(),
+      });
     } catch (error) {
       console.error('Failed to check for updates:', error);
       res.status(500).json({
@@ -59,7 +63,15 @@ export const registerOpenChamberRoutes = (app, dependencies) => {
         checkForUpdates,
         getUpdateCommand,
         detectPackageManagerDetails,
+        isSourceCheckout,
       } = await import('../package-manager.js');
+
+      if (isSourceCheckout()) {
+        return res.status(409).json({
+          code: 'SOURCE_RUN_UPDATE_UNSUPPORTED',
+          error: 'This installation runs from source. Merge the upstream release into the custom branch and restart OpenChamber.',
+        });
+      }
 
       const updateInfo = await checkForUpdates();
       if (!updateInfo.available) {

@@ -170,6 +170,7 @@ async function checkForWebUpdates(runtime: ClientRuntime, currentVersion?: strin
           : undefined,
       packageManager: data.packageManager,
       updateCommand: data.updateCommand,
+      sourceRun: data.sourceRun === true,
     };
   } catch (error) {
     console.warn('Failed to check for updates:', error);

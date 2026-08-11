@@ -223,6 +223,10 @@ function getCurrentPackagePath() {
   return path.resolve(__dirname, '..', '..');
 }
 
+export function isSourceCheckout() {
+  return fs.existsSync(path.resolve(getCurrentPackagePath(), '..', '..', '.git'));
+}
+
 function getPackagePathForGlobalRoot(rootPath) {
   if (!rootPath) return null;
   return path.join(rootPath, ...PACKAGE_PATH_SEGMENTS);
