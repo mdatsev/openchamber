@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { z } from 'zod';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Icon } from "@/components/icon/Icon";
@@ -16,13 +17,36 @@ import { reloadOpenCodeConfiguration } from '@/stores/useAgentsStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { useI18n } from '@/lib/i18n';
 import { runtimeFetch } from '@/lib/runtime-fetch';
+import { subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
 import { isWindowsArm64 } from '@/lib/platform';
+
+const openCodeUpgradeStatusSchema = z.object({
+  available: z.boolean().nullable().optional(),
+  currentVersion: z.string().nullable().optional(),
+  latestVersion: z.string().nullable().optional(),
+  upgrade: z.object({
+    supported: z.boolean().nullable().optional(),
+    reason: z.string().nullable().optional(),
+  }).nullable().optional(),
+});
+
+const openCodeUpgradeResultSchema = z.object({
+  success: z.boolean().optional(),
+  version: z.string().optional(),
+  error: z.string().optional(),
+});
+
+type OpenCodeUpgradePhase = 'checking' | 'ready' | 'updating' | 'updated' | 'check-error' | 'update-error';
 
 export const OpenCodeCliSettings: React.FC = () => {
   const { t } = useI18n();
   const [value, setValue] = React.useState('');
   const [isLoading, setIsLoading] = React.useState(true);
   const [isSaving, setIsSaving] = React.useState(false);
+  const [upgradePhase, setUpgradePhase] = React.useState<OpenCodeUpgradePhase>('checking');
+  const [upgradeStatus, setUpgradeStatus] = React.useState<z.infer<typeof openCodeUpgradeStatusSchema> | null>(null);
+  const [installedVersion, setInstalledVersion] = React.useState('');
+  const upgradeRequestIdRef = React.useRef(0);
   const showOpenCodeUpdateNotifications = useUIStore((state) => state.showOpenCodeUpdateNotifications);
   const setShowOpenCodeUpdateNotifications = useUIStore((state) => state.setShowOpenCodeUpdateNotifications);
   const agentControlToolEnabled = useUIStore((state) => state.agentControlToolEnabled);
@@ -57,6 +81,40 @@ export const OpenCodeCliSettings: React.FC = () => {
       cancelled = true;
     };
   }, []);
+
+  const checkForOpenCodeUpdate = React.useCallback(async () => {
+    const requestId = ++upgradeRequestIdRef.current;
+    setUpgradePhase('checking');
+    setInstalledVersion('');
+
+    try {
+      const response = await runtimeFetch('/api/opencode/upgrade-status', {
+        headers: { Accept: 'application/json' },
+      });
+      const parsed = openCodeUpgradeStatusSchema.safeParse(await response.json().catch(() => null));
+      if (!response.ok || !parsed.success) throw new Error('Invalid OpenCode upgrade status');
+      if (upgradeRequestIdRef.current !== requestId) return;
+
+      setUpgradeStatus(parsed.data);
+      setUpgradePhase('ready');
+    } catch {
+      if (upgradeRequestIdRef.current !== requestId) return;
+      setUpgradeStatus(null);
+      setUpgradePhase('check-error');
+    }
+  }, []);
+
+  React.useEffect(() => {
+    void checkForOpenCodeUpdate();
+    const unsubscribe = subscribeRuntimeEndpointChanged(() => {
+      void checkForOpenCodeUpdate();
+    });
+
+    return () => {
+      upgradeRequestIdRef.current += 1;
+      unsubscribe();
+    };
+  }, [checkForOpenCodeUpdate]);
 
   const handleBrowse = React.useCallback(async () => {
     if (typeof window === 'undefined') {
@@ -109,6 +167,47 @@ export const OpenCodeCliSettings: React.FC = () => {
     void updateDesktopSettings({ agentControlToolEnabled: enabled });
   }, [setAgentControlToolEnabled]);
 
+  const latestVersion = upgradeStatus?.latestVersion?.trim() ?? '';
+  const updateAvailable = upgradePhase !== 'updated'
+    && upgradeStatus?.upgrade?.supported === true
+    && upgradeStatus.available === true
+    && latestVersion.length > 0;
+  let updateDescription = t('settings.openchamber.opencodeCli.state.updateUnavailable');
+  if (upgradePhase === 'checking') {
+    updateDescription = t('settings.openchamber.about.state.checking');
+  } else if (upgradePhase === 'updating') {
+    updateDescription = t('opencodeUpdate.toast.upgrading.title');
+  } else if (upgradePhase === 'updated') {
+    updateDescription = t('opencodeUpdate.toast.updated.descriptionWithVersion', { version: installedVersion || latestVersion });
+  } else if (upgradePhase === 'check-error') {
+    updateDescription = t('settings.openchamber.opencodeCli.state.checkFailed');
+  } else if (upgradePhase === 'update-error') {
+    updateDescription = t('opencodeUpdate.toast.failed.title');
+  } else if (updateAvailable) {
+    updateDescription = t('opencodeUpdate.toast.available.description', { version: latestVersion });
+  } else if (upgradeStatus?.upgrade?.supported === true) {
+    updateDescription = t('settings.openchamber.about.toast.latestVersion');
+  }
+
+  let updateButtonLabel = t('settings.openchamber.about.actions.checkForUpdates');
+  if (upgradePhase === 'checking') {
+    updateButtonLabel = t('settings.openchamber.about.state.checking');
+  } else if (upgradePhase === 'updating') {
+    updateButtonLabel = t('opencodeUpdate.toast.upgrading.title');
+  } else if (upgradePhase === 'updated') {
+    updateButtonLabel = t('opencodeUpdate.toast.actions.reload');
+  } else if (updateAvailable) {
+    updateButtonLabel = t('opencodeUpdate.toast.actions.update');
+  }
+
+  const isUpgradePending = upgradePhase === 'checking' || upgradePhase === 'updating';
+  let updateButtonIcon: 'loader' | 'download' | 'refresh' = 'refresh';
+  if (isUpgradePending) {
+    updateButtonIcon = 'loader';
+  } else if (updateAvailable) {
+    updateButtonIcon = 'download';
+  }
+
   return (
     <SettingsSection title={t('settings.openchamber.opencodeCli.title')}>
       <div className="space-y-0.5">
@@ -148,6 +247,70 @@ export const OpenCodeCliSettings: React.FC = () => {
             title={t('settings.openchamber.opencodeCli.actions.browse')}
           >
             <Icon name="folder" className="h-4 w-4" />
+          </Button>
+        </SettingsFieldRow>
+
+        <SettingsFieldRow
+          settingsItem="sessions.opencode-update"
+          label={t('settings.openchamber.opencodeCli.field.update')}
+          description={updateDescription}
+          info={t('settings.openchamber.opencodeCli.field.updateInfo')}
+          alignEnd={false}
+          controlClassName="@xl:w-[20rem]"
+        >
+          <Button
+            type="button"
+            variant={updateAvailable || upgradePhase === 'updated' ? 'default' : 'outline'}
+            size="xs"
+            disabled={isUpgradePending}
+            className="shrink-0 !font-normal"
+            onClick={async () => {
+              if (upgradePhase === 'updated') {
+                await reloadOpenCodeConfiguration({
+                  message: t('opencodeUpdate.toast.reload.message'),
+                  mode: 'projects',
+                  scopes: ['all'],
+                });
+                return;
+              }
+
+              if (!updateAvailable) {
+                await checkForOpenCodeUpdate();
+                return;
+              }
+
+              const requestId = ++upgradeRequestIdRef.current;
+              setUpgradePhase('updating');
+
+              try {
+                const response = await runtimeFetch('/api/opencode/upgrade', {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    Accept: 'application/json',
+                  },
+                  body: JSON.stringify({}),
+                });
+                const parsed = openCodeUpgradeResultSchema.safeParse(await response.json().catch(() => null));
+                if (!response.ok || !parsed.success || parsed.data.success === false) {
+                  throw new Error(parsed.success ? parsed.data.error : 'Invalid OpenCode upgrade response');
+                }
+                if (upgradeRequestIdRef.current !== requestId) return;
+
+                setInstalledVersion(parsed.data.version?.trim() || latestVersion);
+                setUpgradePhase('updated');
+              } catch {
+                if (upgradeRequestIdRef.current === requestId) {
+                  setUpgradePhase('update-error');
+                }
+              }
+            }}
+          >
+            <Icon
+              name={updateButtonIcon}
+              className={isUpgradePending ? 'size-4 animate-spin' : 'size-4'}
+            />
+            {updateButtonLabel}
           </Button>
         </SettingsFieldRow>
 

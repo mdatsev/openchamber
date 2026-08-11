@@ -482,6 +482,14 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     isAvailable: (ctx) => !ctx.isVSCode && !ctx.isWindowsArm64,
   },
   {
+    id: 'sessions.opencode-update',
+    page: 'general',
+    titleKey: 'settings.openchamber.opencodeCli.field.update',
+    descriptionKey: 'settings.openchamber.opencodeCli.field.updateInfo',
+    keywords: ['opencode', 'cli', 'update', 'upgrade', 'version'],
+    isAvailable: (ctx) => !ctx.isVSCode,
+  },
+  {
     id: 'sessions.agent-control-tool',
     page: 'general',
     titleKey: 'settings.openchamber.opencodeCli.field.agentControlTool',
