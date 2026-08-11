@@ -40,7 +40,7 @@ import { formatProjectLabel, formatSessionCompactDateLabel, formatSessionDateLab
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useSessionDisplayStore } from '@/stores/useSessionDisplayStore';
 import { getGitHubPrStatusKey, usePrVisualSummary } from '@/stores/useGitHubPrStatusStore';
-import { useSessionUnseenCount } from '@/sync/notification-store';
+import { markSessionUnread, markSessionViewed, useSessionUnseenCount } from '@/sync/notification-store';
 import { useSessionMultiSelectStore } from '@/stores/useSessionMultiSelectStore';
 import { useI18n } from '@/lib/i18n';
 import { useShiftKeyHeld } from '@/hooks/useShiftKeyHeld';
@@ -473,7 +473,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
   const expansionKey = menuInstanceKey;
   const isExpanded = hasSessionSearchQuery ? true : expandedParents.has(expansionKey);
   const isSubtaskSession = Boolean((resolvedSession as Session & { parentID?: string | null }).parentID);
-  const unseenCount = useSessionUnseenCount(session.id);
+  const unseenCount = useSessionUnseenCount(sessionDirectory, session.id);
   const needsAttention = unseenCount > 0 && (!isSubtaskSession || notifyOnSubtasks);
   const sessionTimestamp = resolvedSession.time?.updated || resolvedSession.time?.created || Date.now();
   const sessionUpdatedLabel = formatSessionDateLabel(sessionTimestamp);
@@ -950,6 +950,20 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
       <Item onClick={() => sessionDirectory && togglePinnedSession({ directory: sessionDirectory, sessionId: session.id })} className="[&>svg]:mr-1">
         {isPinnedSession ? <Icon name="unpin" className="mr-1 h-4 w-4" /> : <Icon name="pushpin" className="mr-1 h-4 w-4" />}
         {isPinnedSession ? t('sessions.sidebar.session.menu.unpin') : t('sessions.sidebar.session.menu.pin')}
+      </Item>
+      <Item
+        disabled={!sessionDirectory}
+        onClick={() => {
+          if (!sessionDirectory) return;
+          if (unseenCount > 0) markSessionViewed(sessionDirectory, session.id);
+          else markSessionUnread(sessionDirectory, session.id);
+        }}
+        className="[&>svg]:mr-1"
+      >
+        <Icon name={unseenCount > 0 ? "eye" : "eye-off"} className="mr-1 h-4 w-4" />
+        {unseenCount > 0
+          ? t('sessions.sidebar.session.menu.markRead')
+          : t('sessions.sidebar.session.menu.markUnread')}
       </Item>
       {!resolvedSession.share ? (
         <Item onClick={() => handleShareSession(resolvedSession)} className="[&>svg]:mr-1">

@@ -2613,7 +2613,7 @@ export const ContextPanel: React.FC = () => {
         return;
       }
 
-      markSessionViewed(activeChatSessionID);
+      markSessionViewed(directoryKey, activeChatSessionID);
       setExternallyViewedSession(directoryKey, activeChatSessionID, true);
     };
 

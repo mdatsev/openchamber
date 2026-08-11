@@ -19,6 +19,7 @@ import { useGlobalSessionStatusStore } from '@/sync/global-session-status';
 import { resetSessionOrdering } from '@/sync/session-ordering';
 import { syncDesktopSettings } from '@/lib/persistence';
 import { useDisposableSideChatsStore } from '@/stores/useDisposableSideChatsStore';
+import { resetSessionInboxForRuntimeSwitch } from '@/stores/useSessionInboxStore';
 
 // Same-device transport switch (LAN⇄relay for one paired device): rebind the SDK
 // to the new transport WITHOUT tearing down connection/session state or remounting
@@ -53,6 +54,7 @@ export const resetAppForRuntimeEndpointChange = (detail: RuntimeEndpointChangedD
   });
   useProjectsStore.getState().resetForRuntimeSwitch();
   useDisposableSideChatsStore.getState().resetForRuntimeSwitch(detail.runtimeKey);
+  resetSessionInboxForRuntimeSwitch(detail.runtimeKey);
   // Cross-project session list (mobile sessions sheet & co) belongs to the
   // previous instance — drop it so stale sessions can't linger after a switch.
   useGlobalSessionsStore.getState().resetForRuntimeSwitch();

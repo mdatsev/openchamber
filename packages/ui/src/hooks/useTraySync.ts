@@ -366,7 +366,9 @@ const buildSnapshot = (instanceName: string): TraySnapshot => {
   // (instant, but can miss sessions created outside this window) or the
   // cross-project status map (event-driven for every directory + polled
   // reconciliation). Requiring agreement would re-introduce the gaps.
-  const globalStatusById = useGlobalSessionStatusStore.getState().statusById;
+  const globalStatus = useGlobalSessionStatusStore.getState();
+  const globalStatusById = globalStatus.statusById;
+  const interruptedIds = globalStatus.interruptedIds;
   const resolveStatus = (id: string): TraySessionStatus => {
     const fromStores = live.statusById.get(id);
     if (fromStores && fromStores !== 'idle') return fromStores;
@@ -397,7 +399,7 @@ const buildSnapshot = (instanceName: string): TraySnapshot => {
         status: rollupStatus(family),
         branch: directory ? (live.branchByDirectory.get(directory) ?? '') : '',
         unseen: family.reduce((sum, id) => sum + (notif.unseenCount[id] ?? 0), 0),
-        hasError: family.some((id) => notif.unseenHasError[id] ?? false),
+        hasError: family.some((id) => interruptedIds.has(id)),
         directory,
         subtitle: resolveSessionSubtitle(directory, session, projects, worktreesByProject, live.branchByDirectory),
       };

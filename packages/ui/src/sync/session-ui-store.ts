@@ -786,9 +786,9 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       }, 0)
     }
 
-    // Mark session viewed in notification store + update active session ref
+    // Mark the session read in the server-backed inbox and update active-session presence.
     if (id) {
-      markSessionViewed(id)
+      if (resolvedDir) markSessionViewed(resolvedDir, id)
       setActiveSession(resolvedDir ?? "", id)
     }
   },

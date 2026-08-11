@@ -624,8 +624,10 @@ function App({ apis }: AppProps) {
   React.useEffect(() => {
     if (typeof window === 'undefined') return;
     const onFocus = () => {
-      const sessionId = useSessionUIStore.getState().currentSessionId;
-      if (sessionId) markSessionViewed(sessionId);
+      const sessionState = useSessionUIStore.getState();
+      const sessionId = sessionState.currentSessionId;
+      const directory = sessionId ? sessionState.getDirectoryForSession(sessionId) : null;
+      if (sessionId && directory) markSessionViewed(directory, sessionId);
     };
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
