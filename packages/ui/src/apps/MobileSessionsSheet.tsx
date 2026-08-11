@@ -49,6 +49,10 @@ import {
   listProjectWorktrees,
   partitionWorktreesByRegisteredProject,
 } from '@/lib/worktrees/worktreeManager';
+import {
+  startSessionTreeWorktreeMove,
+  useIsSessionWorktreeMovePending,
+} from '@/lib/worktrees/sessionWorktreeMove';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { mergeLiveSessionWithGlobalSession, refreshGlobalSessions, resolveGlobalSessionDirectory, useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
 import { useMobileSessionExpansionStore } from '@/stores/useMobileSessionExpansionStore';
@@ -268,6 +272,7 @@ const NewWorktreeIconButton: React.FC<{
 
 // Width of the swipe-revealed action area (pin + unread + rename + archive + delete).
 const ROW_ACTIONS_WIDTH = 240;
+const ROW_ACTION_WIDTH = 48;
 const ROW_SWIPE_SNAP_MS = 180;
 
 /** Generic swipe-left-to-reveal wrapper for drawer rows (projects, worktrees).
@@ -438,6 +443,7 @@ const SessionRow: React.FC<{
   revealed?: boolean;
   onRevealedChange?: (revealed: boolean) => void;
   confirmingDelete?: boolean;
+  onMoveToWorktree?: () => void;
   onArchive?: () => void;
   onRequestDelete?: () => void;
   onConfirmDelete?: () => void;
@@ -458,6 +464,7 @@ const SessionRow: React.FC<{
   revealed = false,
   onRevealedChange,
   confirmingDelete = false,
+  onMoveToWorktree,
   onArchive,
   onRequestDelete,
   onConfirmDelete,
@@ -479,7 +486,10 @@ const SessionRow: React.FC<{
   const togglePinnedSession = useSessionPinnedStore((state) => state.toggle);
   const statusType = liveStatus?.type ?? 'idle';
   const isStreaming = statusType === 'busy' || statusType === 'retry';
-  const showUnreadDot = !isStreaming && unseenCount > 0 && !active;
+  const isMovingToWorktree = useIsSessionWorktreeMovePending(session.id);
+  const showActivitySpinner = isMovingToWorktree || isStreaming;
+  const showUnreadDot = !showActivitySpinner && unseenCount > 0 && !active;
+  const actionsWidth = ROW_ACTIONS_WIDTH + (onMoveToWorktree ? ROW_ACTION_WIDTH : 0);
 
   const contentRef = React.useRef<HTMLDivElement>(null);
   const startRef = React.useRef<{ x: number; y: number } | null>(null);
@@ -499,8 +509,8 @@ const SessionRow: React.FC<{
 
   React.useEffect(() => {
     revealedRef.current = revealed;
-    applyOffset(revealed ? -ROW_ACTIONS_WIDTH : 0, true);
-  }, [applyOffset, revealed]);
+    applyOffset(revealed ? -actionsWidth : 0, true);
+  }, [actionsWidth, applyOffset, revealed]);
 
   const handleTouchStart = (event: React.TouchEvent) => {
     if (!swipeEnabled || event.touches.length !== 1) return;
@@ -518,8 +528,8 @@ const SessionRow: React.FC<{
       if (Math.abs(dx) < 8 || Math.abs(dx) <= Math.abs(dy)) return;
       draggingRef.current = true;
     }
-    const base = revealedRef.current ? -ROW_ACTIONS_WIDTH : 0;
-    const next = Math.min(0, Math.max(-ROW_ACTIONS_WIDTH, base + dx));
+    const base = revealedRef.current ? -actionsWidth : 0;
+    const next = Math.min(0, Math.max(-actionsWidth, base + dx));
     applyOffset(next, false);
   };
 
@@ -527,8 +537,8 @@ const SessionRow: React.FC<{
     startRef.current = null;
     if (!draggingRef.current) return;
     draggingRef.current = false;
-    const shouldReveal = offsetRef.current < -ROW_ACTIONS_WIDTH / 2;
-    applyOffset(shouldReveal ? -ROW_ACTIONS_WIDTH : 0, true);
+    const shouldReveal = offsetRef.current < -actionsWidth / 2;
+    applyOffset(shouldReveal ? -actionsWidth : 0, true);
     if (shouldReveal !== revealedRef.current) onRevealedChange?.(shouldReveal);
   };
 
@@ -546,7 +556,7 @@ const SessionRow: React.FC<{
       {swipeEnabled ? (
         <div
           className="absolute inset-y-0 right-0 flex items-stretch"
-          style={{ width: ROW_ACTIONS_WIDTH }}
+          style={{ width: actionsWidth }}
           aria-hidden={!revealed}
         >
           {/* Icon-only actions on the row's own background — they read as the
@@ -594,6 +604,26 @@ const SessionRow: React.FC<{
           >
             <RiEdit2Line className="size-[18px]" />
           </button>
+          {onMoveToWorktree ? (
+            <button
+              type="button"
+              tabIndex={revealed ? 0 : -1}
+              disabled={isStreaming || isMovingToWorktree}
+              className="flex flex-1 items-center justify-center text-muted-foreground transition-colors active:text-foreground disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
+              aria-label={isMovingToWorktree
+                ? t('sessions.sidebar.session.moveToWorktree.tooltipMoving')
+                : isStreaming
+                  ? t('sessions.sidebar.session.moveToWorktree.tooltipBusy')
+                  : t('sessions.sidebar.session.menu.moveToWorktree')}
+              onClick={onMoveToWorktree}
+              style={{ touchAction: 'manipulation' }}
+            >
+              <Icon
+                name={isMovingToWorktree ? 'loader-4' : 'folder-shared'}
+                className={cn('size-[18px]', isMovingToWorktree && 'animate-spin')}
+              />
+            </button>
+          ) : null}
           <button
             type="button"
             tabIndex={revealed ? 0 : -1}
@@ -639,7 +669,7 @@ const SessionRow: React.FC<{
         {/* Left gutter slot: live activity indicator takes priority over the
             subsession chevron — same position, so rows never shift. When the
             row has children the slot still toggles them either way. */}
-        {isStreaming || showUnreadDot || pinned || (hasChildren && onToggleChildren) ? (
+        {showActivitySpinner || showUnreadDot || pinned || (hasChildren && onToggleChildren) ? (
           <button
             type="button"
             className="absolute z-10 flex w-6 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
@@ -653,7 +683,7 @@ const SessionRow: React.FC<{
               onToggleChildren?.();
             }}
           >
-            {isStreaming ? (
+            {showActivitySpinner ? (
               <Icon name="loader-4" className="size-3.5 animate-spin text-primary" />
             ) : showUnreadDot ? (
               <span className="size-1.5 rounded-full bg-[var(--status-info)]" aria-hidden />
@@ -1203,6 +1233,35 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
       const children = childrenByParent.get(session.id) ?? [];
       const hasChildren = children.length > 0;
       const expanded = Boolean(expandedParents[session.id]);
+      const sourceDirectory = getSessionDirectory(session);
+      let handleMoveToWorktree: (() => void) | undefined;
+      if (node.project.isGitRepo && !getParentId(session) && sourceDirectory) {
+        handleMoveToWorktree = () => {
+          setRevealedSessionId(null);
+          setConfirmingDeleteSessionId(null);
+          const descendants: Session[] = [];
+          const pendingParentIds = [session.id];
+          for (let index = 0; index < pendingParentIds.length; index += 1) {
+            for (const child of childrenByParent.get(pendingParentIds[index]) ?? []) {
+              descendants.push(child);
+              pendingParentIds.push(child.id);
+            }
+          }
+          startSessionTreeWorktreeMove({
+            root: session,
+            descendants,
+            sourceDirectory,
+            successMessage: t('sessions.sidebar.session.moveToWorktree.success'),
+            failureMessage: t('sessions.sidebar.session.moveToWorktree.failed'),
+            onSuccess: (worktreePath) => {
+              const normalizedWorktreePath = normalizePath(worktreePath);
+              setProjectExpanded(node.project.id, true);
+              setWorktreeExpanded(`${node.project.id}::${normalizedWorktreePath}`, true);
+              setWorktreeRefreshKey((value) => value + 1);
+            },
+          });
+        };
+      }
       return (
         <React.Fragment key={session.id}>
           <SessionRow
@@ -1216,6 +1275,7 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
             revealed={revealedSessionId === session.id}
             onRevealedChange={(nextRevealed) => handleRowRevealedChange(session.id, nextRevealed)}
             confirmingDelete={confirmingDeleteSessionId === session.id}
+            onMoveToWorktree={handleMoveToWorktree}
             onArchive={() => void handleArchive(session)}
             onRequestDelete={() => setConfirmingDeleteSessionId(session.id)}
             onConfirmDelete={() => void handleConfirmDelete(session)}

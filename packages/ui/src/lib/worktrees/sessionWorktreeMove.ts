@@ -171,10 +171,16 @@ export const startSessionTreeWorktreeMove = (input: {
   sourceDirectory: string;
   successMessage: string;
   failureMessage: string;
+  onSuccess?: (worktreePath: string) => void;
 }): void => {
   void moveSessionTreeToQuickWorktree(input)
-    .then(() => toast.success(input.successMessage))
-    .catch((error) => toast.error(input.failureMessage, {
-      description: error instanceof Error ? error.message : String(error),
-    }));
+    .then(
+      (worktreePath) => {
+        toast.success(input.successMessage);
+        input.onSuccess?.(worktreePath);
+      },
+      (error) => toast.error(input.failureMessage, {
+        description: error instanceof Error ? error.message : String(error),
+      }),
+    );
 };
