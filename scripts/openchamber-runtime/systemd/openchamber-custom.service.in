@@ -14,6 +14,7 @@ Environment="OPENCODE_SKIP_START=true"
 ExecStart=@NODE_BIN@ @CUSTOM_REPO@/packages/web/bin/cli.js serve --foreground --host 127.0.0.1 --port 8795
 Restart=on-failure
 RestartSec=5
+SuccessExitStatus=143
 KillMode=control-group
 TimeoutStopSec=15
 
