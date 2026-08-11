@@ -14,6 +14,7 @@ Environment="OPENCODE_SKIP_START=true"
 ExecStart=@OPENCHAMBER_BIN@ serve --foreground --host 127.0.0.1 --port 8792
 Restart=on-failure
 RestartSec=5
+SuccessExitStatus=143
 KillMode=control-group
 TimeoutStopSec=15
 
