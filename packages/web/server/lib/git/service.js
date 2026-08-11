@@ -2485,6 +2485,285 @@ export async function getRangeFiles(directory, { base, head } = {}) {
     .filter(Boolean);
 }
 
+const parseWorktreeComparisonPaths = (raw) => String(raw || '')
+  .split('\0')
+  .filter(Boolean);
+
+const listUntrackedPathsFromStatus = (raw) => parseWorktreeComparisonPaths(raw)
+  .filter((entry) => entry.startsWith('?? '))
+  .map((entry) => entry.slice(3));
+
+const parseWorktreeComparisonStatuses = (raw) => {
+  const entries = parseWorktreeComparisonPaths(raw);
+  const statuses = new Map();
+
+  for (let index = 0; index < entries.length;) {
+    const entry = entries[index++] || '';
+    const separator = entry.indexOf('\t');
+    const code = (separator === -1 ? entry : entry.slice(0, separator)).trim();
+    const filePath = separator === -1 ? entries[index++] : entry.slice(separator + 1);
+    if (!filePath) continue;
+
+    let status = 'modified';
+    if (code === 'A') status = 'added';
+    else if (code === 'D') status = 'deleted';
+    statuses.set(filePath, status);
+  }
+
+  return statuses;
+};
+
+const parseWorktreeComparisonStats = (raw) => {
+  const stats = new Map();
+  for (const entry of parseWorktreeComparisonPaths(raw)) {
+    const firstSeparator = entry.indexOf('\t');
+    const secondSeparator = firstSeparator === -1 ? -1 : entry.indexOf('\t', firstSeparator + 1);
+    if (firstSeparator === -1 || secondSeparator === -1) continue;
+
+    const additionsRaw = entry.slice(0, firstSeparator);
+    const deletionsRaw = entry.slice(firstSeparator + 1, secondSeparator);
+    const filePath = entry.slice(secondSeparator + 1);
+    if (!filePath) continue;
+
+    stats.set(filePath, {
+      additions: additionsRaw === '-' ? 0 : Number.parseInt(additionsRaw, 10) || 0,
+      deletions: deletionsRaw === '-' ? 0 : Number.parseInt(deletionsRaw, 10) || 0,
+    });
+  }
+  return stats;
+};
+
+const parseQuotedComparisonPath = (value) => {
+  let output = '';
+  let quotedBytes = [];
+  const flushQuotedBytes = () => {
+    if (quotedBytes.length === 0) return;
+    output += Buffer.from(quotedBytes).toString('utf8');
+    quotedBytes = [];
+  };
+
+  for (let index = 1; index < value.length; index += 1) {
+    const character = value[index];
+    if (character === '"') {
+      flushQuotedBytes();
+      return { value: output, end: index + 1 };
+    }
+    if (character !== '\\') {
+      flushQuotedBytes();
+      output += character;
+      continue;
+    }
+
+    const octal = value.slice(index + 1, index + 4);
+    if (/^[0-7]{3}$/.test(octal)) {
+      quotedBytes.push(Number.parseInt(octal, 8));
+      index += 3;
+      continue;
+    }
+
+    flushQuotedBytes();
+    const next = value[++index];
+    if (next === 't') output += '\t';
+    else if (next === 'n') output += '\n';
+    else if (next === 'r') output += '\r';
+    else if (next === 'a') output += '\x07';
+    else if (next === 'b') output += '\b';
+    else if (next === 'f') output += '\f';
+    else if (next === 'v') output += '\v';
+    else if (next === '"' || next === '\\') output += next;
+    else output += next || '';
+  }
+  return null;
+};
+
+const parseComparisonPathToken = (value) => {
+  if (!value.startsWith('"')) return value.split('\t')[0];
+  return parseQuotedComparisonPath(value)?.value || value;
+};
+
+const fileFromComparisonDiffPath = (value) => {
+  if (!value || value === '/dev/null') return null;
+  const filePath = parseComparisonPathToken(value);
+  if (filePath.startsWith('a/') || filePath.startsWith('b/')) return filePath.slice(2);
+  return filePath;
+};
+
+const fileFromComparisonHeader = (header) => {
+  if (header.startsWith('"')) {
+    const first = parseQuotedComparisonPath(header);
+    const second = first ? header.slice(first.end).trimStart() : '';
+    if (!second) return null;
+    if (!second.startsWith('"')) return fileFromComparisonDiffPath(second);
+    return fileFromComparisonDiffPath(parseQuotedComparisonPath(second)?.value);
+  }
+
+  const separator = header.indexOf(' b/');
+  if (separator === -1) return null;
+  return fileFromComparisonDiffPath(header.slice(separator + 1));
+};
+
+const fileFromComparisonPatch = (patch) => {
+  const modified = /^\+\+\+ (.+)$/m.exec(patch)?.[1];
+  const original = /^--- (.+)$/m.exec(patch)?.[1];
+  const filePath = fileFromComparisonDiffPath(modified) || fileFromComparisonDiffPath(original);
+  if (filePath) return filePath;
+
+  const header = /^diff --git (.+)$/m.exec(patch)?.[1];
+  return fileFromComparisonHeader(header || '');
+};
+
+const splitWorktreeComparisonPatch = (patch) => {
+  const text = String(patch || '');
+  const starts = [...text.matchAll(/(?:^|\n)diff --git /g)].map((match) => (
+    match[0].startsWith('\n') ? match.index + 1 : match.index
+  ));
+  return starts.map((start, index) => text.slice(start, starts[index + 1] ?? text.length));
+};
+
+const countPatchChanges = (patch) => {
+  let additions = 0;
+  let deletions = 0;
+  for (const line of String(patch || '').split(/\r?\n/)) {
+    if (line.startsWith('+++') || line.startsWith('---')) continue;
+    if (line.startsWith('+')) additions += 1;
+    else if (line.startsWith('-')) deletions += 1;
+  }
+  return { additions, deletions };
+};
+
+export async function getWorktreeComparison(directory, { includePatches = false, contextLines = 3 } = {}) {
+  const context = await resolveWorktreeProjectContext(directory);
+  const [sandboxCanonical, primaryCanonical] = await Promise.all([
+    canonicalPath(context.sandbox),
+    canonicalPath(context.primaryWorktree),
+  ]);
+
+  if (sandboxCanonical === primaryCanonical) {
+    return { available: false, reason: 'primary-worktree' };
+  }
+
+  const [baseBranchResult, baseHeadResult, headResult, statusResult] = await Promise.all([
+    runGitCommand(context.primaryWorktree, ['symbolic-ref', '--quiet', '--short', 'HEAD']),
+    runGitCommand(context.primaryWorktree, ['rev-parse', '--verify', 'HEAD']),
+    runGitCommand(context.sandbox, ['rev-parse', '--verify', 'HEAD']),
+    runGitCommand(context.sandbox, ['status', '--porcelain=v1', '-z', '--untracked-files=all']),
+  ]);
+
+  const baseBranch = String(baseBranchResult.stdout || '').trim();
+  const baseHead = String(baseHeadResult.stdout || '').trim();
+  const head = String(headResult.stdout || '').trim();
+  if (!baseBranchResult.success || !baseBranch) {
+    throw new Error('The primary worktree must have a checked-out branch');
+  }
+  if (!baseHeadResult.success || !baseHead) {
+    throw new Error('The primary worktree branch has no commit to compare');
+  }
+  if (!headResult.success || !head) {
+    throw new Error('The linked worktree has no commit to compare');
+  }
+  if (!statusResult.success) {
+    throw new Error(statusResult.message || 'Failed to read linked worktree status');
+  }
+
+  const cherryResult = await runGitCommandOrThrow(
+    context.sandbox,
+    ['cherry', baseHead, head],
+    'Failed to compare linked worktree commits'
+  );
+  const unintegratedCommitCount = String(cherryResult.stdout || '')
+    .split('\n')
+    .filter((line) => line.trim().startsWith('+')).length;
+  const hasUnintegratedCommits = unintegratedCommitCount > 0;
+  const statusOutput = String(statusResult.stdout || '');
+  const isDirty = Boolean(statusOutput);
+  const untrackedPaths = listUntrackedPathsFromStatus(statusOutput);
+
+  let mergeBase = head;
+  if (hasUnintegratedCommits) {
+    // `git cherry` treats patch-equivalent cherry-picks as integrated. When all
+    // commits are integrated, compare HEAD only to its dirty tree. Otherwise a
+    // merge base excludes primary-only commits from the remaining branch diff.
+    const mergeBaseResult = await runGitCommand(
+      context.sandbox,
+      ['merge-base', baseHead, head]
+    );
+    mergeBase = String(mergeBaseResult.stdout || '').trim();
+    if (!mergeBaseResult.success || !mergeBase) {
+      throw new Error('The primary and linked worktree branches do not share an ancestor');
+    }
+  }
+
+  const trackedPathsResult = await runGitCommandOrThrow(
+    context.sandbox,
+    ['diff', '--name-only', '--no-renames', '-z', mergeBase, '--'],
+    'Failed to list linked worktree changes'
+  );
+  const trackedPaths = parseWorktreeComparisonPaths(trackedPathsResult.stdout);
+  const paths = Array.from(new Set([...trackedPaths, ...untrackedPaths])).sort((left, right) => left.localeCompare(right));
+  const summary = {
+    available: true,
+    baseBranch,
+    baseHead,
+    head,
+    mergeBase,
+    hasUnintegratedCommits,
+    unintegratedCommitCount,
+    isDirty,
+    fileCount: paths.length,
+    hasChanges: paths.length > 0,
+  };
+
+  if (!includePatches || paths.length === 0) {
+    return includePatches ? { ...summary, files: [] } : summary;
+  }
+
+  const comparisonContextLines = Number.isFinite(contextLines) ? Math.max(0, contextLines) : 3;
+  const [statusesResult, statsResult, patchResult, untrackedPatches] = await Promise.all([
+    runGitCommandOrThrow(
+      context.sandbox,
+      ['diff', '--name-status', '--no-renames', '-z', mergeBase, '--'],
+      'Failed to classify linked worktree changes'
+    ),
+    runGitCommandOrThrow(
+      context.sandbox,
+      ['diff', '--numstat', '--no-renames', '-z', mergeBase, '--'],
+      'Failed to calculate linked worktree change statistics'
+    ),
+    runGitCommandOrThrow(
+      context.sandbox,
+      ['diff', '--no-color', '--no-ext-diff', '--no-renames', `-U${comparisonContextLines}`, mergeBase, '--'],
+      'Failed to load linked worktree patches'
+    ),
+    getUntrackedDiffs(context.sandbox, untrackedPaths, { concurrency: 4, contextLines: comparisonContextLines }),
+  ]);
+
+  const statuses = parseWorktreeComparisonStatuses(statusesResult.stdout);
+  const stats = parseWorktreeComparisonStats(statsResult.stdout);
+  const patches = new Map();
+  for (const patch of splitWorktreeComparisonPatch(patchResult.stdout)) {
+    const filePath = fileFromComparisonPatch(patch);
+    if (!filePath) continue;
+    patches.set(filePath, `${patches.get(filePath) || ''}${patch}`);
+  }
+  untrackedPaths.forEach((filePath, index) => {
+    const patch = untrackedPatches[index] || '';
+    patches.set(filePath, `${patches.get(filePath) || ''}${patch}`);
+    if (!stats.has(filePath)) stats.set(filePath, countPatchChanges(patch));
+    if (!statuses.has(filePath)) statuses.set(filePath, 'added');
+  });
+
+  return {
+    ...summary,
+    files: paths.map((filePath) => ({
+      path: filePath,
+      status: statuses.get(filePath) || 'modified',
+      additions: stats.get(filePath)?.additions || 0,
+      deletions: stats.get(filePath)?.deletions || 0,
+      patch: patches.get(filePath) || '',
+    })),
+  };
+}
+
 const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico', 'bmp', 'avif'];
 
 const BINARY_SNIFF_BYTES = 8192;

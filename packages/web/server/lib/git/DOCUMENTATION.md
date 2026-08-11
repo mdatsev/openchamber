@@ -28,6 +28,7 @@ The following functions are exported and used by the web server:
 - `getDiff(directory, { path, staged, contextLines })`: Get diff output for files or entire working tree. Untracked symbolic links are represented as link entries without following their targets.
 - `getRangeDiff(directory, { base, head, path, contextLines })`: Get diff between two refs. Uses three-dot `base...head` semantics, so work merged into `head` from `base` is excluded and only the branch's own changes are returned. Prefers `origin/<base>` when that remote-tracking ref exists, so a stale local base branch does not resurface already-merged commits. Exposed as `GET /api/git/range-diff` (`path` optional; omit it for the whole range).
 - `getRangeFiles(directory, { base, head })`: Get list of changed files between two refs.
+- `getWorktreeComparison(directory, { includePatches, contextLines })`: Compare a linked worktree, including its staged, unstaged, and untracked files, with the branch currently checked out in the primary worktree. The summary form omits file patches; the full form returns per-file status, stats, and patches. Exposed as `GET /api/git/worktree-comparison`.
 - `getFileDiff(directory, { path, staged })`: Get original and modified file contents for a single file (handles images as data URLs and symbolic links as their link-target text).
 - `listUntrackedPaths(directory)`: List individual untracked file paths honoring ignore rules. Much cheaper than `getStatus` when that is all a caller needs. Deliberately not `--directory`: collapsed directory entries end in a slash and are rejected by the per-file diff helpers, so a caller would silently lose every file inside a new directory.
 - `getUntrackedDiffs(directory, filePaths, { concurrency, contextLines })`: Diffs for untracked files against an empty tree. Resolves the repository context once instead of per file (`getDiff` re-resolves every call, costing an extra `rev-parse` each time) and bounds how many diff processes run at once. Returns one entry per input path in order; unreadable paths yield `''` rather than failing the batch.
@@ -113,6 +114,14 @@ The following functions are internal helpers used by exported functions:
 
 ### Runtime availability of range diffs
 - `GET /api/git/range-diff` is served by the OpenChamber web server, so it is available to web, desktop, and mobile clients. The shared `GitAPI.getGitRangeDiff` is therefore optional: web supplies the HTTP implementation, and VS Code does not implement it because the extension host serves Git through its own bridge rather than these routes. Features built on range diffs (currently the AI diff walkthrough) are not offered in VS Code.
+
+### Linked worktree comparison
+- `GET /api/git/worktree-comparison` resolves the primary worktree and its currently checked-out branch on every request; it does not assume a configured default branch.
+- A request for the primary worktree returns `{ available: false, reason: 'primary-worktree' }`. A detached or unborn primary `HEAD` is an explicit error because no authoritative base branch exists.
+- `git cherry <base-head> <worktree-head>` identifies patch-equivalent commits already integrated by cherry-pick. If every worktree commit is integrated, the comparison starts at the worktree `HEAD` and therefore reports only dirty changes. If unintegrated commits remain, the comparison starts at the branches' merge base, excluding commits that exist only on the primary branch.
+- The merge-base fallback cannot subtract an integrated commit from the middle of a partially integrated worktree history, so such a mixed history may temporarily include already cherry-picked changes. Squash integration is not recognized because it does not preserve patch identity. Both cases clear once the worktree's remaining commits are integrated normally or by cherry-pick.
+- The comparison is read-only. It never stages, unstages, resets, checks out, or otherwise mutates either worktree.
+- The shared `GitAPI.getWorktreeComparison` method is optional for runtimes that do not use the web server Git routes. Web, Desktop, and mobile use the HTTP implementation; unsupported runtimes retain the ordinary working-tree diff behavior.
 
 ### Staged and unstaged change handling
 - `status.files` exposes both `index` and `working_dir` codes. Shared UI uses these as separate scopes: staged rows are derived from non-empty `index` statuses, while unstaged rows are derived from `working_dir` statuses and untracked files.

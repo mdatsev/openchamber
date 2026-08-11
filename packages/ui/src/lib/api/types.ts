@@ -157,6 +157,38 @@ export interface GetGitRangeDiffOptions {
   contextLines?: number;
 }
 
+export interface GitWorktreeComparisonFile {
+  path: string;
+  status: 'added' | 'deleted' | 'modified';
+  additions: number;
+  deletions: number;
+  patch: string;
+}
+
+export type GitWorktreeComparison =
+  | {
+      available: false;
+      reason: 'primary-worktree';
+    }
+  | {
+      available: true;
+      baseBranch: string;
+      baseHead: string;
+      head: string;
+      mergeBase: string;
+      hasUnintegratedCommits: boolean;
+      unintegratedCommitCount: number;
+      isDirty: boolean;
+      fileCount: number;
+      hasChanges: boolean;
+      files?: GitWorktreeComparisonFile[];
+    };
+
+export interface GetGitWorktreeComparisonOptions {
+  includePatches?: boolean;
+  contextLines?: number;
+}
+
 export interface GitFileDiffResponse {
   original: string;
   modified: string;
@@ -465,6 +497,7 @@ export interface GitAPI {
   getGitDiff(directory: string, options: GetGitDiffOptions): Promise<GitDiffResponse>;
   getGitFileDiff(directory: string, options: GetGitFileDiffOptions): Promise<GitFileDiffResponse>;
   getGitRangeDiff?(directory: string, options: GetGitRangeDiffOptions): Promise<GitDiffResponse>;
+  getWorktreeComparison?(directory: string, options?: GetGitWorktreeComparisonOptions): Promise<GitWorktreeComparison>;
   revertGitFile(directory: string, filePath: string, options?: { scope?: 'all' | 'working' }): Promise<void>;
   stageGitFile(directory: string, filePath: string): Promise<void>;
   stageGitFiles?(directory: string, filePaths: string[]): Promise<void>;

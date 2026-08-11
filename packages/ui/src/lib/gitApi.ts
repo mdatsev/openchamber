@@ -144,6 +144,15 @@ export async function getGitRangeDiff(
   return gitHttp.getGitRangeDiff(directory, options);
 }
 
+export async function getWorktreeComparison(
+  directory: string,
+  options?: import('./api/types').GetGitWorktreeComparisonOptions
+): Promise<import('./api/types').GitWorktreeComparison> {
+  const runtime = getRuntimeGit();
+  if (runtime?.getWorktreeComparison) return runtime.getWorktreeComparison(directory, options);
+  return gitHttp.getWorktreeComparison(directory, options);
+}
+
 export async function revertGitFile(
   directory: string,
   filePath: string,

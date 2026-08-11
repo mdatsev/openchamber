@@ -38,6 +38,7 @@ import {
   mergeCollapsedActivityStates,
   type CollapsedActivityState,
 } from './collapsedActivityState';
+import { WorktreeChangesIndicator } from '../WorktreeChangesIndicator';
 
 type DeleteFolderConfirm = {
   scopeKey: string;
@@ -1103,6 +1104,7 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
                   <span className="min-w-0 truncate typography-ui-label font-semibold text-muted-foreground">
                     {renderHighlightedText(group.label, normalizedSessionSearchQuery)}
                   </span>
+                  {bootstrapDirectory ? <WorktreeChangesIndicator directory={bootstrapDirectory} /> : null}
                   {groupActivityIndicator}
                   {groupPrSummary ? (
                     <span

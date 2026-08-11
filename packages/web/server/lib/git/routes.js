@@ -428,6 +428,26 @@ export function registerGitRoutes(app) {
     }
   });
 
+  app.get('/api/git/worktree-comparison', async (req, res) => {
+    const { getWorktreeComparison } = await getGitLibraries();
+    try {
+      const directory = resolveDirectoryQuery(req.query.directory);
+      if (!directory) {
+        return res.status(400).json({ error: 'directory parameter is required' });
+      }
+
+      const context = req.query.context ? parseInt(String(req.query.context), 10) : undefined;
+      const comparison = await getWorktreeComparison(directory, {
+        includePatches: req.query.patches === 'true',
+        contextLines: Number.isFinite(context) ? context : 3,
+      });
+      res.json(comparison);
+    } catch (error) {
+      console.error('Failed to compare linked worktree:', error);
+      res.status(500).json({ error: error.message || 'Failed to compare linked worktree' });
+    }
+  });
+
   app.post('/api/git/revert', async (req, res) => {
     const { revertFile } = await getGitLibraries();
     try {

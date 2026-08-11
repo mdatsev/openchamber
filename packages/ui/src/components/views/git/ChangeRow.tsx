@@ -50,6 +50,7 @@ interface ChangeRowProps {
   indentPx?: number;
   /** Place the stage/unstage action at the row start (flat view) instead of the end (tree view). */
   actionAtStart?: boolean;
+  showAction?: boolean;
   showRevert?: boolean;
 }
 
@@ -65,6 +66,7 @@ export const ChangeRow = React.memo<ChangeRowProps>(function ChangeRow({
   rowPaddingClassName,
   indentPx = 0,
   actionAtStart = false,
+  showAction = true,
   showRevert = true,
 }) {
   const descriptor = useMemo(() => describeChange(file), [file]);
@@ -75,7 +77,7 @@ export const ChangeRow = React.memo<ChangeRowProps>(function ChangeRow({
 
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent) => {
-      if (event.key === ' ') {
+      if (event.key === ' ' && showAction) {
         event.preventDefault();
         onAction();
       } else if (event.key === 'Enter') {
@@ -83,7 +85,7 @@ export const ChangeRow = React.memo<ChangeRowProps>(function ChangeRow({
         onViewDiff();
       }
     },
-    [onAction, onViewDiff]
+    [onAction, onViewDiff, showAction]
   );
 
   const handleActionClick = useCallback(
@@ -125,7 +127,7 @@ export const ChangeRow = React.memo<ChangeRowProps>(function ChangeRow({
       onKeyDown={handleKeyDown}
       style={indentPx > 0 ? { paddingLeft: `${indentPx}px` } : undefined}
     >
-        {actionAtStart ? actionButton : null}
+        {actionAtStart && showAction ? actionButton : null}
         <span
           className="typography-micro font-semibold w-4 text-center uppercase"
           style={{ color: descriptor.color }}
@@ -187,7 +189,7 @@ export const ChangeRow = React.memo<ChangeRowProps>(function ChangeRow({
             <TooltipContent sideOffset={8}>{t('gitView.changes.revertFileTooltip')}</TooltipContent>
           </Tooltip>
         ) : null}
-        {actionAtStart ? null : actionButton}
+        {!actionAtStart && showAction ? actionButton : null}
     </div>
   );
 });

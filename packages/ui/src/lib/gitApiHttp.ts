@@ -3,6 +3,8 @@ import type {
   GitDiffResponse,
   GetGitDiffOptions,
   GetGitRangeDiffOptions,
+  GetGitWorktreeComparisonOptions,
+  GitWorktreeComparison,
   GitFileDiffResponse,
   GetGitFileDiffOptions,
   GitBranch,
@@ -246,6 +248,25 @@ export async function getGitRangeDiff(
   }
 
   return response.json();
+}
+
+export async function getWorktreeComparison(
+  directory: string,
+  options: GetGitWorktreeComparisonOptions = {}
+): Promise<GitWorktreeComparison> {
+  const response = await runtimeFetch(
+    buildUrl(`${API_BASE}/worktree-comparison`, directory, {
+      patches: options.includePatches ? 'true' : undefined,
+      context: options.contextLines,
+    })
+  );
+
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null) as { error?: string } | null;
+    throw new Error(payload?.error || `Failed to compare linked worktree: ${response.statusText}`);
+  }
+
+  return response.json() as Promise<GitWorktreeComparison>;
 }
 
 export async function getGitFileDiff(directory: string, options: GetGitFileDiffOptions): Promise<GitFileDiffResponse> {
