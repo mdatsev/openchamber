@@ -16,12 +16,6 @@ Restart=on-failure
 RestartSec=5
 KillMode=control-group
 TimeoutStopSec=15
-MemoryAccounting=yes
-MemoryMax=3G
-MemorySwapMax=512M
-TasksAccounting=yes
-TasksMax=1024
-OOMPolicy=kill
 
 [Install]
 WantedBy=default.target
