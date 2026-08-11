@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+
+set -u -o pipefail
+
+regular_unit='openchamber.service'
+custom_unit='openchamber-custom.service'
+opencode_unit='opencode.service'
+regular_health='http://127.0.0.1:8792/api/opencode/health'
+custom_health='http://127.0.0.1:8795/api/opencode/health'
+opencode_health='http://127.0.0.1:4096/global/health'
+wait_seconds="${OPENCHAMBER_SWITCH_TIMEOUT_SECONDS:-45}"
+runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+healthy_pattern='"healthy"[[:space:]]*:[[:space:]]*true'
+
+usage() {
+  printf 'Usage: openchamber-switch <regular|custom|status>\n' >&2
+  exit 2
+}
+
+is_active() {
+  systemctl --user is-active --quiet "$1"
+}
+
+wait_for_health() {
+  local url="$1"
+  local response
+  local deadline=$((SECONDS + wait_seconds))
+  while (( SECONDS < deadline )); do
+    if response="$(curl --fail --silent --show-error --max-time 2 "$url" 2>/dev/null)" \
+      && [[ "$response" =~ $healthy_pattern ]]; then
+      return 0
+    fi
+    sleep 0.25
+  done
+  return 1
+}
+
+print_status() {
+  local selected='none'
+  local regular_active=false
+  local custom_active=false
+  if is_active "$regular_unit"; then regular_active=true; fi
+  if is_active "$custom_unit"; then custom_active=true; fi
+  if [[ "$regular_active" == true && "$custom_active" == true ]]; then selected='conflict'; fi
+  if [[ "$regular_active" == true && "$custom_active" == false ]]; then selected='regular'; fi
+  if [[ "$regular_active" == false && "$custom_active" == true ]]; then selected='custom'; fi
+  printf 'selected: %s\n' "$selected"
+  printf 'opencode: %s\n' "$(systemctl --user is-active "$opencode_unit" 2>/dev/null || true)"
+  printf 'regular: %s (http://127.0.0.1:8792)\n' "$(systemctl --user is-active "$regular_unit" 2>/dev/null || true)"
+  printf 'custom: %s (http://127.0.0.1:8795)\n' "$(systemctl --user is-active "$custom_unit" 2>/dev/null || true)"
+}
+
+[[ $# -eq 1 ]] || usage
+case "$1" in
+  status)
+    print_status
+    exit 0
+    ;;
+  regular)
+    target='regular'
+    target_unit="$regular_unit"
+    target_health="$regular_health"
+    other='custom'
+    other_unit="$custom_unit"
+    other_health="$custom_health"
+    ;;
+  custom)
+    target='custom'
+    target_unit="$custom_unit"
+    target_health="$custom_health"
+    other='regular'
+    other_unit="$regular_unit"
+    other_health="$regular_health"
+    ;;
+  *) usage ;;
+esac
+
+[[ "$wait_seconds" =~ ^[1-9][0-9]*$ ]] || {
+  printf 'OPENCHAMBER_SWITCH_TIMEOUT_SECONDS must be a positive integer.\n' >&2
+  exit 2
+}
+
+mkdir -p "$runtime_dir"
+exec 9>"$runtime_dir/openchamber-switch.lock"
+flock 9
+
+other_was_active=false
+target_was_active=false
+if is_active "$other_unit"; then
+  other_was_active=true
+elif is_active "$target_unit"; then
+  target_was_active=true
+fi
+
+target_was_enabled=false
+other_was_enabled=false
+if systemctl --user is-enabled --quiet "$target_unit"; then target_was_enabled=true; fi
+if systemctl --user is-enabled --quiet "$other_unit"; then other_was_enabled=true; fi
+
+if ! is_active "$opencode_unit"; then
+  printf 'Starting external OpenCode...\n'
+  if ! systemctl --user start "$opencode_unit" || ! wait_for_health "$opencode_health"; then
+    printf 'External OpenCode failed to become healthy; active OpenChamber was not changed.\n' >&2
+    exit 1
+  fi
+fi
+
+if [[ "$target_was_active" == true ]] && is_active "$target_unit" && ! is_active "$other_unit" && wait_for_health "$target_health"; then
+  if ! systemctl --user enable "$target_unit" >/dev/null \
+    || ! systemctl --user disable "$other_unit" >/dev/null; then
+    printf 'OpenChamber %s is healthy, but its boot selection could not be saved.\n' "$target" >&2
+    exit 1
+  fi
+  printf 'OpenChamber %s is already active at %s.\n' "$target" "${target_health%/api/opencode/health}"
+  exit 0
+fi
+
+printf 'Switching to OpenChamber %s...\n' "$target"
+systemctl --user stop "$other_unit" >/dev/null 2>&1 || true
+
+if systemctl --user restart "$target_unit" && wait_for_health "$target_health"; then
+  if systemctl --user enable "$target_unit" >/dev/null \
+    && systemctl --user disable "$other_unit" >/dev/null; then
+    printf 'OpenChamber %s is active at %s.\n' "$target" "${target_health%/api/opencode/health}"
+    exit 0
+  fi
+  printf 'OpenChamber %s became healthy, but its boot selection failed; rolling back.\n' "$target" >&2
+else
+  printf 'OpenChamber %s failed health validation; rolling back.\n' "$target" >&2
+fi
+
+systemctl --user stop "$target_unit" >/dev/null 2>&1 || true
+if [[ "$target_was_enabled" == true ]]; then
+  systemctl --user enable "$target_unit" >/dev/null 2>&1 || true
+else
+  systemctl --user disable "$target_unit" >/dev/null 2>&1 || true
+fi
+if [[ "$other_was_enabled" == true ]]; then
+  systemctl --user enable "$other_unit" >/dev/null 2>&1 || true
+else
+  systemctl --user disable "$other_unit" >/dev/null 2>&1 || true
+fi
+
+if [[ "$other_was_active" == true ]]; then
+  if systemctl --user restart "$other_unit" && wait_for_health "$other_health"; then
+    printf 'Restored %s.\n' "$other_unit" >&2
+  else
+    printf 'Failed to restore a healthy %s; inspect the user journal.\n' "$other_unit" >&2
+  fi
+fi
+
+exit 1

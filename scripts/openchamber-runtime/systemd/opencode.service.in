@@ -1,0 +1,31 @@
+[Unit]
+Description=External OpenCode agent runtime
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=@HOME@/projects
+Environment="PATH=@SERVICE_PATH@"
+Environment="SSH_AUTH_SOCK=%t/gnupg/S.gpg-agent.ssh"
+Environment="OPENCODE_CONFIG_CONTENT={\"shell\":\"@RUNTIME_DIR@/bash\"}"
+Environment="OPENCHAMBER_REAL_SHELL=/bin/bash"
+Environment="OPENCHAMBER_TOOL_MEMORY_MAX=3G"
+Environment="OPENCHAMBER_TOOL_MEMORY_SWAP_MAX=512M"
+Environment="OPENCHAMBER_TOOL_TASKS_MAX=512"
+EnvironmentFile=-@HOME@/.config/openchamber/opencode.env
+ExecStart=@OPENCODE_BIN@ serve --hostname 127.0.0.1 --port 4096
+Restart=on-failure
+RestartSec=5
+KillMode=control-group
+TimeoutStopSec=15
+MemoryAccounting=yes
+MemoryMax=9G
+MemorySwapMax=2G
+TasksAccounting=yes
+TasksMax=4096
+ManagedOOMPreference=avoid
+OOMPolicy=continue
+
+[Install]
+WantedBy=default.target
