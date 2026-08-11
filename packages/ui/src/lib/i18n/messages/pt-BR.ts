@@ -2175,6 +2175,7 @@ export const dict: Record<I18nKey, string> = {
   "chat.toolPart.showNavigableJson": "Mostrar JSON navegável",
   "chat.toolPart.openFileAtFirstChange": "Abrir arquivo na primeira alteração",
   "chat.toolPart.openFileDiff": "Abrir diferenças do arquivo",
+  "chat.toolPart.lineDiffUnavailable": "As alterações no nível das palavras não são destacadas porque esta linha excede {limit} caracteres.",
   "chat.toolPart.copyOutput": "Copiar saída",
   "chat.toolPart.copiedOutput": "Saída copiada",
   "chat.toolPart.copyOutputFailed": "Falha ao copiar saída",

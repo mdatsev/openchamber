@@ -2,6 +2,7 @@
 import React from 'react';
 import { useMobileAppActions } from '@/apps/mobileAppContext';
 import { RuntimeAPIContext } from '@/contexts/runtimeAPIContext';
+import type { FileDiffOptions } from '@pierre/diffs';
 import { PatchDiff } from '@pierre/diffs/react';
 import { cn } from '@/lib/utils';
 import { SimpleMarkdownRenderer } from '../../MarkdownRenderer';
@@ -62,7 +63,10 @@ import {
     getPatchText,
     getPrimaryDiffFromMetadata,
     getPrimaryToolPath,
+    syncLineDiffWarningMarkers,
+    TOOL_LINE_DIFF_MAX_LENGTH,
     type DiffPatchEntry,
+    type LineDiffWarning,
 } from './toolDiffUtils';
 import { isEmbeddedSessionChat } from '@/components/layout/contextPanelEmbeddedChat';
 import { useStreamingTextThrottle } from '../../hooks/useStreamingTextThrottle';
@@ -75,6 +79,7 @@ import { openApplyPatchFileInEditor } from './applyPatchEditorAction';
 const TOOL_ROW_TEXT_CLASS = '!text-[length:var(--text-meta)] !leading-5 sm:!leading-6 tracking-normal';
 const TOOL_ROW_TITLE_CLASS = cn('typography-meta font-medium', TOOL_ROW_TEXT_CLASS);
 const TOOL_ROW_DESCRIPTION_CLASS = cn('typography-meta', TOOL_ROW_TEXT_CLASS);
+const EMPTY_LINE_DIFF_WARNINGS: LineDiffWarning[] = [];
 
 type ToolStateWithMetadata = ToolStateUnion & { metadata?: Record<string, unknown>; input?: Record<string, unknown>; output?: string; error?: string; time?: { start: number; end?: number }; attachments?: Array<FilePart> };
 
@@ -1143,6 +1148,7 @@ interface DiffPreviewProps {
     pierreTheme: { light: string; dark: string };
     pierreThemeType: 'light' | 'dark';
     diffViewMode: DiffViewMode;
+    lineDiffWarnings: LineDiffWarning[];
 }
 
 const TOOL_DIFF_UNSAFE_CSS = `
@@ -1151,6 +1157,33 @@ const TOOL_DIFF_UNSAFE_CSS = `
     [data-separator] {
       height: 24px !important;
     }
+  }
+
+  [data-line-diff-warning] {
+    position: relative;
+    padding-inline-end: 20px;
+  }
+
+  [data-line-diff-warning-marker] {
+    position: absolute;
+    inset-block-start: 4px;
+    inset-inline-end: 3px;
+    display: inline-flex;
+    width: 14px;
+    height: 14px;
+    color: var(--status-warning);
+    cursor: help;
+  }
+
+  [data-line-diff-warning-marker] svg {
+    width: 100%;
+    height: 100%;
+  }
+
+  [data-line-diff-warning-marker]:focus-visible {
+    border-radius: 2px;
+    outline: 1px solid var(--interactive-focus-ring);
+    outline-offset: 1px;
   }
 `;
 
@@ -1303,22 +1336,29 @@ class DiffPreviewErrorBoundary extends React.Component<{
     }
 }
 
-const DiffPreview: React.FC<DiffPreviewProps> = React.memo(({ diff, pierreTheme, pierreThemeType, diffViewMode }) => {
-    const options = React.useMemo(
+const DiffPreview: React.FC<DiffPreviewProps> = React.memo(({ diff, pierreTheme, pierreThemeType, diffViewMode, lineDiffWarnings }) => {
+    const { t } = useI18n();
+    const lineDiffWarningLabel = t('chat.toolPart.lineDiffUnavailable', { limit: TOOL_LINE_DIFF_MAX_LENGTH });
+    const options = React.useMemo<FileDiffOptions<undefined>>(
         () => ({
-            diffStyle: diffViewMode === 'side-by-side' ? 'split' as const : 'unified' as const,
-            diffIndicators: 'none' as const,
-            hunkSeparators: 'line-info-basic' as const,
-            lineDiffType: 'none' as const,
+            diffStyle: diffViewMode === 'side-by-side' ? 'split' : 'unified',
+            diffIndicators: 'none',
+            hunkSeparators: 'line-info-basic',
+            lineDiffType: 'word-alt',
             disableFileHeader: true,
-            maxLineDiffLength: 1000,
+            maxLineDiffLength: TOOL_LINE_DIFF_MAX_LENGTH,
             expansionLineCount: 20,
-            overflow: 'wrap' as const,
+            overflow: 'wrap',
             theme: pierreTheme,
             themeType: pierreThemeType,
             unsafeCSS: TOOL_DIFF_UNSAFE_CSS,
+            onPostRender: (container, _instance, phase) => {
+                if (phase !== 'unmount') {
+                    syncLineDiffWarningMarkers(container, lineDiffWarnings, lineDiffWarningLabel);
+                }
+            },
         }),
-        [diffViewMode, pierreTheme, pierreThemeType]
+        [diffViewMode, lineDiffWarningLabel, lineDiffWarnings, pierreTheme, pierreThemeType]
     );
 
     const fallback = <PlainDiffFallback diff={diff} />;
@@ -1636,6 +1676,7 @@ const ToolExpandedContent: React.FC<ToolExpandedContentProps> = React.memo(({
                                     pierreTheme={pierreTheme}
                                     pierreThemeType={pierreThemeType}
                                     diffViewMode={diffViewMode}
+                                    lineDiffWarnings={entry.lineDiffWarnings}
                                 />
                             ) : (
                                 <PlainDiffFallback diff={entry.patch} />
@@ -1756,6 +1797,7 @@ const ToolExpandedContent: React.FC<ToolExpandedContentProps> = React.memo(({
                                         pierreTheme={pierreTheme}
                                         pierreThemeType={pierreThemeType}
                                         diffViewMode={diffViewMode}
+                                        lineDiffWarnings={EMPTY_LINE_DIFF_WARNINGS}
                                     />
                                 ) : (
                                     <blockquote className="tool-input-text whitespace-pre-wrap break-words typography-meta italic text-muted-foreground/70">

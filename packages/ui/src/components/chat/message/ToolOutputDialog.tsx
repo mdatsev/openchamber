@@ -1,5 +1,6 @@
 import React from 'react';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
+import type { FileDiffOptions } from '@pierre/diffs';
 import { File as PierreFile, PatchDiff } from '@pierre/diffs/react';
 import { WorkerHighlightedCode } from '@/components/code/WorkerHighlightedCode';
 import { createPortal } from 'react-dom';
@@ -29,6 +30,7 @@ import { Icon } from "@/components/icon/Icon";
 import { useI18n, type I18nKey, type I18nParams } from '@/lib/i18n';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { MermaidLoadFailure, getMermaidDataUrlSourcePromise, isCurrentMermaidLoadRequest, isMermaidLoadFailure, nextMermaidLoadRequestId } from './toolOutputDialogMermaid';
+import { getRenderablePatchInfo, syncLineDiffWarningMarkers, TOOL_LINE_DIFF_MAX_LENGTH } from './parts/toolDiffUtils';
 
 interface ToolOutputDialogProps {
     popup: ToolPopupContent;
@@ -113,6 +115,33 @@ const TOOL_DIFF_UNSAFE_CSS = `
     [data-separator] {
       height: 24px !important;
     }
+  }
+
+  [data-line-diff-warning] {
+    position: relative;
+    padding-inline-end: 20px;
+  }
+
+  [data-line-diff-warning-marker] {
+    position: absolute;
+    inset-block-start: 4px;
+    inset-inline-end: 3px;
+    display: inline-flex;
+    width: 14px;
+    height: 14px;
+    color: var(--status-warning);
+    cursor: help;
+  }
+
+  [data-line-diff-warning-marker] svg {
+    width: 100%;
+    height: 100%;
+  }
+
+  [data-line-diff-warning-marker]:focus-visible {
+    border-radius: 2px;
+    outline: 1px solid var(--interactive-focus-ring);
+    outline-offset: 1px;
   }
 `;
 
@@ -523,25 +552,37 @@ const DialogUnifiedDiff: React.FC<{
     pierreThemeConfig: PierreThemeConfig;
 }> = React.memo(({ popup, diffViewMode, pierreThemeConfig }) => {
     const patchContent = popup.content || '';
+    const { t } = useI18n();
+    const lineDiffWarnings = React.useMemo(
+        () => getRenderablePatchInfo(patchContent)?.lineDiffWarnings ?? [],
+        [patchContent],
+    );
+    const lineDiffWarningLabel = t('chat.toolPart.lineDiffUnavailable', { limit: TOOL_LINE_DIFF_MAX_LENGTH });
+    const options = React.useMemo<FileDiffOptions<undefined>>(() => ({
+        diffStyle: diffViewMode === 'unified' ? 'unified' : 'split',
+        diffIndicators: 'none',
+        hunkSeparators: 'line-info-basic',
+        lineDiffType: 'word-alt',
+        disableFileHeader: true,
+        maxLineDiffLength: TOOL_LINE_DIFF_MAX_LENGTH,
+        expansionLineCount: 20,
+        overflow: 'wrap',
+        theme: pierreThemeConfig.theme,
+        themeType: pierreThemeConfig.themeType,
+        unsafeCSS: TOOL_DIFF_UNSAFE_CSS,
+        onPostRender: (container, _instance, phase) => {
+            if (phase !== 'unmount') {
+                syncLineDiffWarningMarkers(container, lineDiffWarnings, lineDiffWarningLabel);
+            }
+        },
+    }), [diffViewMode, lineDiffWarningLabel, lineDiffWarnings, pierreThemeConfig]);
 
     return (
         <div className="typography-code">
             <PatchDiff
                 patch={patchContent}
                 metrics={TOOL_DIFF_METRICS}
-                options={{
-                    diffStyle: diffViewMode === 'unified' ? 'unified' : 'split',
-                    diffIndicators: 'none',
-                    hunkSeparators: 'line-info-basic',
-                    lineDiffType: 'none',
-                    disableFileHeader: true,
-                    maxLineDiffLength: 1000,
-                    expansionLineCount: 20,
-                    overflow: 'wrap',
-                    theme: pierreThemeConfig.theme,
-                    themeType: pierreThemeConfig.themeType,
-                    unsafeCSS: TOOL_DIFF_UNSAFE_CSS,
-                }}
+                options={options}
                 className="block w-full"
             />
         </div>

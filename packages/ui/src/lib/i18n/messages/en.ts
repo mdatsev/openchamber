@@ -2209,6 +2209,7 @@ export const dict = {
    'chat.toolPart.showNavigableJson': 'Show navigable JSON',
    'chat.toolPart.openFileAtFirstChange': 'Open file at first change',
    'chat.toolPart.openFileDiff': 'Open file diff',
+  'chat.toolPart.lineDiffUnavailable': 'Word-level changes are not highlighted because this line exceeds {limit} characters.',
   'chat.toolPart.copyOutput': 'Copy output',
   'chat.toolPart.copiedOutput': 'Copied output',
   'chat.toolPart.copyOutputFailed': 'Failed to copy output',

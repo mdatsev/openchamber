@@ -2175,6 +2175,7 @@ export const dict: Record<I18nKey, string> = {
   "chat.toolPart.showNavigableJson": "Показати навігаційний JSON",
   "chat.toolPart.openFileAtFirstChange": "Відкрити файл на першій зміні",
   "chat.toolPart.openFileDiff": "Відкрити diff файлу",
+  "chat.toolPart.lineDiffUnavailable": "Зміни на рівні слів не підсвічуються, оскільки цей рядок перевищує {limit} символів.",
   "chat.toolPart.copyOutput": "Скопіювати вивід",
   "chat.toolPart.copiedOutput": "Вивід скопійовано",
   "chat.toolPart.copyOutputFailed": "Не вдалося скопіювати вивід",

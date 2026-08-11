@@ -1,4 +1,11 @@
-import { parsePatchFiles } from '@pierre/diffs';
+import { parsePatchFiles, type FileDiffMetadata } from '@pierre/diffs';
+
+export const TOOL_LINE_DIFF_MAX_LENGTH = 1000;
+
+export type LineDiffWarning = {
+    side: 'additions' | 'deletions';
+    lineNumber: number;
+};
 
 export type DiffPatchEntry = {
     id: string;
@@ -6,6 +13,7 @@ export type DiffPatchEntry = {
     filePath?: string;
     patch: string;
     renderMode: 'diff' | 'text';
+    lineDiffWarnings: LineDiffWarning[];
 };
 
 const APPLY_PATCH_ENVELOPE_PATTERN = /^\*\*\*\s+(?:Begin Patch|End Patch|Add File:|Update File:|Delete File:|Move to:)/m;
@@ -17,6 +25,98 @@ const UNIFIED_DIFF_FILE_BREAK_TEST = /^---\s+\S/m;
 
 const isRecord = (value: unknown): value is Record<string, unknown> => {
     return typeof value === 'object' && value !== null;
+};
+
+const getLineLengthWithoutNewline = (line: string): number => {
+    let length = line.length;
+    if (line.charCodeAt(length - 1) === 10) {
+        length -= 1;
+        if (line.charCodeAt(length - 1) === 13) {
+            length -= 1;
+        }
+    }
+    return length;
+};
+
+const getLineDiffWarnings = (file: FileDiffMetadata): LineDiffWarning[] => {
+    const warnings: LineDiffWarning[] = [];
+
+    for (const hunk of file.hunks) {
+        let deletionLineNumber = hunk.deletionStart;
+        let additionLineNumber = hunk.additionStart;
+
+        for (const content of hunk.hunkContent) {
+            if (content.type === 'context') {
+                deletionLineNumber += content.lines;
+                additionLineNumber += content.lines;
+                continue;
+            }
+
+            const pairedLines = Math.min(content.deletions, content.additions);
+            for (let index = 0; index < pairedLines; index += 1) {
+                const deletionLine = file.deletionLines[content.deletionLineIndex + index];
+                const additionLine = file.additionLines[content.additionLineIndex + index];
+                const lineDiffWasSkipped = getLineLengthWithoutNewline(deletionLine) > TOOL_LINE_DIFF_MAX_LENGTH
+                    || getLineLengthWithoutNewline(additionLine) > TOOL_LINE_DIFF_MAX_LENGTH;
+                if (!lineDiffWasSkipped) {
+                    continue;
+                }
+
+                warnings.push(
+                    { side: 'deletions', lineNumber: deletionLineNumber + index },
+                    { side: 'additions', lineNumber: additionLineNumber + index },
+                );
+            }
+
+            deletionLineNumber += content.deletions;
+            additionLineNumber += content.additions;
+        }
+    }
+
+    return warnings;
+};
+
+const createLineDiffWarningMarker = (label: string): HTMLSpanElement => {
+    const marker = document.createElement('span');
+    marker.setAttribute('data-line-diff-warning-marker', '');
+    marker.setAttribute('role', 'img');
+    marker.setAttribute('aria-label', label);
+    marker.setAttribute('title', label);
+    marker.tabIndex = 0;
+
+    // Pierre owns this shadow tree. Clone the existing app sprite symbol
+    // because an SVG <use> cannot resolve across the shadow boundary.
+    const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    icon.setAttribute('viewBox', '0 0 24 24');
+    icon.setAttribute('aria-hidden', 'true');
+    const symbol = document.getElementById('oc-alert');
+    for (const child of symbol?.childNodes ?? []) {
+        icon.appendChild(child.cloneNode(true));
+    }
+    marker.appendChild(icon);
+
+    return marker;
+};
+
+export const syncLineDiffWarningMarkers = (
+    container: HTMLElement,
+    warnings: LineDiffWarning[],
+    label: string,
+): void => {
+    const root = container.shadowRoot;
+    if (!root) return;
+
+    root.querySelectorAll('[data-line-diff-warning-marker]').forEach((marker) => marker.remove());
+    root.querySelectorAll('[data-line-diff-warning]').forEach((line) => line.removeAttribute('data-line-diff-warning'));
+
+    for (const warning of warnings) {
+        const lineType = warning.side === 'deletions' ? 'change-deletion' : 'change-addition';
+        const line = root.querySelector<HTMLElement>(`[data-line="${warning.lineNumber}"][data-line-type="${lineType}"]`);
+        if (!line) continue;
+
+        line.setAttribute('data-line-diff-warning', '');
+        line.appendChild(createLineDiffWarningMarker(label));
+    }
 };
 
 const normalizePatchText = (patch: string): string => {
@@ -367,7 +467,7 @@ const hasOnlyUnifiedDiffBodyLines = (patch: string): boolean => {
     return true;
 };
 
-export const getRenderablePatchInfo = (patch: string): { patch: string; title?: string } | null => {
+export const getRenderablePatchInfo = (patch: string): { patch: string; title?: string; lineDiffWarnings: LineDiffWarning[] } | null => {
     const normalized = normalizeLooseUnifiedPatch(patch);
     if (
         !normalized
@@ -393,6 +493,7 @@ export const getRenderablePatchInfo = (patch: string): { patch: string; title?: 
         return {
             patch: normalized,
             title: normalizeParsedPath(file.name),
+            lineDiffWarnings: getLineDiffWarnings(file),
         };
     } catch {
         return null;
@@ -426,7 +527,7 @@ const getPatchEntriesFromText = (
     const direct = getRenderablePatchInfo(normalized);
     if (direct) {
         const title = direct.title ? resolveTitle(direct.title) : resolveTitle(fallbackTitle);
-        return [{ id: `${idPrefix}-0`, title, patch: direct.patch, renderMode: 'diff' }];
+        return [{ id: `${idPrefix}-0`, title, patch: direct.patch, renderMode: 'diff', lineDiffWarnings: direct.lineDiffWarnings }];
     }
 
     const chunkEntries: DiffPatchEntry[] = [];
@@ -440,6 +541,7 @@ const getPatchEntriesFromText = (
                     title,
                     patch: chunk,
                     renderMode: 'text',
+                    lineDiffWarnings: [],
                 });
             }
             continue;
@@ -449,6 +551,7 @@ const getPatchEntriesFromText = (
             title,
             patch: info.patch,
             renderMode: 'diff',
+            lineDiffWarnings: info.lineDiffWarnings,
         });
     }
 
@@ -465,6 +568,7 @@ const getPatchEntriesFromText = (
                 title: resolveTitle(fallbackTitle),
                 patch: synthetic.patch,
                 renderMode: 'diff',
+                lineDiffWarnings: synthetic.lineDiffWarnings,
             }];
         }
     }
@@ -474,6 +578,7 @@ const getPatchEntriesFromText = (
         title: resolveTitle(fallbackTitle),
         patch: normalized,
         renderMode: 'text',
+        lineDiffWarnings: [],
     }];
 };
 

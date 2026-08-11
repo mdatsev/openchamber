@@ -2209,6 +2209,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.toolPart.showNavigableJson': '탐색 가능한 JSON 표시',
   'chat.toolPart.openFileAtFirstChange': '첫 번째 변경 위치에서 파일 열기',
   'chat.toolPart.openFileDiff': '파일 diff 열기',
+  'chat.toolPart.lineDiffUnavailable': '이 줄이 {limit}자를 초과하여 단어 단위 변경 사항이 강조 표시되지 않습니다.',
   'chat.toolPart.copyOutput': '출력 복사',
   'chat.toolPart.copiedOutput': '출력 복사됨',
   'chat.toolPart.copyOutputFailed': '출력을 복사하지 못했습니다',

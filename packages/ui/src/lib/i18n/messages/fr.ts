@@ -2935,6 +2935,7 @@ export const dict = {
   'chat.toolPart.showNavigableJson': 'Afficher le JSON navigable',
   'chat.toolPart.openFileAtFirstChange': 'Ouvrir le fichier à la première modification',
   'chat.toolPart.openFileDiff': 'Ouvrir les différences du fichier',
+  'chat.toolPart.lineDiffUnavailable': 'Les modifications au niveau des mots ne sont pas surlignées, car cette ligne dépasse {limit} caractères.',
   'chat.toolPart.copyOutput': 'Copier la sortie',
   'chat.toolPart.copiedOutput': 'Sortie copiée',
   'chat.toolPart.copyOutputFailed': 'Impossible de copier la sortie',

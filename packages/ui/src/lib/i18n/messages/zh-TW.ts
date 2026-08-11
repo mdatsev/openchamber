@@ -2179,6 +2179,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.toolPart.showNavigableJson': '顯示可導覽 JSON',
   'chat.toolPart.openFileAtFirstChange': '在首次變更處開啟檔案',
   'chat.toolPart.openFileDiff': '開啟檔案差異',
+  'chat.toolPart.lineDiffUnavailable': '此行超過 {limit} 個字元，因此不會醒目顯示詞級變更。',
   'chat.toolPart.copyOutput': '複製輸出',
   'chat.toolPart.copiedOutput': '已複製輸出',
   'chat.toolPart.copyOutputFailed': '複製輸出失敗',

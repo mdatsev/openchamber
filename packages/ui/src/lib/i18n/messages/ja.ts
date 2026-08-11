@@ -2208,6 +2208,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.toolPart.showNavigableJson': 'ナビゲーション可能なJSONを表示',
   'chat.toolPart.openFileAtFirstChange': '最初の変更箇所でファイルを開く',
   'chat.toolPart.openFileDiff': 'ファイル差分を開く',
+  'chat.toolPart.lineDiffUnavailable': 'この行は{limit}文字を超えているため、単語単位の変更は強調表示されません。',
   'chat.toolPart.copyOutput': '出力をコピー',
   'chat.toolPart.copiedOutput': '出力をコピーしました',
   'chat.toolPart.copyOutputFailed': '出力のコピーに失敗しました',

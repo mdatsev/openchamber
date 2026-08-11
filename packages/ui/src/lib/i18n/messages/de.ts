@@ -2037,6 +2037,7 @@ export const dict = {
   'chat.toolPart.showNavigableJson': 'Navigierbare JSON anzeigen',
   'chat.toolPart.openFileAtFirstChange': 'Datei bei erster Änderung öffnen',
   'chat.toolPart.openFileDiff': 'Datei-Unterschied öffnen',
+  'chat.toolPart.lineDiffUnavailable': 'Änderungen auf Wortebene werden nicht hervorgehoben, da diese Zeile mehr als {limit} Zeichen enthält.',
   'chat.toolPart.copyOutput': 'Ausgabe kopieren',
   'chat.toolPart.copiedOutput': 'Ausgabe kopiert',
   'chat.toolPart.copyOutputFailed': 'Kopieren der Ausgabe fehlgeschlagen',
