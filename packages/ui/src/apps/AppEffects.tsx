@@ -52,7 +52,7 @@ const MiniChatPresenceBridge: React.FC = () => {
       const viewed = data.viewed !== false;
       setExternallyViewedSession(data.directory, data.sessionId, viewed);
       if (viewed) {
-        markSessionViewed(data.sessionId);
+        markSessionViewed(data.directory, data.sessionId);
       }
     };
 

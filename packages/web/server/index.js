@@ -88,6 +88,7 @@ import { createPushRuntime } from './lib/notifications/push-runtime.js';
 import { createApnsRuntime } from './lib/notifications/apns-runtime.js';
 import { createNotificationTemplateRuntime } from './lib/notifications/template-runtime.js';
 import { createPermissionAutoAcceptRuntime } from './lib/permission-auto-accept/runtime.js';
+import { createSessionInboxRuntime } from './lib/session-inbox/runtime.js';
 import { createGracefulShutdownRuntime } from './lib/opencode/shutdown-runtime.js';
 import { createProjectConfigRuntime } from './lib/projects/project-config.js';
 import { createRemoteClientAuthRuntime } from './lib/client-auth/remote-clients.js';
@@ -293,6 +294,7 @@ const PUSH_SUBSCRIPTIONS_FILE_PATH = path.join(OPENCHAMBER_DATA_DIR, 'push-subsc
 const APNS_TOKENS_FILE_PATH = path.join(OPENCHAMBER_DATA_DIR, 'apns-tokens.json');
 const REMOTE_CLIENTS_FILE_PATH = path.join(OPENCHAMBER_DATA_DIR, 'remote-clients.json');
 const CLIENT_PAIRING_SESSIONS_FILE_PATH = path.join(OPENCHAMBER_DATA_DIR, 'client-pairing-sessions.json');
+const SESSION_INBOX_FILE_PATH = path.join(OPENCHAMBER_DATA_DIR, 'session-inbox.json');
 const CLOUDFLARE_MANAGED_REMOTE_TUNNELS_FILE_PATH = path.join(OPENCHAMBER_DATA_DIR, 'cloudflare-managed-remote-tunnels.json');
 const CLOUDFLARE_LEGACY_NAMED_TUNNELS_FILE_PATH = path.join(OPENCHAMBER_DATA_DIR, 'cloudflare-named-tunnels.json');
 const CLOUDFLARE_MANAGED_REMOTE_TUNNELS_VERSION = 1;
@@ -783,6 +785,16 @@ const globalMessageStreamHub = createGlobalMessageStreamHub({
   upstreamStallTimeoutMs: getUpstreamStallTimeoutMs,
 });
 
+const sessionInboxRuntime = createSessionInboxRuntime({
+  fsPromises,
+  path,
+  storePath: SESSION_INBOX_FILE_PATH,
+  globalEventHub: globalMessageStreamHub,
+  broadcastGlobalUiEvent,
+  buildOpenCodeUrl,
+  getOpenCodeAuthHeaders,
+});
+
 const permissionAutoAcceptRuntime = createPermissionAutoAcceptRuntime({
   globalEventHub: globalMessageStreamHub,
   buildOpenCodeUrl,
@@ -1231,6 +1243,7 @@ const gracefulShutdownRuntime = createGracefulShutdownRuntime({
   sessionGoalRuntime,
   contextObligatoryRuntime,
   sessionRuntime,
+  sessionInboxRuntime,
   getHealthCheckInterval: () => healthCheckInterval,
   clearHealthCheckInterval: (value) => clearInterval(value),
   getTerminalRuntime: () => terminalRuntime,
@@ -1618,6 +1631,12 @@ async function main(options = {}) {
   relayServiceInstance = relayService;
   relayService.registerRoutes(app);
 
+  try {
+    await sessionInboxRuntime.start();
+  } catch (error) {
+    console.warn('[session-inbox] failed to start:', error?.message || error);
+  }
+
   await featureRoutesRuntime.registerRoutes(app, {
     crypto,
     fs,
@@ -1659,6 +1678,7 @@ async function main(options = {}) {
     getOpenChamberEventClients: () => uiOpenChamberEventClients,
     writeSseEvent,
     permissionAutoAcceptRuntime,
+    sessionInboxRuntime,
     express,
   });
 

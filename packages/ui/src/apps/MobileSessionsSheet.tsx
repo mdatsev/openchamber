@@ -50,11 +50,11 @@ import {
   partitionWorktreesByRegisteredProject,
 } from '@/lib/worktrees/worktreeManager';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
-import { mergeLiveSessionWithGlobalSession, refreshGlobalSessions, useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
+import { mergeLiveSessionWithGlobalSession, refreshGlobalSessions, resolveGlobalSessionDirectory, useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
 import { useMobileSessionExpansionStore } from '@/stores/useMobileSessionExpansionStore';
 import { useMobileSessionTreeStore } from '@/stores/useMobileSessionTreeStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
-import { useSessionPinnedStore } from '@/stores/useSessionPinnedStore';
+import { isSessionPinned, useSessionPinnedStore } from '@/stores/useSessionPinnedStore';
 import { orderWorktrees, useWorktreeOrderStore } from '@/stores/useWorktreeOrderStore';
 import {
   EMPTY_SESSION_ORDER_RANKS,
@@ -63,7 +63,7 @@ import {
 } from '@/sync/session-ordering';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useAllLiveSessions, useGlobalSessionStatus } from '@/sync/sync-context';
-import { useSessionUnseenCount } from '@/sync/notification-store';
+import { markSessionUnread, markSessionViewed, useSessionUnseenCount } from '@/sync/notification-store';
 import type { WorktreeMetadata } from '@/types/worktree';
 
 import { MobileDeleteWorktreeDialog } from './MobileDeleteWorktreeDialog';
@@ -266,8 +266,8 @@ const NewWorktreeIconButton: React.FC<{
   );
 };
 
-// Width of the swipe-revealed action area (rename + archive + delete buttons).
-const ROW_ACTIONS_WIDTH = 144;
+// Width of the swipe-revealed action area (pin + unread + rename + archive + delete).
+const ROW_ACTIONS_WIDTH = 240;
 const ROW_SWIPE_SNAP_MS = 180;
 
 /** Generic swipe-left-to-reveal wrapper for drawer rows (projects, worktrees).
@@ -445,6 +445,7 @@ const SessionRow: React.FC<{
   onRequestRename?: () => void;
   onSubmitRename?: (title: string) => void;
   onCancelRename?: () => void;
+  pinned?: boolean;
 }> = ({
   session,
   active,
@@ -464,6 +465,7 @@ const SessionRow: React.FC<{
   onRequestRename,
   onSubmitRename,
   onCancelRename,
+  pinned = false,
 }) => {
   const { t } = useI18n();
   const time = formatRelativeShort(getSessionTimestamp(session));
@@ -472,7 +474,9 @@ const SessionRow: React.FC<{
   // Live indicators, same conventions as the desktop sidebar: busy/retry →
   // spinner; unseen activity on a non-active row → attention dot.
   const liveStatus = useGlobalSessionStatus(session.id);
-  const unseenCount = useSessionUnseenCount(session.id);
+  const sessionDirectory = resolveGlobalSessionDirectory(session);
+  const unseenCount = useSessionUnseenCount(sessionDirectory, session.id);
+  const togglePinnedSession = useSessionPinnedStore((state) => state.toggle);
   const statusType = liveStatus?.type ?? 'idle';
   const isStreaming = statusType === 'busy' || statusType === 'retry';
   const showUnreadDot = !isStreaming && unseenCount > 0 && !active;
@@ -550,6 +554,39 @@ const SessionRow: React.FC<{
           <button
             type="button"
             tabIndex={revealed ? 0 : -1}
+            disabled={!sessionDirectory}
+            className="flex flex-1 items-center justify-center text-muted-foreground transition-colors active:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary disabled:opacity-40"
+            aria-label={pinned ? t('sessions.sidebar.session.menu.unpin') : t('sessions.sidebar.session.menu.pin')}
+            onClick={() => {
+              if (!sessionDirectory) return;
+              togglePinnedSession({ directory: sessionDirectory, sessionId: session.id });
+              onRevealedChange?.(false);
+            }}
+            style={{ touchAction: 'manipulation' }}
+          >
+            <Icon name={pinned ? "unpin" : "pushpin"} className="size-[18px]" />
+          </button>
+          <button
+            type="button"
+            tabIndex={revealed ? 0 : -1}
+            disabled={!sessionDirectory}
+            className="flex flex-1 items-center justify-center text-muted-foreground transition-colors active:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary disabled:opacity-40"
+            aria-label={unseenCount > 0
+              ? t('sessions.sidebar.session.menu.markRead')
+              : t('sessions.sidebar.session.menu.markUnread')}
+            onClick={() => {
+              if (!sessionDirectory) return;
+              if (unseenCount > 0) markSessionViewed(sessionDirectory, session.id);
+              else markSessionUnread(sessionDirectory, session.id);
+              onRevealedChange?.(false);
+            }}
+            style={{ touchAction: 'manipulation' }}
+          >
+            <Icon name={unseenCount > 0 ? "eye" : "eye-off"} className="size-[18px]" />
+          </button>
+          <button
+            type="button"
+            tabIndex={revealed ? 0 : -1}
             className="flex flex-1 items-center justify-center text-muted-foreground transition-colors active:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
             aria-label={t('mobile.sessions.renameSessionAria', { title })}
             onClick={onRequestRename}
@@ -602,7 +639,7 @@ const SessionRow: React.FC<{
         {/* Left gutter slot: live activity indicator takes priority over the
             subsession chevron — same position, so rows never shift. When the
             row has children the slot still toggles them either way. */}
-        {isStreaming || showUnreadDot || (hasChildren && onToggleChildren) ? (
+        {isStreaming || showUnreadDot || pinned || (hasChildren && onToggleChildren) ? (
           <button
             type="button"
             className="absolute z-10 flex w-6 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
@@ -620,6 +657,8 @@ const SessionRow: React.FC<{
               <Icon name="loader-4" className="size-3.5 animate-spin text-primary" />
             ) : showUnreadDot ? (
               <span className="size-1.5 rounded-full bg-[var(--status-info)]" aria-hidden />
+            ) : pinned && !hasChildren ? (
+              <Icon name="pushpin" className="size-3.5 text-primary" aria-hidden />
             ) : (
               <RiArrowDownSLine className={cn('size-[18px] transition-transform duration-150', expanded ? 'rotate-0' : '-rotate-90')} />
             )}
@@ -1184,6 +1223,7 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
             onRequestRename={() => handleRequestRename(session.id)}
             onSubmitRename={(nextTitle) => void handleSubmitRename(session.id, nextTitle)}
             onCancelRename={() => setRenamingSessionId(null)}
+            pinned={isSessionPinned(pinnedSessionIds, getSessionDirectory(session), session.id)}
           />
           {hasChildren && expanded
             ? children.map((child) => renderNode(child, rowIndent + CHILD_INDENT_STEP))

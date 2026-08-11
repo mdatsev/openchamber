@@ -31,7 +31,7 @@ const SwitcherRow: React.FC<{
 }> = ({ session, meta, active, onSelect }) => {
   const { t } = useI18n();
   const status = useGlobalSessionStatus(session.id);
-  const unseenCount = useSessionUnseenCount(session.id);
+  const unseenCount = useSessionUnseenCount(resolveGlobalSessionDirectory(session), session.id);
   const statusType = status?.type ?? 'idle';
   const isStreaming = statusType === 'busy' || statusType === 'retry';
   const showUnreadDot = !isStreaming && unseenCount > 0 && !active;

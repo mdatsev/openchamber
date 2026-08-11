@@ -48,7 +48,8 @@ import { useConfigStore } from "@/stores/useConfigStore"
 import { useTodosPersistStore } from "@/stores/useTodosPersistStore"
 import { cleanupPersistedSessionState } from "./session-deletion-cleanup"
 import { toast } from "@/components/ui"
-import { appendNotification } from "./notification-store"
+import { markSessionViewed } from "./notification-store"
+import { applySessionInboxEventPayload, hydrateSessionInbox } from "@/stores/useSessionInboxStore"
 import { applyGlobalSessionStatusEvent, applyGlobalSessionStatusSnapshot, useGlobalSessionStatusStore } from "./global-session-status"
 import type { State } from "./types"
 import type { SessionStatus } from "@opencode-ai/sdk/v2/client"
@@ -515,6 +516,12 @@ function isViewedInCurrentSession(directory: string, sessionId?: string): boolea
   ) return true
   pruneExternallyViewedSessions()
   return externallyViewedSessions.has(viewedSessionKey(directory, sessionId))
+}
+
+function markActiveSessionViewed() {
+  if (_activeDirectory && _activeSession && isWindowFocused()) {
+    markSessionViewed(_activeDirectory, _activeSession)
+  }
 }
 
 function isRecentBoot() {
@@ -1388,6 +1395,11 @@ function handleEvent(
   streamingDirectory?: string,
   batch?: DirectoryEventBatch,
 ) {
+  if ((payload as { type?: unknown }).type === "openchamber:session-inbox.updated") {
+    applySessionInboxEventPayload((payload as unknown as { properties?: unknown }).properties, expectedRuntimeKey)
+    return
+  }
+
   if ((payload as { type?: unknown }).type === "openchamber:permission-auto-accept.updated") {
     const properties = (payload as unknown as { properties?: unknown }).properties
     if (properties && typeof properties === "object") {
@@ -1568,26 +1580,24 @@ function handleEvent(
     }
   }
 
-  // Notification dispatch for session turn-complete and error events.
-  // These are NOT handled by the event reducer — only the notification store.
-  if (payload.type === "session.idle" || payload.type === "session.error") {
-    const props = payload.properties as { sessionID?: string; error?: { message?: string; code?: string } }
-    const sessionID = props.sessionID
-    // Skip subtask sessions — only top-level sessions generate notifications
+  // A successful final assistant response is the only automatic unread event.
+  // Errors retain their separate persistent status and never enter inbox state.
+  if (payload.type === "message.updated") {
+    const info = (payload.properties as { info?: { id?: string; sessionID?: string; role?: string; finish?: string } }).info
+    const sessionID = info?.sessionID
+    const messageID = info?.id
     const storeState = getDirectoryEventState(store, batch)
-    const session = storeState.session.find((s) => s.id === sessionID)
-    if (session && (session as { parentID?: string }).parentID) {
-      // subtask — skip notification
-    } else if (sessionID) {
-      appendNotification({
-        directory: resolvedDirectory,
-        session: sessionID,
-        time: Date.now(),
-        viewed: isViewedInCurrentSession(resolvedDirectory, sessionID),
-        ...(payload.type === "session.error"
-          ? { type: "error" as const, error: props.error }
-          : { type: "turn-complete" as const }),
-      })
+    const session = sessionID ? storeState.session.find((candidate) => candidate.id === sessionID) : null
+    const isSubtask = Boolean((session as Session & { parentID?: string | null } | null)?.parentID)
+    if (
+      sessionID
+      && messageID
+      && info?.role === "assistant"
+      && info.finish === "stop"
+      && !isSubtask
+      && isViewedInCurrentSession(resolvedDirectory, sessionID)
+    ) {
+      markSessionViewed(resolvedDirectory, sessionID, `message:${messageID}`)
     }
   }
 
@@ -1855,6 +1865,12 @@ export function SyncProvider(props: {
   }, [props.sdk])
 
   useEffect(() => {
+    void hydrateSessionInbox()
+      .then(markActiveSessionViewed)
+      .catch(() => undefined)
+  }, [props.sdk])
+
+  useEffect(() => {
     return childStores.configure({
       bootstrapConcurrency: 2,
       onBootstrap: async (context: DirectoryBootstrapContext) => {
@@ -2043,6 +2059,9 @@ export function SyncProvider(props: {
         }
       },
       onReconnect: () => {
+        void hydrateSessionInbox()
+          .then(markActiveSessionViewed)
+          .catch(() => undefined)
         useConfigStore.setState({
           isConnected: true,
           hasEverConnected: true,

@@ -194,7 +194,7 @@ function SwitcherRow({ session, depth, variant, secondaryMeta, hasChildren, isEx
   const sessionStatus = useGlobalSessionStatus(session.id);
   const sessionDirectory = resolveGlobalSessionDirectory(session) ?? undefined;
   const sessionQuestions = useScopedBlockingQuestions(session.id, sessionDirectory, { bootstrap: false });
-  const unseenCount = useSessionUnseenCount(session.id);
+  const unseenCount = useSessionUnseenCount(sessionDirectory, session.id);
 
   const isActive = currentSessionId === session.id;
   const sessionTitle = session.title?.trim() || t('sessions.sidebar.session.untitled');

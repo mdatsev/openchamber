@@ -1,11 +1,9 @@
 import React from 'react';
 import { getRegisteredRuntimeAPIs } from '@/contexts/runtimeAPIRegistry';
 import { isDesktopShell, isWebRuntime } from '@/lib/desktop';
-import { getRuntimeUrlResolver } from '@/lib/runtime-url';
+import { subscribeRuntimeNotificationStream } from '@/lib/runtime-notification-stream';
 import { useUIStore } from '@/stores/useUIStore';
 import type { NotificationPayload } from '@/lib/api/types';
-
-const NOTIFICATION_STREAM_PATH = '/api/notifications/stream';
 
 const isFocused = () => {
   if (typeof document === 'undefined') return true;
@@ -30,19 +28,11 @@ export const useWebNotificationStream = (options?: { enabled?: boolean }) => {
   const enabled = options?.enabled ?? true;
 
   React.useEffect(() => {
-    if (!enabled || isDesktopShell() || !isWebRuntime() || typeof window === 'undefined' || typeof EventSource === 'undefined') {
+    if (!enabled || isDesktopShell() || !isWebRuntime() || typeof window === 'undefined') {
       return;
     }
 
-    const source = new EventSource(getRuntimeUrlResolver().sse(NOTIFICATION_STREAM_PATH));
-    source.onmessage = (event) => {
-      let data: unknown;
-      try {
-        data = JSON.parse(event.data) as unknown;
-      } catch {
-        return;
-      }
-
+    return subscribeRuntimeNotificationStream((data) => {
       const settings = useUIStore.getState();
       if (!settings.nativeNotificationsEnabled) return;
       if (settings.notificationMode !== 'always' && isFocused()) return;
@@ -52,10 +42,6 @@ export const useWebNotificationStream = (options?: { enabled?: boolean }) => {
 
       const apis = getRegisteredRuntimeAPIs();
       void apis?.notifications?.notifyAgentCompletion(payload);
-    };
-
-    return () => {
-      source.close();
-    };
+    });
   }, [enabled]);
 };

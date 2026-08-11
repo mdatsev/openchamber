@@ -9,6 +9,7 @@ import { registerMagicPromptRoutes } from '../magic-prompts/routes.js';
 import { registerSessionFoldersRoutes } from '../session-folders/routes.js';
 import { registerSideChatRoutes } from '../side-chats/routes.js';
 import { registerPermissionAutoAcceptRoutes } from '../permission-auto-accept/runtime.js';
+import { registerSessionInboxRoutes } from '../session-inbox/routes.js';
 import { registerConfigEntityRoutes } from './config-entity-routes.js';
 import { registerSettingsUtilityRoutes } from './core-routes.js';
 import { registerProjectIconRoutes } from './project-icon-routes.js';
@@ -122,6 +123,7 @@ export const createFeatureRoutesRuntime = (dependencies) => {
       writeSseEvent,
       emitSessionCreatedEvent,
       permissionAutoAcceptRuntime,
+      sessionInboxRuntime,
       express,
       isRequestOriginAllowed,
     } = routeDependencies;
@@ -133,6 +135,10 @@ export const createFeatureRoutesRuntime = (dependencies) => {
     });
 
     registerPermissionAutoAcceptRoutes(app, permissionAutoAcceptRuntime);
+    registerSessionInboxRoutes(app, {
+      runtime: sessionInboxRuntime,
+      jsonParser: express.json({ limit: '16kb' }),
+    });
 
     registerOpenCodeRoutes(app, {
       crypto,

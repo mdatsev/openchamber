@@ -13,6 +13,7 @@
 | OpenCode authentication and configuration | `~/.local/share/opencode/`, `~/.config/opencode/` | Yes |
 | OpenChamber settings and projects | `~/.config/openchamber/` | Yes |
 | Session folders | `~/.config/openchamber/sessions-directories.json` | Yes, with browser mirrors |
+| Session unread and pin metadata | `~/.config/openchamber/session-inbox.json` | Yes, with browser pin mirrors |
 | Electron browser profile | `~/.config/OpenChamber` or `~/.config/OpenChamber Dev` | No |
 
 The source runtime deliberately keeps the `OpenChamber Dev` Electron profile. This isolates Chromium local storage, cookies, window state, service workers, and embedded-browser data while leaving sessions and canonical server settings shared. The installed custom launcher uses content-hash-cached built UI assets without HMR; terminal development may still opt into HMR with `bun run electron:dev`.
@@ -29,7 +30,7 @@ Important durable key families include:
 | `themeMode`, `lightThemeId`, `darkThemeId`, theme mirror keys | Theme selection and derived splash colors. |
 | `projects*`, `activeProjectId*`, `lastDirectory`, `pinnedDirectories` | Browser mirrors of projects and directories plus local ordering. |
 | `oc.sessions.folders.v2:*` | Runtime-scoped mirror of server-backed session folders. |
-| `oc.sessions.pinned.v2` | Browser-only pinned sessions. |
+| `oc.sessions.pinned.v2`, `oc.sessions.pinned.server-migration.v1` | Runtime-scoped mirror and one-time migration state for server-backed session pins. |
 | `openchamber.chatDrafts.v2`, `openchamber-inline-comment-drafts` | Browser-only chat and review drafts. |
 | `message-queue-store` | Unsent queued messages and attachments. |
 | `openchamber-session-todos`, `auto-review-store` | Todo fallbacks and auto-review checkpoints. |
@@ -50,7 +51,7 @@ The embedded browser uses partition `persist:openchamber-browser`; visited sites
 
 - Separate Electron profiles prevent browser-local write races.
 - Shared `settings.json` writes are atomic, but write locks are process-local. Two applications editing the same setting concurrently can produce last-writer-wins behavior.
-- Session-folder, magic-prompt, and Git-identity metadata can have similar cross-process write races.
+- Session-folder, session-inbox, magic-prompt, and Git-identity metadata can have similar cross-process write races.
 - Both managed OpenCode servers use the same SQLite database. SQLite locking protects database integrity, but simultaneous mutation of the same session can cause lock delays or stale process-local views.
 - Different OpenCode versions may interpret or migrate shared data differently.
 - Both applications can emit notifications and consume CPU and memory for their own UI, server, and managed OpenCode process.
