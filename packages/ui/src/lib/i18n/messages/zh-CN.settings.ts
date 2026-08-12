@@ -87,8 +87,6 @@ export const settingsDict = {
   'settings.page.fork.title': '分支设置',
   'settings.page.fork.description': '仅在此 OpenChamber 自定义分支中提供的偏好设置。',
   'settings.fork.section.worktrees': '工作树',
-  'settings.fork.moveSessionChanges.label': '移动聊天时一并转移未提交的更改',
-  'settings.fork.moveSessionChanges.info': '将现有聊天移动到新工作树时，同时转移其当前检出中的未提交更改。',
   'settings.fork.startNewChatInWorktree.label': '在当前工作树中开始新聊天',
   'settings.fork.startNewChatInWorktree.info': '从工作树开始新聊天时，使用该工作树而不是项目的主检出。显式选择的项目和工作树不受影响。',
   'settings.page.snippets.title': '代码片段',

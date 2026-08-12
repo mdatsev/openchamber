@@ -84,8 +84,6 @@
   'settings.page.fork.title': '分支設定',
   'settings.page.fork.description': '僅在此 OpenChamber 自訂分支中提供的偏好設定。',
   'settings.fork.section.worktrees': '工作樹',
-  'settings.fork.moveSessionChanges.label': '移動聊天時一併轉移未提交的變更',
-  'settings.fork.moveSessionChanges.info': '將現有聊天移動到新工作樹時，同時轉移其目前簽出中的未提交變更。',
   'settings.fork.startNewChatInWorktree.label': '在目前工作樹中開始新聊天',
   'settings.fork.startNewChatInWorktree.info': '從工作樹開始新聊天時，使用該工作樹而不是專案的主要簽出。明確選取的專案和工作樹不受影響。',
   'settings.page.snippets.title': '程式片段',

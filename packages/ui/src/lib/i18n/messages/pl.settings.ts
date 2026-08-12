@@ -1254,8 +1254,6 @@ export const settingsDict = {
   'settings.page.fork.title': 'Ustawienia forka',
   'settings.page.fork.description': 'Preferencje dostępne tylko w tym niestandardowym forku OpenChamber.',
   'settings.fork.section.worktrees': 'Worktree',
-  'settings.fork.moveSessionChanges.label': 'Przenoś niezacommitowane zmiany razem z czatami',
-  'settings.fork.moveSessionChanges.info': 'Podczas przenoszenia istniejącego czatu do nowego worktree przenosi także niezacommitowane zmiany z jego bieżącego checkoutu.',
   'settings.fork.startNewChatInWorktree.label': 'Rozpoczynaj nowe czaty w bieżącym worktree',
   'settings.fork.startNewChatInWorktree.info': 'Podczas rozpoczynania nowego czatu z worktree używa tego worktree zamiast głównego checkoutu projektu. Jawnie wybrane projekty i worktree pozostają bez zmian.',
   'settings.page.snippets.title': 'Fragmenty',

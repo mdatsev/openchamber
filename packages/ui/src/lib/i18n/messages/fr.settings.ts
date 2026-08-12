@@ -51,8 +51,6 @@ export const settingsDict = {
   'settings.page.fork.title': 'Paramètres du fork',
   'settings.page.fork.description': 'Préférences disponibles uniquement dans ce fork personnalisé d’OpenChamber.',
   'settings.fork.section.worktrees': 'Worktrees',
-  'settings.fork.moveSessionChanges.label': 'Déplacer les modifications non validées avec les chats',
-  'settings.fork.moveSessionChanges.info': 'Lors du déplacement d’un chat existant vers un nouveau worktree, transfère également les modifications non validées de son checkout actuel.',
   'settings.fork.startNewChatInWorktree.label': 'Démarrer les nouveaux chats dans le worktree actuel',
   'settings.fork.startNewChatInWorktree.info': 'Lors du démarrage d’un nouveau chat depuis un worktree, utilise ce worktree plutôt que le checkout principal du projet. Les projets et worktrees sélectionnés explicitement restent inchangés.',
   'settings.page.remoteInstances.title': 'Instances distantes',

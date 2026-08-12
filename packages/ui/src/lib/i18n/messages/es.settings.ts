@@ -87,8 +87,6 @@ export const settingsDict = {
   "settings.page.fork.title": "Configuración del fork",
   "settings.page.fork.description": "Preferencias disponibles solo en este fork personalizado de OpenChamber.",
   "settings.fork.section.worktrees": "Worktrees",
-  "settings.fork.moveSessionChanges.label": "Mover los cambios sin confirmar con los chats",
-  "settings.fork.moveSessionChanges.info": "Al mover un chat existente a un worktree nuevo, transfiere también los cambios sin confirmar de su checkout actual.",
   "settings.fork.startNewChatInWorktree.label": "Iniciar chats nuevos en el worktree actual",
   "settings.fork.startNewChatInWorktree.info": "Al iniciar un chat nuevo desde un worktree, usa ese worktree en lugar del checkout principal del proyecto. Los proyectos y worktrees seleccionados explícitamente no cambian.",
   "settings.page.snippets.title": "Snippets",
