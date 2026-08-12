@@ -2,14 +2,19 @@ import React from 'react';
 import type { Session } from '@opencode-ai/sdk/v2';
 
 import { Icon } from '@/components/icon/Icon';
-import { formatSessionCompactDateLabel } from '@/components/session/sidebar/utils';
+import { SessionActivityDuration } from '@/components/session/SessionActivityDuration';
+import { formatSessionCompactDateLabel, normalizePath } from '@/components/session/sidebar/utils';
 import { useSwitcherItems } from '@/components/session/sidebar/hooks/useSwitcherItems';
 import { useTabletLayout } from '@/lib/device';
 import { useI18n } from '@/lib/i18n';
+import { sessionEvents } from '@/lib/sessionEvents';
 import { cn } from '@/lib/utils';
+import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
+import { useGitStore, useResolvedWorktreeComparisonSummary } from '@/stores/useGitStore';
 import { refreshGlobalSessions, resolveGlobalSessionDirectory } from '@/stores/useGlobalSessionsStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useSessionUnseenCount } from '@/sync/notification-store';
+import { useHasSessionActivityDuration } from '@/sync/session-activity-timing';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import {
   useChildStoreManager,
@@ -32,19 +37,37 @@ const getSessionTitle = (session: Session, fallback: string): string =>
 const SwitcherRow: React.FC<{
   session: Session;
   directory: string | null;
+  worktreeDirectory: string | null;
   meta: string;
   active: boolean;
   onSelect: () => void;
-}> = ({ session, directory, meta, active, onSelect }) => {
+}> = ({ session, directory, worktreeDirectory, meta, active, onSelect }) => {
   const { t } = useI18n();
   const status = useGlobalSessionStatus(session.id);
-  const unseenCount = useSessionUnseenCount(resolveGlobalSessionDirectory(session), session.id);
+  const sessionDirectory = directory ?? resolveGlobalSessionDirectory(session);
+  const unseenCount = useSessionUnseenCount(sessionDirectory, session.id);
   const isInterrupted = useGlobalSessionInterrupted(session.id);
-  const permissions = useScopedBlockingPermissions(session.id, directory ?? undefined, { bootstrap: false });
-  const questions = useScopedBlockingQuestions(session.id, directory ?? undefined, { bootstrap: false });
+  const permissions = useScopedBlockingPermissions(session.id, sessionDirectory ?? undefined, { bootstrap: false });
+  const questions = useScopedBlockingQuestions(session.id, sessionDirectory ?? undefined, { bootstrap: false });
   const hasPendingQuestion = questions.length > 0;
-  const isBusyOrRetry = status?.type === 'busy' || status?.type === 'retry';
+  const statusType = status?.type ?? 'idle';
+  const isStreaming = !hasPendingQuestion && (statusType === 'busy' || statusType === 'retry');
+  const showUnreadDot = !isStreaming && !hasPendingQuestion && !isInterrupted && unseenCount > 0 && !active;
+  const hasActivityDuration = useHasSessionActivityDuration(session.id, isStreaming);
+  const showActivityDuration = (isStreaming || showUnreadDot) && hasActivityDuration;
   const timeLabel = formatSessionCompactDateLabel(session.time?.updated ?? session.time?.created ?? 0);
+  const normalizedWorktreeDirectory = normalizePath(worktreeDirectory);
+  const worktreeComparison = useResolvedWorktreeComparisonSummary(normalizedWorktreeDirectory);
+  const worktreeComparisonLabel = worktreeComparison?.available
+    ? worktreeComparison.hasChanges
+      ? t('sessions.sidebar.worktreeChanges', {
+          branch: worktreeComparison.baseBranch,
+          count: worktreeComparison.fileCount,
+        })
+      : t('sessions.sidebar.session.status.worktreeClean', {
+          branch: worktreeComparison.baseBranch,
+        })
+    : null;
 
   let activityIndicator: React.ReactNode = null;
   if (hasPendingQuestion) {
@@ -55,12 +78,12 @@ const SwitcherRow: React.FC<{
         aria-label={t('sessions.sidebar.session.status.inputNeeded')}
       />
     );
-  } else if (isBusyOrRetry) {
+  } else if (isStreaming) {
     activityIndicator = (
-      <Icon
-        name="loader-4"
-        className="size-3.5 animate-spin text-primary"
+      <span
+        className="size-1.5 rounded-full bg-primary"
         aria-label={t('sessions.sidebar.session.status.active')}
+        title={t('sessions.sidebar.session.status.active')}
       />
     );
   } else if (isInterrupted) {
@@ -71,7 +94,7 @@ const SwitcherRow: React.FC<{
         aria-label={t('sessions.sidebar.session.status.interruptedUnexpectedly')}
       />
     );
-  } else if (unseenCount > 0 && !active) {
+  } else if (showUnreadDot) {
     activityIndicator = (
       <span
         className="size-1.5 rounded-full bg-[var(--status-info)]"
@@ -99,6 +122,29 @@ const SwitcherRow: React.FC<{
           <span className="block truncate typography-micro text-muted-foreground">{meta}</span>
         ) : null}
       </span>
+      {worktreeDirectory ? (
+        <span className="inline-flex shrink-0 items-center gap-1">
+          <span
+            className="inline-flex"
+            role="img"
+            aria-label={t('sessions.sidebar.session.status.linkedWorktree')}
+          >
+            <Icon name="node-tree" className="size-3.5 text-muted-foreground/60" />
+          </span>
+          {worktreeComparison?.available && worktreeComparisonLabel ? (
+            <span
+              className={cn(
+                'inline-flex',
+                worktreeComparison.hasChanges ? 'text-status-warning' : 'text-status-success',
+              )}
+              role="img"
+              aria-label={worktreeComparisonLabel}
+            >
+              <Icon name={worktreeComparison.hasChanges ? 'git-commit' : 'check'} className="size-3.5" />
+            </span>
+          ) : null}
+        </span>
+      ) : null}
       {/* Activity sits on the right, before permissions and time — no reserved left gutter. */}
       {activityIndicator && (
         <span className="flex size-3.5 shrink-0 items-center justify-center">
@@ -115,7 +161,15 @@ const SwitcherRow: React.FC<{
           <span className="leading-none">{permissions.length}</span>
         </span>
       )}
-      {timeLabel ? (
+      {/* The elapsed turn takes the time slot while it matters, then hands it
+          back to the relative timestamp. */}
+      {showActivityDuration ? (
+        <SessionActivityDuration
+          sessionId={session.id}
+          running={isStreaming}
+          className="typography-micro"
+        />
+      ) : timeLabel ? (
         <span className="shrink-0 typography-micro text-muted-foreground tabular-nums">{timeLabel}</span>
       ) : null}
     </button>
@@ -172,10 +226,30 @@ export const MobileSessionSwitcher: React.FC<{
   const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
   const setCurrentSession = useSessionUIStore((state) => state.setCurrentSession);
   const setActiveProjectIdOnly = useProjectsStore((state) => state.setActiveProjectIdOnly);
+  const { git } = useRuntimeAPIs();
+  const fetchWorktreeComparison = useGitStore((state) => state.fetchWorktreeComparison);
   const childStores = useChildStoreManager();
   const bootstrapDemandOwner = `mobile-session-switcher:${React.useId()}`;
 
   const items = useSwitcherItems(open || shouldRender, { maxParents: RECENT_SESSIONS_LIMIT });
+  const worktreeDirectories = React.useMemo(() => Array.from(new Set(
+    items
+      .map((item) => normalizePath(item.node.worktree?.path ?? null))
+      .filter((directory): directory is string => Boolean(directory)),
+  )), [items]);
+
+  React.useEffect(() => {
+    if (!git.getWorktreeComparison || worktreeDirectories.length === 0) return;
+    for (const directory of worktreeDirectories) {
+      void fetchWorktreeComparison(directory, git);
+    }
+    const directorySet = new Set(worktreeDirectories);
+    return sessionEvents.onGitRefreshHint((hint) => {
+      const directory = normalizePath(hint.directory);
+      if (!directory || !directorySet.has(directory)) return;
+      void fetchWorktreeComparison(directory, git);
+    });
+  }, [fetchWorktreeComparison, git, worktreeDirectories]);
 
   React.useEffect(() => {
     const directories = new Set<string>();
@@ -285,6 +359,7 @@ export const MobileSessionSwitcher: React.FC<{
                   key={session.id}
                   session={session}
                   directory={item.groupDirectory}
+                  worktreeDirectory={normalizePath(item.node.worktree?.path ?? null)}
                   meta={meta}
                   active={session.id === currentSessionId}
                   onSelect={() => {

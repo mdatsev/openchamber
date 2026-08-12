@@ -69,6 +69,8 @@ import {
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useAllLiveSessions, useGlobalSessionStatus } from '@/sync/sync-context';
 import { markSessionUnread, markSessionViewed, useSessionUnseenCount } from '@/sync/notification-store';
+import { useHasSessionActivityDuration } from '@/sync/session-activity-timing';
+import { SessionActivityDuration } from '@/components/session/SessionActivityDuration';
 import type { WorktreeMetadata } from '@/types/worktree';
 
 import { MobileDeleteWorktreeDialog } from './MobileDeleteWorktreeDialog';
@@ -479,8 +481,8 @@ const SessionRow: React.FC<{
   const time = formatRelativeShort(getSessionTimestamp(session));
   const title = session.title?.trim() || t('mobile.sessions.untitled');
   const swipeEnabled = Boolean(onRevealedChange && onArchive);
-  // Live indicators, same conventions as the desktop sidebar: busy/retry →
-  // spinner; unseen activity on a non-active row → attention dot.
+  // Live indicators, same conventions as the desktop sidebar: busy/retry and
+  // unseen activity use dots; the short-lived worktree move remains a spinner.
   const liveStatus = useGlobalSessionStatus(session.id);
   const sessionDirectory = resolveGlobalSessionDirectory(session);
   const unseenCount = useSessionUnseenCount(sessionDirectory, session.id);
@@ -488,8 +490,9 @@ const SessionRow: React.FC<{
   const statusType = liveStatus?.type ?? 'idle';
   const isStreaming = statusType === 'busy' || statusType === 'retry';
   const isMovingToWorktree = useIsSessionWorktreeMovePending(session.id);
-  const showActivitySpinner = isMovingToWorktree || isStreaming;
-  const showUnreadDot = !showActivitySpinner && unseenCount > 0 && !active;
+  const showUnreadDot = !isMovingToWorktree && !isStreaming && unseenCount > 0 && !active;
+  const hasActivityDuration = useHasSessionActivityDuration(session.id, isStreaming);
+  const showActivityDuration = !isMovingToWorktree && (isStreaming || showUnreadDot) && hasActivityDuration;
   const actionsWidth = ROW_ACTIONS_WIDTH + (onMoveToWorktree ? ROW_ACTION_WIDTH : 0);
 
   const contentRef = React.useRef<HTMLDivElement>(null);
@@ -670,7 +673,7 @@ const SessionRow: React.FC<{
         {/* Left gutter slot: live activity indicator takes priority over the
             subsession chevron — same position, so rows never shift. When the
             row has children the slot still toggles them either way. */}
-        {showActivitySpinner || showUnreadDot || pinned || (hasChildren && onToggleChildren) ? (
+        {isMovingToWorktree || isStreaming || showUnreadDot || pinned || (hasChildren && onToggleChildren) ? (
           <button
             type="button"
             className="absolute z-10 flex w-6 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
@@ -684,10 +687,16 @@ const SessionRow: React.FC<{
               onToggleChildren?.();
             }}
           >
-            {showActivitySpinner ? (
+            {isMovingToWorktree ? (
               <Icon name="loader-4" className="size-3.5 animate-spin text-primary" />
-            ) : showUnreadDot ? (
-              <span className="size-1.5 rounded-full bg-[var(--status-info)]" aria-hidden />
+            ) : isStreaming || showUnreadDot ? (
+              <span
+                className={cn(
+                  'size-1.5 rounded-full',
+                  isStreaming ? 'bg-primary' : 'bg-[var(--status-info)]',
+                )}
+                aria-hidden
+              />
             ) : pinned && !hasChildren ? (
               <Icon name="pushpin" className="size-3.5 text-primary" aria-hidden />
             ) : (
@@ -734,7 +743,15 @@ const SessionRow: React.FC<{
               >
                 {title}
               </span>
-              {time ? (
+              {/* The elapsed turn takes the time slot while it matters, then
+                  hands it back to the relative timestamp. */}
+              {showActivityDuration ? (
+                <SessionActivityDuration
+                  sessionId={session.id}
+                  running={isStreaming}
+                  className="typography-micro"
+                />
+              ) : time ? (
                 <span className="shrink-0 typography-micro text-muted-foreground tabular-nums">{time}</span>
               ) : null}
             </span>

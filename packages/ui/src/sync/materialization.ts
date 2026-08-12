@@ -68,7 +68,13 @@ export function isSessionMaterializationStillNeeded(
   }
 
   if (request.reason === "settled-running-tool") {
-    return getStaleRunningToolMessageID(state, sessionID) === request.messageID
+    if (getStaleRunningToolMessageID(state, sessionID) === request.messageID) return true
+    if (!request.messageID) return false
+    return (state.part[request.messageID] ?? []).some((part) => {
+      if (part.type !== "tool") return false
+      const partState = (part as { state?: { status?: unknown; error?: unknown } }).state
+      return partState?.status === "error" && partState.error === "Interrupted"
+    })
   }
 
   return true

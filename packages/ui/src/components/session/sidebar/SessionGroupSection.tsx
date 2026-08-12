@@ -9,6 +9,7 @@ const ARCHIVED_VIRTUALIZE_THRESHOLD = 50;
 // around 24-32px; virtua measures mounted rows and uses this as the initial hint.
 const ARCHIVED_ROW_ESTIMATE_PX = 28;
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { Button } from '@/components/ui/button';
 import { Icon } from "@/components/icon/Icon";
 import { cn } from '@/lib/utils';
 import { sessionEvents } from '@/lib/sessionEvents';
@@ -32,6 +33,7 @@ import { useSessionFoldersStore } from '@/stores/useSessionFoldersStore';
 import { getGitHubPrStatusKey, usePrVisualSummary } from '@/stores/useGitHubPrStatusStore';
 import { useI18n } from '@/lib/i18n';
 import { useChildStoreManager } from '@/sync/sync-context';
+import { canRequestNativeDirectoryAccess, requestDirectoryAccess } from '@/lib/desktop';
 import { CollapsedActivityIndicator } from './collapsedActivityIndicator';
 import {
   getSessionNodesActivityState,
@@ -357,17 +359,61 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
   const groupPrColor = groupPrSummary ? `var(--pr-${groupPrSummary.visualState})` : undefined;
   const childStores = useChildStoreManager();
   const bootstrapDirectory = normalizePath(group.directory ?? null);
-  const bootstrapState = React.useSyncExternalStore(
+  const bootstrapDirectories = React.useMemo(() => {
+    const directories = group.folderScopes && group.folderScopes.length > 0
+      ? group.folderScopes.map((scope) => normalizePath(scope.directory))
+      : [bootstrapDirectory];
+    return [...new Set(directories.filter((directory): directory is string => Boolean(directory)))];
+  }, [bootstrapDirectory, group.folderScopes]);
+  React.useSyncExternalStore(
     React.useCallback(
-      (notify) => bootstrapDirectory ? childStores.subscribeBootstrap(notify) : () => undefined,
-      [bootstrapDirectory, childStores],
+      (notify) => bootstrapDirectories.length > 0 ? childStores.subscribeBootstrap(notify) : () => undefined,
+      [bootstrapDirectories.length, childStores],
     ),
     React.useCallback(
-      () => bootstrapDirectory ? childStores.getBootstrapState(bootstrapDirectory) : undefined,
-      [bootstrapDirectory, childStores],
+      () => bootstrapDirectories.map((directory) => (
+        `${directory}\u0000${childStores.getBootstrapState(directory) ?? ''}\u0000${childStores.getBootstrapFailure(directory) ?? ''}`
+      )).join('\u0001'),
+      [bootstrapDirectories, childStores],
     ),
-    React.useCallback(() => undefined, []),
+    React.useCallback(() => '', []),
   );
+  const hasBootstrapState = bootstrapDirectories.some(
+    (directory) => childStores.getBootstrapState(directory) !== undefined,
+  );
+  const bootstrapLoading = bootstrapDirectories.some((directory) => {
+    const state = childStores.getBootstrapState(directory);
+    return state === 'queued' || state === 'running';
+  });
+  const failedBootstrapDirectory = bootstrapDirectories.find(
+    (directory) => childStores.getBootstrapState(directory) === 'failed',
+  ) ?? null;
+  const bootstrapFailure = failedBootstrapDirectory
+    ? childStores.getBootstrapFailure(failedBootstrapDirectory)
+    : undefined;
+  const canGrantBootstrapAccess = bootstrapFailure === 'os-permission' && canRequestNativeDirectoryAccess();
+  const [isRequestingBootstrapAccess, setIsRequestingBootstrapAccess] = React.useState(false);
+
+  const retryFailedBootstrap = React.useCallback(() => {
+    if (!failedBootstrapDirectory) return;
+    childStores.requestBootstrap({
+      directory: failedBootstrapDirectory,
+      priority: isCollapsed ? 'visible' : 'expanded',
+      reason: group.isMain ? 'project-expanded' : 'worktree-expanded',
+      force: true,
+    });
+  }, [childStores, failedBootstrapDirectory, group.isMain, isCollapsed]);
+
+  const grantFailedBootstrapAccess = React.useCallback(async () => {
+    if (!failedBootstrapDirectory || !canGrantBootstrapAccess || isRequestingBootstrapAccess) return;
+    setIsRequestingBootstrapAccess(true);
+    try {
+      const result = await requestDirectoryAccess(failedBootstrapDirectory);
+      if (result.success) retryFailedBootstrap();
+    } finally {
+      setIsRequestingBootstrapAccess(false);
+    }
+  }, [canGrantBootstrapAccess, failedBootstrapDirectory, isRequestingBootstrapAccess, retryFailedBootstrap]);
   const maxVisible = hideDirectoryControls ? 10 : 5;
   const nonArchivedVisibleCount = Math.max(maxVisible, visibleSessionCount ?? maxVisible);
   const groupMatchesSearch = hasSessionSearchQuery ? searchData?.groupMatches === true : false;
@@ -575,10 +621,8 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
     : null;
   const compactEmptyWorktreeGroup = canCompactLinkedWorktree
     && sourceGroupNodes.length === 0
-    && bootstrapState !== undefined;
+    && hasBootstrapState;
   const isGroupCollapsible = !compactEmptyWorktreeGroup;
-  const isBootstrapLoading = bootstrapState === 'queued' || bootstrapState === 'running';
-  const failedBootstrapDirectory = bootstrapState === 'failed' ? bootstrapDirectory : null;
   const rowSecondaryMeta = group.branch && group.branch !== 'HEAD'
     ? { branchLabel: group.branch }
     : null;
@@ -786,6 +830,33 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
     />
   ) : null;
 
+  const bootstrapFailureNotice = failedBootstrapDirectory ? (
+    <span className="inline-flex flex-wrap items-center gap-1.5">
+      {bootstrapFailure === 'os-permission'
+        ? t('sessions.sidebar.group.empty.permissionDenied')
+        : t('sessions.sidebar.group.empty.loadFailed')}
+      {canGrantBootstrapAccess ? (
+        <Button
+          variant="link"
+          size="xs"
+          className="h-auto p-0 typography-micro"
+          disabled={isRequestingBootstrapAccess}
+          onClick={() => void grantFailedBootstrapAccess()}
+        >
+          {t('sessions.sidebar.group.empty.grantAccess')}
+        </Button>
+      ) : null}
+      <Button
+        variant="link"
+        size="xs"
+        className="h-auto p-0 typography-micro"
+        onClick={retryFailedBootstrap}
+      >
+        {t('sessions.sidebar.group.empty.retry')}
+      </Button>
+    </span>
+  ) : null;
+
   if (compactSingleWorktreeNode) {
     return (
       <div className="oc-group pb-0.5">
@@ -805,6 +876,11 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
             worktreeDragHandleProps: dragHandleProps,
           },
         )}
+        {bootstrapFailureNotice ? (
+          <div className="py-1 pl-[26px] text-left typography-micro text-status-error">
+            {bootstrapFailureNotice}
+          </div>
+        ) : null}
       </div>
     );
   }
@@ -1023,32 +1099,21 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
         <div className="py-1 pl-[26px] text-left typography-micro text-muted-foreground">
           {group.isArchivedBucket
             ? t('sessions.sidebar.group.empty.noArchivedSessions')
-            : isBootstrapLoading
+            : bootstrapLoading
               ? (
                 <span className="inline-flex items-center gap-1.5">
                   <Icon name="loader-4" className="size-3 animate-spin" />
                   {t('sessions.sidebar.group.empty.loadingSessions')}
                 </span>
               )
-              : failedBootstrapDirectory
-                ? (
-                  <span className="inline-flex items-center gap-1.5">
-                    {t('sessions.sidebar.group.empty.loadFailed')}
-                    <button
-                      type="button"
-                      className="text-foreground hover:underline"
-                      onClick={() => childStores.requestBootstrap({
-                        directory: failedBootstrapDirectory,
-                        priority: isCollapsed ? 'visible' : 'expanded',
-                        reason: group.isMain ? 'project-expanded' : 'worktree-expanded',
-                        force: true,
-                      })}
-                    >
-                      {t('sessions.sidebar.group.empty.retry')}
-                    </button>
-                  </span>
-                )
+              : bootstrapFailureNotice
+                ? bootstrapFailureNotice
                 : t('sessions.sidebar.group.empty.noSessionsInWorkspace')}
+        </div>
+      ) : null}
+      {(totalSessions > 0 || allFoldersForGroup.length > 0) && bootstrapFailureNotice ? (
+        <div className="py-1 pl-[26px] text-left typography-micro text-status-error">
+          {bootstrapFailureNotice}
         </div>
       ) : null}
       {remainingCount > 0 ? (
@@ -1165,30 +1230,13 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
                   </span>
                   {compactEmptyWorktreeGroup ? (
                     <span className="inline-flex shrink-0 items-center gap-1 typography-micro font-normal text-muted-foreground/75">
-                      {isBootstrapLoading ? (
+                      {bootstrapLoading ? (
                         <>
                           <Icon name="loader-4" className="size-3 animate-spin" />
                           {t('sessions.sidebar.group.empty.loadingSessions')}
                         </>
-                      ) : failedBootstrapDirectory ? (
-                        <>
-                          {t('sessions.sidebar.group.empty.loadFailed')}
-                          <button
-                            type="button"
-                            className="text-foreground hover:underline"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              childStores.requestBootstrap({
-                                directory: failedBootstrapDirectory,
-                                priority: 'expanded',
-                                reason: 'worktree-expanded',
-                                force: true,
-                              });
-                            }}
-                          >
-                            {t('sessions.sidebar.group.empty.retry')}
-                          </button>
-                        </>
+                      ) : bootstrapFailureNotice ? (
+                        <span className="text-status-error">{bootstrapFailureNotice}</span>
                       ) : t('sessions.sidebar.group.empty.noSessions')}
                     </span>
                   ) : null}

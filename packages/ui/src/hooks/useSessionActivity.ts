@@ -5,6 +5,7 @@ import {
   useScopedBlockingPermissions,
   useScopedBlockingQuestions,
   useSessionMessages,
+  useSessionParts,
   useSessionStatus,
 } from '@/sync/sync-context';
 import { setGlobalSessionInterrupted } from '@/sync/global-session-status';
@@ -44,6 +45,8 @@ const INTERRUPTED_RESULT: SessionActivityResult = {
 function useSessionActivity(sessionId: string | null | undefined, directory?: string): SessionActivityResult {
   const status = useSessionStatus(sessionId ?? '', directory);
   const messages = useSessionMessages(sessionId ?? '', directory);
+  const trailingMessageID = messages[messages.length - 1]?.id ?? '';
+  const trailingParts = useSessionParts(trailingMessageID, directory);
   const permissions = useScopedBlockingPermissions(sessionId ?? null, directory);
   const questions = useScopedBlockingQuestions(sessionId ?? null, directory);
   const inactiveStatusSnapshotAt = useDirectorySync(
@@ -74,6 +77,19 @@ function useSessionActivity(sessionId: string | null | undefined, directory?: st
       && typeof (lastMessage as { time?: { completed?: number } }).time?.completed !== 'number',
     );
     const lastMessageCreatedAt = (lastMessage as { time?: { created?: number } } | undefined)?.time?.created;
+    const hasLocallyInterruptedTool = hasPendingAssistant && trailingParts.some((part) => {
+      if (part.type !== 'tool') return false;
+      const partState = (part as { state?: { status?: unknown; error?: unknown } }).state;
+      return partState?.status === 'error' && partState.error === 'Interrupted';
+    });
+    const hasTerminalTool = hasPendingAssistant && trailingParts.some((part) => {
+      if (part.type !== 'tool') return false;
+      const partState = (part as { state?: { status?: unknown; error?: unknown } }).state;
+      return typeof partState?.status === 'string'
+        && partState.status !== 'pending'
+        && partState.status !== 'running'
+        && !(partState.status === 'error' && partState.error === 'Interrupted');
+    });
 
     const statusWorking = status !== undefined && phase !== 'idle';
     if (statusWorking) {
@@ -86,6 +102,8 @@ function useSessionActivity(sessionId: string | null | undefined, directory?: st
       };
     }
 
+    if (hasLocallyInterruptedTool) return INTERRUPTED_RESULT;
+    if (hasTerminalTool) return IDLE_RESULT;
     if (!hasPendingAssistant) return IDLE_RESULT;
 
     const predatesAuthoritativeSnapshot = typeof inactiveStatusSnapshotAt === 'number'
@@ -101,7 +119,7 @@ function useSessionActivity(sessionId: string | null | undefined, directory?: st
       isCooldown: false,
       isInterrupted: false,
     };
-  }, [sessionId, status, messages, permissions, questions, inactiveStatusSnapshotAt]);
+  }, [sessionId, status, messages, trailingParts, permissions, questions, inactiveStatusSnapshotAt]);
 
   React.useEffect(() => {
     if (!sessionId) return;
