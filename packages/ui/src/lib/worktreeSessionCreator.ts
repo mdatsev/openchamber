@@ -67,15 +67,15 @@ export const resolveProjectRef = (directory: string): ProjectRef | null => {
 
 export const createQuickWorktree = async (
   project: ProjectRef,
-  options: { preferredName?: string; startRef?: string } = {},
+  options: { preferredName?: string; branchName?: string; worktreeName?: string; startRef?: string } = {},
 ) => {
-  const preferredName = options.preferredName ?? generateBranchName();
+  const defaultName = options.preferredName ?? options.branchName ?? generateBranchName();
   const setupCommands = await getWorktreeSetupCommands(project);
   return createWorktreeWithDefaults(project, {
-    preferredName,
+    preferredName: defaultName,
     mode: 'new',
-    branchName: preferredName,
-    worktreeName: preferredName,
+    branchName: options.branchName ?? defaultName,
+    worktreeName: options.worktreeName ?? defaultName,
     startRef: options.startRef,
     setupCommands,
     returnAfterDirectoryCreated: true,
