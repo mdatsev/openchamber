@@ -46,8 +46,13 @@ function useSessionActivity(sessionId: string | null | undefined, directory?: st
   const messages = useSessionMessages(sessionId ?? '', directory);
   const permissions = useScopedBlockingPermissions(sessionId ?? null, directory);
   const questions = useScopedBlockingQuestions(sessionId ?? null, directory);
-  const statusSnapshotAt = useDirectorySync(
-    React.useCallback((state) => state.sessionStatusSnapshotAt, []),
+  const inactiveStatusSnapshotAt = useDirectorySync(
+    React.useCallback((state) => {
+      if (!sessionId || !state.sessionStatusSnapshotActiveIds) return undefined;
+      return state.sessionStatusSnapshotActiveIds.has(sessionId)
+        ? undefined
+        : state.sessionStatusSnapshotAt;
+    }, [sessionId]),
     directory,
   );
 
@@ -81,13 +86,13 @@ function useSessionActivity(sessionId: string | null | undefined, directory?: st
       };
     }
 
-    if (status !== undefined) return IDLE_RESULT;
-
     if (!hasPendingAssistant) return IDLE_RESULT;
 
-    const predatesAuthoritativeSnapshot = typeof statusSnapshotAt === 'number'
-      && (typeof lastMessageCreatedAt !== 'number' || lastMessageCreatedAt <= statusSnapshotAt);
+    const predatesAuthoritativeSnapshot = typeof inactiveStatusSnapshotAt === 'number'
+      && (typeof lastMessageCreatedAt !== 'number' || lastMessageCreatedAt <= inactiveStatusSnapshotAt);
     if (predatesAuthoritativeSnapshot) return INTERRUPTED_RESULT;
+
+    if (status !== undefined) return IDLE_RESULT;
 
     return {
       phase: 'busy',
@@ -96,7 +101,7 @@ function useSessionActivity(sessionId: string | null | undefined, directory?: st
       isCooldown: false,
       isInterrupted: false,
     };
-  }, [sessionId, status, messages, permissions, questions, statusSnapshotAt]);
+  }, [sessionId, status, messages, permissions, questions, inactiveStatusSnapshotAt]);
 
   React.useEffect(() => {
     if (!sessionId) return;

@@ -170,10 +170,18 @@ export async function bootstrapDirectory(input: {
     ),
     retry(() => {
       const requestedAt = Date.now()
-      return sdk.session.status().then((x) => commit({
-        session_status: unwrap(x, "session.status"),
-        sessionStatusSnapshotAt: requestedAt,
-      }))
+      return sdk.session.status().then((x) => {
+        const sessionStatusSnapshot = unwrap(x, "session.status")
+        commit({
+          session_status: sessionStatusSnapshot,
+          sessionStatusSnapshotAt: requestedAt,
+          sessionStatusSnapshotActiveIds: new Set(
+            Object.entries(sessionStatusSnapshot)
+              .filter(([, status]) => status.type !== "idle")
+              .map(([sessionId]) => sessionId),
+          ),
+        })
+      })
     }),
   ])
 
