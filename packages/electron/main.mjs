@@ -38,6 +38,7 @@ const execFileAsync = promisify(execFile);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const isDev = process.env.OPENCHAMBER_ELECTRON_DEV === '1' || !app.isPackaged;
+const isPackagedRuntime = app.isPackaged && !isDev;
 const isHmrLauncher = isDev && process.env.OPENCHAMBER_ELECTRON_HMR_LAUNCHER === '1';
 const linuxDesktopName = isDev ? 'openchamber-custom-source.desktop' : 'openchamber.desktop';
 const electronStartupStartedAt = performance.now();
@@ -46,7 +47,7 @@ const DEEP_LINK_PROTOCOL = 'openchamber';
 const UI_PROTOCOL = 'openchamber-ui';
 const PACKAGED_APP_USER_MODEL_ID = 'dev.openchamber.desktop';
 const DEV_APP_USER_MODEL_ID = 'dev.openchamber.desktop.dev';
-const APP_USER_MODEL_ID = app.isPackaged ? PACKAGED_APP_USER_MODEL_ID : DEV_APP_USER_MODEL_ID;
+const APP_USER_MODEL_ID = isPackagedRuntime ? PACKAGED_APP_USER_MODEL_ID : DEV_APP_USER_MODEL_ID;
 const BACKGROUND_START_ARG = '--background';
 
 const getLoginItemOptions = () => {
@@ -240,7 +241,7 @@ const INSTALLED_APPS_CACHE_TTL_SECS = 60 * 60 * 24;
 const INSTALLED_APPS_CACHE_FILE = 'discovered-apps.json';
 const LINUX_DESKTOP_ENTRIES_CACHE_TTL_MS = 30_000;
 const OPENCODE_SHUTDOWN_GRACE_MS = 100;
-const autoUpdater = app.isPackaged ? updaterPkg.autoUpdater : null;
+const autoUpdater = isPackagedRuntime ? updaterPkg.autoUpdater : null;
 
 const state = {
   serverHandle: null,
@@ -1117,7 +1118,7 @@ const resolveWebDistDir = () => path.join(resourceRoot(), 'web-dist');
 const shouldUsePackagedUi = () => {
   if (process.env.OPENCHAMBER_ELECTRON_LOAD_SERVER_UI === '1') return false;
   if (process.env.OPENCHAMBER_ELECTRON_USE_BUNDLED_UI === '1') return true;
-  return app.isPackaged;
+  return isPackagedRuntime;
 };
 const packagedUiOrigin = () => `${UI_PROTOCOL}://app`;
 const buildPackagedUiUrl = (pathname = '/index.html') => new URL(pathname, `${packagedUiOrigin()}/`).toString();
@@ -2397,7 +2398,7 @@ const createBrowserWindow = ({ label, restoreGeometry, url, runtimeConfig = {} }
         `--openchamber-macos-major=${desktopMacosMajor}`,
         `--openchamber-mac-vibrancy=${useVibrancy ? '1' : '0'}`,
         `--openchamber-tray-enabled=${trayEnabled ? '1' : '0'}`,
-        `--openchamber-packaged=${app.isPackaged ? '1' : '0'}`,
+        `--openchamber-packaged=${isPackagedRuntime ? '1' : '0'}`,
         `--openchamber-boot-outcome=${JSON.stringify(state.bootOutcome || null)}`,
         `--openchamber-relay-host-id=${rendererRuntimeConfig.relayHostId || ''}`,
       ],
@@ -2812,7 +2813,7 @@ const createMiniChatWindow = async ({ mode, sessionId = '', directory = '', proj
         `--openchamber-home=${desktopHome}`,
         `--openchamber-macos-major=${desktopMacosMajor}`,
         `--openchamber-tray-enabled=${trayEnabled ? '1' : '0'}`,
-        `--openchamber-packaged=${app.isPackaged ? '1' : '0'}`,
+        `--openchamber-packaged=${isPackagedRuntime ? '1' : '0'}`,
       ],
       preload: isDev ? path.join(__dirname, 'preload.mjs') : path.join(app.getAppPath(), 'preload.mjs'),
       backgroundThrottling: false,
@@ -4217,7 +4218,7 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
     }
 
     case 'desktop_check_for_updates': {
-      assertUpdaterCapability({ packaged: app.isPackaged });
+      assertUpdaterCapability({ packaged: isPackagedRuntime });
       const currentVersion = APP_VERSION;
       const { available, updateInfo, updateResult, nextVersion, pendingUpdate } = await checkForDesktopUpdate({
         autoUpdater,
@@ -4241,7 +4242,7 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
     }
 
     case 'desktop_download_and_install_update':
-      assertUpdaterCapability({ packaged: app.isPackaged });
+      assertUpdaterCapability({ packaged: isPackagedRuntime });
       if (!state.pendingUpdate) {
         throw new Error('No pending update');
       }
@@ -4286,9 +4287,9 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
       }
 
     case 'desktop_restart': {
-      const applyUpdate = Boolean(state.pendingUpdate?.downloaded && app.isPackaged);
-      if (applyUpdate) assertUpdaterCapability({ packaged: app.isPackaged });
-      log.info(`[electron] desktop_restart applyUpdate=${applyUpdate} packaged=${app.isPackaged}`);
+      const applyUpdate = Boolean(state.pendingUpdate?.downloaded && isPackagedRuntime);
+      if (applyUpdate) assertUpdaterCapability({ packaged: isPackagedRuntime });
+      log.info(`[electron] desktop_restart applyUpdate=${applyUpdate} packaged=${isPackagedRuntime}`);
       if (applyUpdate && process.platform === 'darwin' && typeof app.isInApplicationsFolder === 'function') {
         try {
           if (!app.isInApplicationsFolder()) {
@@ -5206,7 +5207,7 @@ app.whenReady().then(async () => {
   const isBackgroundStart = shouldStartInBackground(loginItemSettings);
   log.info('[electron] app starting', {
     version: APP_VERSION,
-    packaged: app.isPackaged,
+    packaged: isPackagedRuntime,
     platform: process.platform,
     arch: process.arch,
     argv: process.argv,
@@ -5224,7 +5225,7 @@ app.whenReady().then(async () => {
   }
   setupTray();
 
-  if ((process.platform === 'darwin' || process.platform === 'win32') && app.isPackaged) {
+  if ((process.platform === 'darwin' || process.platform === 'win32') && isPackagedRuntime) {
     const openAtLogin = loginItemSettings?.openAtLogin === true;
     app.setLoginItemSettings({
       openAtLogin,
@@ -5233,7 +5234,7 @@ app.whenReady().then(async () => {
     });
   }
 
-  if (process.platform === 'linux' && app.isPackaged) {
+  if (process.platform === 'linux' && isPackagedRuntime) {
     try {
       const enabled = await readLinuxAutostartEnabled();
       if (enabled) {

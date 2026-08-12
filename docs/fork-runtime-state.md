@@ -14,9 +14,9 @@
 | OpenChamber settings and projects | `~/.config/openchamber/` | Yes |
 | Session folders | `~/.config/openchamber/sessions-directories.json` | Yes, with browser mirrors |
 | Session unread and pin metadata | `~/.config/openchamber/session-inbox.json` | Yes, with browser pin mirrors |
-| Electron browser profile | `~/.config/OpenChamber` or `~/.config/OpenChamber Dev` | No |
+| Electron browser profile | `~/.config/OpenChamber`, `~/.config/OpenChamber Dev`, or `~/.config/OpenChamber Dev HMR` | No |
 
-The source runtime deliberately keeps the `OpenChamber Dev` Electron profile. This isolates Chromium local storage, cookies, window state, service workers, and embedded-browser data while leaving sessions and canonical server settings shared. The installed custom launcher uses content-hash-cached built UI assets without HMR and pins its loopback server to port `46405`; the explicit override does not replace the packaged application's persisted port preference. Terminal development may still opt into HMR with `bun run electron:dev`.
+The bundled source runtime deliberately keeps the `OpenChamber Dev` Electron profile. This isolates Chromium local storage, cookies, window state, service workers, and embedded-browser data while leaving sessions and canonical server settings shared. The installed custom launcher uses content-hash-cached built UI assets without HMR and pins its loopback server to port `46405`; the explicit override does not replace the packaged application's persisted port preference. The separately installed macOS HMR launcher uses `OpenChamber Dev HMR`, allowing both source launchers to run and be pinned independently. Although its copied Electron application bundle makes Electron's raw `app.isPackaged` value true, the development environment marker keeps it on source-run HMR and notification-only update behavior. Terminal development continues to use `OpenChamber Dev` with `bun run electron:dev`.
 
 ## Browser-Local State
 
