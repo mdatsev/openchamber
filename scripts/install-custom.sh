@@ -19,6 +19,19 @@ fail() {
   exit 1
 }
 
+install_mode="bundled"
+case "${1:-}" in
+  '')
+    ;;
+  --hmr)
+    [[ "$#" -eq 1 ]] || fail "Usage: $0 [--hmr]"
+    install_mode="hmr"
+    ;;
+  *)
+    fail "Usage: $0 [--hmr]"
+    ;;
+esac
+
 install_linux() {
   local applications_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
   local desktop_file="$applications_dir/openchamber-custom-source.desktop"
@@ -73,7 +86,12 @@ set_plist_string() {
 install_macos() {
   local source_app="$repo_root/packages/electron/node_modules/electron/dist/Electron.app"
   local applications_dir="$HOME/Applications"
-  local target_app="$applications_dir/OpenChamber CUSTOM.app"
+  local app_name="OpenChamber CUSTOM"
+  local bundle_identifier="dev.openchamber.custom.source"
+  local log_directory="OpenChamber CUSTOM"
+  local launch_command="electron:dev:bundled"
+  local launcher_environment=$'export OPENCHAMBER_ELECTRON_CACHE_BUNDLED_UI=1\nexport OPENCHAMBER_DESKTOP_PORT=46405'
+  local target_app
   local staging_dir
   local staged_app
   local plist
@@ -84,6 +102,15 @@ install_macos() {
   local icon_target
   local quoted_repo_root
 
+  if [[ "$install_mode" == "hmr" ]]; then
+    app_name="OpenChamber CUSTOM HMR"
+    bundle_identifier="dev.openchamber.custom.source.hmr"
+    log_directory="OpenChamber CUSTOM HMR"
+    launch_command="electron:dev"
+    launcher_environment="export OPENCHAMBER_ELECTRON_HMR_LAUNCHER=1"
+  fi
+  target_app="$applications_dir/$app_name.app"
+
   [[ -d "$source_app" ]] || fail "Electron.app not found. Run bun install first."
   [[ -f "$icon_source" ]] || fail "OpenChamber macOS icon not found at $icon_source"
   command -v ditto >/dev/null 2>&1 || fail "ditto is required to install the macOS launcher"
@@ -93,9 +120,9 @@ install_macos() {
   mkdir -p "$applications_dir"
   staging_dir="$(mktemp -d)"
   trap 'rm -rf "$staging_dir"' EXIT
-  staged_app="$staging_dir/OpenChamber CUSTOM.app"
+  staged_app="$staging_dir/$app_name.app"
 
-  info "Copying Electron runtime into OpenChamber CUSTOM.app"
+  info "Copying Electron runtime into $app_name.app"
   ditto "$source_app" "$staged_app"
 
   plist="$staged_app/Contents/Info.plist"
@@ -115,7 +142,7 @@ set -euo pipefail
 
 repo_root=$quoted_repo_root
 macos_dir="\$(cd -- "\$(dirname -- "\${BASH_SOURCE[0]}")" && pwd)"
-state_dir="\$HOME/Library/Logs/OpenChamber CUSTOM"
+state_dir="\$HOME/Library/Logs/$log_directory"
 log_file="\$state_dir/dev.log"
 
 mkdir -p "\$state_dir"
@@ -132,17 +159,16 @@ fi
 
 export PATH="\$(dirname -- "\$bun_bin"):\$PATH"
 export OPENCHAMBER_ELECTRON_BIN="\$macos_dir/openchamber-custom-bin"
-export OPENCHAMBER_ELECTRON_CACHE_BUNDLED_UI=1
-export OPENCHAMBER_DESKTOP_PORT=46405
+$launcher_environment
 
 cd "\$repo_root"
-exec "\$bun_bin" run electron:dev:bundled
+exec "\$bun_bin" run $launch_command
 EOF
   chmod +x "$wrapper" "$custom_binary"
 
-  set_plist_string "$plist" CFBundleIdentifier dev.openchamber.custom.source
-  set_plist_string "$plist" CFBundleName "OpenChamber CUSTOM"
-  set_plist_string "$plist" CFBundleDisplayName "OpenChamber CUSTOM"
+  set_plist_string "$plist" CFBundleIdentifier "$bundle_identifier"
+  set_plist_string "$plist" CFBundleName "$app_name"
+  set_plist_string "$plist" CFBundleDisplayName "$app_name"
   set_plist_string "$plist" CFBundleExecutable openchamber-custom
   set_plist_string "$plist" CFBundleIconFile openchamber-custom.icns
 
@@ -152,13 +178,14 @@ EOF
   trap - EXIT
   rm -rf "$staging_dir"
 
-  success "Installed OpenChamber CUSTOM at $target_app"
+  success "Installed $app_name at $target_app"
   info "Open it from Finder once, then choose Keep in Dock."
-  info "Logs: $HOME/Library/Logs/OpenChamber CUSTOM/dev.log"
+  info "Logs: $HOME/Library/Logs/$log_directory/dev.log"
 }
 
 case "$(uname -s)" in
   Linux)
+    [[ "$install_mode" == "bundled" ]] || fail "The HMR application launcher is supported on macOS only"
     install_linux
     ;;
   Darwin)
