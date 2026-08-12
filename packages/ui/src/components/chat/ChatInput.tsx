@@ -2340,8 +2340,8 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
 
     const handleMobileNewSession = React.useCallback(() => {
         if (newSessionDraftOpen) return;
-        openNewSessionDraft(currentDirectory ? { directoryOverride: currentDirectory } : undefined);
-    }, [newSessionDraftOpen, openNewSessionDraft, currentDirectory]);
+        openNewSessionDraft();
+    }, [newSessionDraftOpen, openNewSessionDraft]);
 
     /** The dictation engine listens for this globally; the composer only asks. */
     const toggleDictation = React.useCallback(() => {

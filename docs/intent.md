@@ -64,6 +64,10 @@ If instructions materially conflict and their ownership does not resolve the con
 
 - VS Code is not a supported target for fork-only behavior. Fork-only features do not require VS Code implementation, parity, or validation unless the user explicitly requests it.
 
+## Fork-Only Settings
+
+- Place preferences for behavior that exists only in `mdatsev/openchamber` under the dedicated **Custom Fork > Fork Settings** page, not in upstream-owned Settings pages.
+
 ## Inbox Semantics
 
 - A running agent uses the live activity indicator and is not unread. Only the final response after the agent finishes can create unread state; read/unread state must not replace or compete with the running indicator.

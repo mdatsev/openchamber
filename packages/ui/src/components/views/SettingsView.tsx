@@ -14,6 +14,7 @@ import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
 import { AgentsSidebar } from '@/components/sections/agents/AgentsSidebar';
 import { AgentsPage } from '@/components/sections/agents/AgentsPage';
 import { BehaviorPage } from '@/components/sections/behavior/BehaviorPage';
+import { ForkSettingsPage } from '@/components/sections/fork/ForkSettingsPage';
 import { CommandsSidebar } from '@/components/sections/commands/CommandsSidebar';
 import { CommandsPage } from '@/components/sections/commands/CommandsPage';
 import { McpSidebar } from '@/components/sections/mcp/McpSidebar';
@@ -92,6 +93,8 @@ const pageOrder: SettingsPageSlug[] = [
   'voice',
   'usage',
   'about',
+  // 'fork' group — custom fork only
+  'fork',
   // 'projects' group — Workspace
   'projects',
   'remote-instances',
@@ -111,7 +114,7 @@ const pageOrder: SettingsPageSlug[] = [
   'skills.catalog',
 ];
 
-const NAV_GROUP_ORDER = ['general', 'projects', 'opencode', 'content'] as const;
+const NAV_GROUP_ORDER = ['general', 'fork', 'projects', 'opencode', 'content'] as const;
 
 const SNIPPETS_SETTINGS_ICON = { icon: 'chat-thread' } as const;
 const ADD_PROVIDER_SETTINGS_ID = '__add_provider__';
@@ -214,6 +217,8 @@ export function getSettingsNavIcon(slug: SettingsPageSlug): IconName | null {
       return 'book';
 
     case 'git':
+      return 'git-branch';
+    case 'fork':
       return 'git-branch';
 
     case 'usage':
@@ -418,6 +423,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
         return t('settings.page.tunnel.title');
       case 'about':
         return t('settings.page.about.title');
+      case 'fork':
+        return t('settings.page.fork.title');
       case 'home':
       default:
         return t('settings.view.home.title');
@@ -695,6 +702,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
             <AboutSettings />
           </SettingsPageLayout>
         );
+      case 'fork':
+        return <ForkSettingsPage />;
       case 'magic-prompts':
         return <MagicPromptsPage />;
       case 'snippets':

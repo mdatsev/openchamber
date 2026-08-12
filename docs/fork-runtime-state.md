@@ -27,6 +27,7 @@ Important durable key families include:
 | Keys or prefixes | Contents |
 |---|---|
 | `ui-store` | Layout, selected settings surface, rendering preferences, notification options, shortcuts, and model UI preferences; many values also synchronize to server settings. |
+| `custom-fork-settings` | Browser-local preferences for behavior implemented only by this custom fork. |
 | `themeMode`, `lightThemeId`, `darkThemeId`, theme mirror keys | Theme selection and derived splash colors. |
 | `projects*`, `activeProjectId*`, `lastDirectory`, `pinnedDirectories` | Browser mirrors of projects and directories plus local ordering. |
 | `oc.sessions.folders.v2:*` | Runtime-scoped mirror of server-backed session folders. |
