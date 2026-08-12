@@ -305,7 +305,7 @@ export const dict: Record<I18nKey, string> = {
   'sessions.sidebar.session.menu.moveToWorktree': 'Przenieś do nowego worktree',
   'sessions.sidebar.session.moveToWorktree.success': 'Sesja została przeniesiona do nowego worktree',
   'sessions.sidebar.session.moveToWorktree.failed': 'Nie udało się przenieść sesji do nowego worktree',
-  'sessions.sidebar.session.moveToWorktree.tooltip': 'Tworzy nowy worktree z bieżącej gałęzi, przenosi niezacommitowane zmiany oraz tę sesję i jej podsesje.',
+  'sessions.sidebar.session.moveToWorktree.tooltip': 'Tworzy nowy worktree z bieżącej gałęzi oraz przenosi do niego tę sesję i jej podsesje.',
   'sessions.sidebar.session.moveToWorktree.tooltipBusy': 'Dostępne, gdy sesja jest bezczynna. Zatrzymaj bieżącą aktywność lub poczekaj na jej zakończenie.',
   'sessions.sidebar.session.moveToWorktree.tooltipMoving': 'Ta sesja jest już przenoszona do nowego worktree.',
   'sessions.sidebar.session.menu.runFusion': 'Uruchom fusion',

@@ -507,7 +507,7 @@ export const dict: Record<I18nKey, string> = {
   'sessions.sidebar.session.menu.moveToWorktree': '移至新工作树',
   'sessions.sidebar.session.moveToWorktree.success': '会话已移至新工作树',
   'sessions.sidebar.session.moveToWorktree.failed': '无法将会话移至新工作树',
-  'sessions.sidebar.session.moveToWorktree.tooltip': '从当前分支创建新工作树，转移未提交的更改，并将此会话及其子会话移至其中。',
+  'sessions.sidebar.session.moveToWorktree.tooltip': '从当前分支创建新工作树，并将此会话及其子会话移至其中。',
   'sessions.sidebar.session.moveToWorktree.tooltipBusy': '仅在会话空闲时可用。请停止当前活动或等待其完成。',
   'sessions.sidebar.session.moveToWorktree.tooltipMoving': '此会话已在移至新工作树。',
   'sessions.sidebar.session.menu.runFusion': '运行融合',

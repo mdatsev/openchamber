@@ -5,6 +5,7 @@ import { normalizePath } from '@/lib/pathNormalization';
 import { createQuickWorktree, resolveProjectRef } from '@/lib/worktreeSessionCreator';
 import { getLatestWorktreeMetadata, removeProjectWorktree, type ProjectRef } from '@/lib/worktrees/worktreeManager';
 import { refreshGlobalSessionsForDirectories } from '@/stores/useGlobalSessionsStore';
+import { useForkSettingsStore } from '@/stores/useForkSettingsStore';
 import { moveSessionToDirectory } from '@/sync/session-actions';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { getDirectoryState } from '@/sync/sync-refs';
@@ -66,6 +67,7 @@ const rollbackMovedSessions = async (
   rootSessionId: string,
   sourceDirectory: string,
   worktreeDirectory: string,
+  moveChanges: boolean,
   previousMetadata: ReadonlyMap<string, WorktreeMetadata | undefined>,
 ): Promise<unknown[]> => {
   const failures: unknown[] = [];
@@ -75,7 +77,7 @@ const rollbackMovedSessions = async (
         session,
         worktreeDirectory,
         sourceDirectory,
-        session.id === rootSessionId,
+        moveChanges && session.id === rootSessionId,
       );
       useSessionUIStore.getState().setWorktreeMetadata(session.id, previousMetadata.get(session.id) ?? null);
     } catch (error) {
@@ -108,6 +110,7 @@ const moveSessionTreeToQuickWorktree = async (input: {
     throw new Error('Session move already in progress');
   }
   setSessionMovePending(input.root.id, true);
+  const moveChanges = useForkSettingsStore.getState().moveSessionChangesToWorktree;
 
   try {
     const project = resolveProjectRef(input.sourceDirectory);
@@ -132,9 +135,9 @@ const moveSessionTreeToQuickWorktree = async (input: {
       // session to start running, so verify the whole tree again before moving.
       assertSessionsIdle(sessions, input.sourceDirectory);
       for (const [index, session] of sessions.entries()) {
-        // Transfer the checkout changes once with the root. Descendants only
-        // need their execution location updated.
-        await moveSessionToDirectory(session, input.sourceDirectory, worktree.path, index === 0);
+        // If enabled, transfer checkout changes once with the root. Descendants
+        // only need their execution location updated.
+        await moveSessionToDirectory(session, input.sourceDirectory, worktree.path, moveChanges && index === 0);
         moved.push(session);
         useSessionUIStore.getState().setWorktreeMetadata(session.id, getLatestWorktreeMetadata(worktree));
       }
@@ -144,6 +147,7 @@ const moveSessionTreeToQuickWorktree = async (input: {
         input.root.id,
         input.sourceDirectory,
         worktree.path,
+        moveChanges,
         previousMetadata,
       );
       if (rollbackFailures.length > 0) {

@@ -507,7 +507,7 @@ export const dict: Record<I18nKey, string> = {
   "sessions.sidebar.session.menu.moveToWorktree": "Перенести в новий worktree",
   "sessions.sidebar.session.moveToWorktree.success": "Сесію перенесено в новий worktree",
   "sessions.sidebar.session.moveToWorktree.failed": "Не вдалося перенести сесію в новий worktree",
-  "sessions.sidebar.session.moveToWorktree.tooltip": "Створює новий worktree з поточної гілки, переносить незакомічені зміни та переміщує туди цю сесію і її підсесії.",
+  "sessions.sidebar.session.moveToWorktree.tooltip": "Створює новий worktree з поточної гілки та переміщує туди цю сесію і її підсесії.",
   "sessions.sidebar.session.moveToWorktree.tooltipBusy": "Доступно, коли сесія неактивна. Зупиніть поточну активність або дочекайтеся її завершення.",
   "sessions.sidebar.session.moveToWorktree.tooltipMoving": "Ця сесія вже переноситься в новий worktree.",
   "sessions.sidebar.session.menu.runFusion": "Запустити fusion",

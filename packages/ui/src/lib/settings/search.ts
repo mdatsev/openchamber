@@ -941,6 +941,22 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     keywords: ['background', 'push'],
     isAvailable: (ctx) => ctx.isWeb && !ctx.isDesktop && !ctx.isVSCode,
   },
+  {
+    id: 'fork.move-session-changes',
+    page: 'fork',
+    titleKey: 'settings.fork.moveSessionChanges.label',
+    descriptionKey: 'settings.fork.moveSessionChanges.info',
+    keywords: ['worktree', 'move changes', 'uncommitted changes', 'checkout'],
+    isAvailable: (ctx) => !ctx.isVSCode,
+  },
+  {
+    id: 'fork.start-new-chat-in-worktree',
+    page: 'fork',
+    titleKey: 'settings.fork.startNewChatInWorktree.label',
+    descriptionKey: 'settings.fork.startNewChatInWorktree.info',
+    keywords: ['worktree', 'new chat', 'new session', 'project root'],
+    isAvailable: (ctx) => !ctx.isVSCode,
+  },
 ] as const;
 
 interface BuildSettingsSearchResultsOptions {
