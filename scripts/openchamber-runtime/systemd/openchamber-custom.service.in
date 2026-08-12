@@ -11,6 +11,7 @@ WorkingDirectory=@CUSTOM_REPO@
 Environment="PATH=@SERVICE_PATH@"
 Environment="OPENCODE_HOST=http://127.0.0.1:4096"
 Environment="OPENCODE_SKIP_START=true"
+Environment="OPENCHAMBER_MANAGED_RESTART=true"
 ExecStart=@NODE_BIN@ @CUSTOM_REPO@/packages/web/bin/cli.js serve --foreground --host 127.0.0.1 --port 8795
 Restart=on-failure
 RestartSec=5

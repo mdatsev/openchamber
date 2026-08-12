@@ -957,6 +957,14 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     keywords: ['worktree', 'new chat', 'new session', 'project root'],
     isAvailable: (ctx) => !ctx.isVSCode,
   },
+  {
+    id: 'fork.restart-openchamber',
+    page: 'fork',
+    titleKey: 'settings.fork.restart.label',
+    descriptionKey: 'settings.fork.restart.info',
+    keywords: ['restart', 'server', 'runtime', 'systemd'],
+    isAvailable: (ctx) => !ctx.isVSCode,
+  },
 ] as const;
 
 interface BuildSettingsSearchResultsOptions {
