@@ -5,7 +5,6 @@ import { normalizePath } from '@/lib/pathNormalization';
 import { createQuickWorktree, resolveProjectRef } from '@/lib/worktreeSessionCreator';
 import { getLatestWorktreeMetadata, removeProjectWorktree, type ProjectRef } from '@/lib/worktrees/worktreeManager';
 import { refreshGlobalSessionsForDirectories } from '@/stores/useGlobalSessionsStore';
-import { useForkSettingsStore } from '@/stores/useForkSettingsStore';
 import { moveSessionToDirectory } from '@/sync/session-actions';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { getDirectoryState } from '@/sync/sync-refs';
@@ -13,12 +12,33 @@ import type { WorktreeMetadata } from '@/types/worktree';
 import { waitForWorktreeGitReady } from '@/lib/worktrees/worktreeBootstrap';
 import { create } from 'zustand';
 
-const useSessionMoveState = create<{ pendingSessionIds: Set<string> }>(() => ({
+type SessionTreeWorktreeMoveInput = {
+  root: Session;
+  descendants: Session[];
+  sourceDirectory: string;
+  successMessage: string;
+  failureMessage: string;
+  onSuccess?: (worktreePath: string) => void;
+};
+
+type SessionWorktreeMoveState = {
+  pendingSessionIds: Set<string>;
+  confirmationQueue: SessionTreeWorktreeMoveInput[];
+};
+
+const useSessionMoveState = create<SessionWorktreeMoveState>(() => ({
   pendingSessionIds: new Set(),
+  confirmationQueue: [],
 }));
 
 export const useIsSessionWorktreeMovePending = (sessionId: string): boolean =>
   useSessionMoveState((state) => state.pendingSessionIds.has(sessionId));
+
+export const useHasSessionWorktreeMoveConfirmation = (): boolean =>
+  useSessionMoveState((state) => state.confirmationQueue.length > 0);
+
+const getErrorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
 
 const setSessionMovePending = (sessionId: string, pending: boolean): void => {
   useSessionMoveState.setState((state) => {
@@ -95,23 +115,19 @@ const removeFailedWorktree = async (
   try {
     await removeProjectWorktree(project, worktree, { deleteLocalBranch: true });
   } catch {
-    const message = moveError instanceof Error ? moveError.message : String(moveError);
-    throw new Error(`Session move failed and the new worktree could not be removed: ${message}`);
+    throw new Error(`Session move failed and the new worktree could not be removed: ${getErrorMessage(moveError)}`);
   }
   throw moveError;
 };
 
-const moveSessionTreeToQuickWorktree = async (input: {
-  root: Session;
-  descendants: Session[];
-  sourceDirectory: string;
-}): Promise<string> => {
-  if (useSessionMoveState.getState().pendingSessionIds.has(input.root.id)) {
-    throw new Error('Session move already in progress');
-  }
-  setSessionMovePending(input.root.id, true);
-  const moveChanges = useForkSettingsStore.getState().moveSessionChangesToWorktree;
-
+const moveSessionTreeToQuickWorktree = async (
+  input: {
+    root: Session;
+    descendants: Session[];
+    sourceDirectory: string;
+  },
+  moveChanges: boolean,
+): Promise<string> => {
   try {
     const project = resolveProjectRef(input.sourceDirectory);
     if (!project) throw new Error('Unable to find the project for this session');
@@ -135,7 +151,7 @@ const moveSessionTreeToQuickWorktree = async (input: {
       // session to start running, so verify the whole tree again before moving.
       assertSessionsIdle(sessions, input.sourceDirectory);
       for (const [index, session] of sessions.entries()) {
-        // If enabled, transfer checkout changes once with the root. Descendants
+        // If chosen, transfer checkout changes once with the root. Descendants
         // only need their execution location updated.
         await moveSessionToDirectory(session, input.sourceDirectory, worktree.path, moveChanges && index === 0);
         moved.push(session);
@@ -151,7 +167,7 @@ const moveSessionTreeToQuickWorktree = async (input: {
         previousMetadata,
       );
       if (rollbackFailures.length > 0) {
-        throw new Error(`Session move partially failed and could not be fully rolled back: ${error instanceof Error ? error.message : String(error)}`);
+        throw new Error(`Session move partially failed and could not be fully rolled back: ${getErrorMessage(error)}`);
       }
       return removeFailedWorktree(project, worktree, error);
     }
@@ -169,22 +185,52 @@ const moveSessionTreeToQuickWorktree = async (input: {
   }
 };
 
-export const startSessionTreeWorktreeMove = (input: {
-  root: Session;
-  descendants: Session[];
-  sourceDirectory: string;
-  successMessage: string;
-  failureMessage: string;
-  onSuccess?: (worktreePath: string) => void;
-}): void => {
-  void moveSessionTreeToQuickWorktree(input)
+const executeSessionTreeWorktreeMove = (input: SessionTreeWorktreeMoveInput, moveChanges: boolean): void => {
+  void moveSessionTreeToQuickWorktree(input, moveChanges)
     .then(
       (worktreePath) => {
         toast.success(input.successMessage);
         input.onSuccess?.(worktreePath);
       },
       (error) => toast.error(input.failureMessage, {
-        description: error instanceof Error ? error.message : String(error),
+        description: getErrorMessage(error),
       }),
     );
+};
+
+export const startSessionTreeWorktreeMove = (input: SessionTreeWorktreeMoveInput): void => {
+  if (useSessionMoveState.getState().pendingSessionIds.has(input.root.id)) return;
+  setSessionMovePending(input.root.id, true);
+
+  void getGitStatus(input.sourceDirectory, { mode: 'light' }).then(
+    (status) => {
+      if (status.isClean) {
+        executeSessionTreeWorktreeMove(input, false);
+        return;
+      }
+      useSessionMoveState.setState((state) => ({
+        confirmationQueue: [...state.confirmationQueue, input],
+      }));
+    },
+    (error) => {
+      setSessionMovePending(input.root.id, false);
+      toast.error(input.failureMessage, {
+        description: getErrorMessage(error),
+      });
+    },
+  );
+};
+
+export const resolveSessionWorktreeMoveConfirmation = (moveChanges: boolean | null): void => {
+  const request = useSessionMoveState.getState().confirmationQueue[0];
+  if (!request) return;
+
+  useSessionMoveState.setState((state) => ({
+    confirmationQueue: state.confirmationQueue.slice(1),
+  }));
+  if (moveChanges === null) {
+    setSessionMovePending(request.root.id, false);
+    return;
+  }
+  executeSessionTreeWorktreeMove(request, moveChanges);
 };

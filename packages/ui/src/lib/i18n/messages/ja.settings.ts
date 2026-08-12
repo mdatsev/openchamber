@@ -87,8 +87,6 @@ export const settingsDict = {
   'settings.page.fork.title': 'フォーク設定',
   'settings.page.fork.description': 'このカスタム OpenChamber フォークでのみ利用できる設定です。',
   'settings.fork.section.worktrees': 'Worktree',
-  'settings.fork.moveSessionChanges.label': 'チャットと一緒に未コミットの変更を移動',
-  'settings.fork.moveSessionChanges.info': '既存のチャットを新しいworktreeへ移動するとき、現在のチェックアウトにある未コミットの変更も転送します。',
   'settings.fork.startNewChatInWorktree.label': '現在のworktreeで新しいチャットを開始',
   'settings.fork.startNewChatInWorktree.info': 'worktreeから新しいチャットを開始するとき、プロジェクトのプライマリチェックアウトではなくそのworktreeを使用します。明示的に選択したプロジェクトとworktreeは変更されません。',
   'settings.fork.section.runtime': 'ランタイム',

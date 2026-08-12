@@ -87,8 +87,6 @@ export const settingsDict = {
   'settings.page.fork.title': '포크 설정',
   'settings.page.fork.description': '이 사용자 지정 OpenChamber 포크에서만 사용할 수 있는 환경설정입니다.',
   'settings.fork.section.worktrees': '워크트리',
-  'settings.fork.moveSessionChanges.label': '채팅과 함께 커밋되지 않은 변경 사항 이동',
-  'settings.fork.moveSessionChanges.info': '기존 채팅을 새 워크트리로 이동할 때 현재 체크아웃의 커밋되지 않은 변경 사항도 함께 전송합니다.',
   'settings.fork.startNewChatInWorktree.label': '현재 워크트리에서 새 채팅 시작',
   'settings.fork.startNewChatInWorktree.info': '워크트리에서 새 채팅을 시작할 때 프로젝트의 기본 체크아웃 대신 해당 워크트리를 사용합니다. 명시적으로 선택한 프로젝트와 워크트리는 변경되지 않습니다.',
   'settings.fork.section.runtime': '런타임',

@@ -87,8 +87,6 @@ export const settingsDict = {
   "settings.page.fork.title": "Налаштування форку",
   "settings.page.fork.description": "Параметри, доступні лише в цьому користувацькому форку OpenChamber.",
   "settings.fork.section.worktrees": "Worktree",
-  "settings.fork.moveSessionChanges.label": "Переносити незакомічені зміни разом із чатами",
-  "settings.fork.moveSessionChanges.info": "Під час переміщення наявного чату в новий worktree також переносить незакомічені зміни з його поточного checkout.",
   "settings.fork.startNewChatInWorktree.label": "Починати нові чати в поточному worktree",
   "settings.fork.startNewChatInWorktree.info": "Під час створення нового чату з worktree використовує цей worktree замість основного checkout проєкту. Явно вибрані проєкти та worktree не змінюються.",
   "settings.fork.section.runtime": "Середовище виконання",

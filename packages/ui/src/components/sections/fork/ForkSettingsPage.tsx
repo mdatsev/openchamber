@@ -55,8 +55,6 @@ export const ForkSettingsPage: React.FC = () => {
   const [isRestarting, setIsRestarting] = React.useState(false);
   const [restartError, setRestartError] = React.useState<RestartError | null>(null);
   const capabilityRequestIdRef = React.useRef(0);
-  const moveSessionChangesToWorktree = useForkSettingsStore((state) => state.moveSessionChangesToWorktree);
-  const setMoveSessionChangesToWorktree = useForkSettingsStore((state) => state.setMoveSessionChangesToWorktree);
   const startNewChatInCurrentWorktree = useForkSettingsStore((state) => state.startNewChatInCurrentWorktree);
   const setStartNewChatInCurrentWorktree = useForkSettingsStore((state) => state.setStartNewChatInCurrentWorktree);
 
@@ -159,14 +157,6 @@ export const ForkSettingsPage: React.FC = () => {
         divider={false}
       >
         <div className={SETTINGS_OPTION_STACK_CLASS}>
-          <SettingsCheckboxRow
-            settingsItem="fork.move-session-changes"
-            checked={moveSessionChangesToWorktree}
-            onChange={setMoveSessionChangesToWorktree}
-            label={t('settings.fork.moveSessionChanges.label')}
-            ariaLabel={t('settings.fork.moveSessionChanges.label')}
-            info={t('settings.fork.moveSessionChanges.info')}
-          />
           <SettingsCheckboxRow
             settingsItem="fork.start-new-chat-in-worktree"
             checked={startNewChatInCurrentWorktree}
