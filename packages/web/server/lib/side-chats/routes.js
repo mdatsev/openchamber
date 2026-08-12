@@ -104,14 +104,14 @@ export const registerSideChatRoutes = (app, dependencies) => {
     return retained;
   };
 
-  const createSideChat = async (directory, parentSessionID, messageID) => {
+  const createSideChat = async (directory, parentSessionID) => {
     const existing = await findExistingMarkedSession(directory, parentSessionID);
     if (existing) return { status: 200, payload: existing };
 
     const forkResponse = await upstreamFetch(
       `/session/${encodeURIComponent(parentSessionID)}/fork`,
       directory,
-      { method: 'POST', body: { messageID } },
+      { method: 'POST', body: {} },
     );
     if (!forkResponse.ok) {
       return { status: forkResponse.status, payload: { error: await responseError(forkResponse, 'Failed to fork session') } };
@@ -180,10 +180,10 @@ export const registerSideChatRoutes = (app, dependencies) => {
     };
   };
 
-  const runCreateForParent = (directory, parentSessionID, messageID) => {
+  const runCreateForParent = (directory, parentSessionID) => {
     const key = JSON.stringify([directory, parentSessionID]);
     const previous = creationByParent.get(key) ?? Promise.resolve();
-    const creation = previous.catch(() => undefined).then(() => createSideChat(directory, parentSessionID, messageID));
+    const creation = previous.catch(() => undefined).then(() => createSideChat(directory, parentSessionID));
     creationByParent.set(key, creation);
     return creation.finally(() => {
       if (creationByParent.get(key) === creation) creationByParent.delete(key);
@@ -197,13 +197,10 @@ export const registerSideChatRoutes = (app, dependencies) => {
       }
       const parentSessionID = requiredString(req.body?.parentSessionID);
       if (!parentSessionID) return res.status(400).json({ error: 'parentSessionID is required' });
-      const messageID = requiredString(req.body?.messageID);
-      if (!messageID) return res.status(400).json({ error: 'messageID is required' });
-
       const directory = await resolveDirectory(req, res);
       if (!directory) return undefined;
 
-      const result = await runCreateForParent(directory, parentSessionID, messageID);
+      const result = await runCreateForParent(directory, parentSessionID);
       return res.status(result.status).json(result.payload);
     } catch (error) {
       return handleFailure(res, error, 'Failed to create side chat');

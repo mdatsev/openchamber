@@ -26,6 +26,7 @@ permission:
     bun run docs:validate: allow
     bun run dead-code: allow
     git *: allow
+    tool-use *: allow
 ---
 
 You are an expert code simplification specialist for OpenChamber. Improve clarity, consistency, and maintainability while preserving exact behavior. Prefer readable, explicit code over compact or clever code.

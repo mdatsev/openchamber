@@ -11,7 +11,13 @@ import { refreshGlobalSessions, resolveGlobalSessionDirectory } from '@/stores/u
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useSessionUnseenCount } from '@/sync/notification-store';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { useGlobalSessionStatus } from '@/sync/sync-context';
+import {
+  useChildStoreManager,
+  useGlobalSessionInterrupted,
+  useGlobalSessionStatus,
+  useScopedBlockingPermissions,
+  useScopedBlockingQuestions,
+} from '@/sync/sync-context';
 
 const RECENT_SESSIONS_LIMIT = 10;
 /** Matches the metadata popover's width so both header dropdowns read as a pair. */
@@ -20,22 +26,60 @@ const TABLET_POPOVER_WIDTH = 380;
 const getSessionTitle = (session: Session, fallback: string): string =>
   session.title?.trim() || fallback;
 
-/** One switcher row: live status (busy spinner / attention dot), title,
-    "project · branch", compact time. Mirrors the desktop SessionSwitcherDropdown
-    indicator conventions; no subsession chevrons on mobile by design. */
+/** One switcher row: sidebar-equivalent activity and permission indicators,
+    title, "project · branch", and compact time. No subsession chevrons on
+    mobile by design. */
 const SwitcherRow: React.FC<{
   session: Session;
+  directory: string | null;
   meta: string;
   active: boolean;
   onSelect: () => void;
-}> = ({ session, meta, active, onSelect }) => {
+}> = ({ session, directory, meta, active, onSelect }) => {
   const { t } = useI18n();
   const status = useGlobalSessionStatus(session.id);
   const unseenCount = useSessionUnseenCount(resolveGlobalSessionDirectory(session), session.id);
-  const statusType = status?.type ?? 'idle';
-  const isStreaming = statusType === 'busy' || statusType === 'retry';
-  const showUnreadDot = !isStreaming && unseenCount > 0 && !active;
+  const isInterrupted = useGlobalSessionInterrupted(session.id);
+  const permissions = useScopedBlockingPermissions(session.id, directory ?? undefined, { bootstrap: false });
+  const questions = useScopedBlockingQuestions(session.id, directory ?? undefined, { bootstrap: false });
+  const hasPendingQuestion = questions.length > 0;
+  const isBusyOrRetry = status?.type === 'busy' || status?.type === 'retry';
   const timeLabel = formatSessionCompactDateLabel(session.time?.updated ?? session.time?.created ?? 0);
+
+  let activityIndicator: React.ReactNode = null;
+  if (hasPendingQuestion) {
+    activityIndicator = (
+      <Icon
+        name="question"
+        className="size-3.5 text-[var(--status-info)]"
+        aria-label={t('sessions.sidebar.session.status.inputNeeded')}
+      />
+    );
+  } else if (isBusyOrRetry) {
+    activityIndicator = (
+      <Icon
+        name="loader-4"
+        className="size-3.5 animate-spin text-primary"
+        aria-label={t('sessions.sidebar.session.status.active')}
+      />
+    );
+  } else if (isInterrupted) {
+    activityIndicator = (
+      <Icon
+        name="error-warning"
+        className="size-3.5 text-status-warning"
+        aria-label={t('sessions.sidebar.session.status.interruptedUnexpectedly')}
+      />
+    );
+  } else if (unseenCount > 0 && !active) {
+    activityIndicator = (
+      <span
+        className="size-1.5 rounded-full bg-[var(--status-info)]"
+        aria-label={t('sessions.sidebar.session.status.unread')}
+        title={t('sessions.sidebar.session.status.unread')}
+      />
+    );
+  }
 
   return (
     <button
@@ -55,12 +99,22 @@ const SwitcherRow: React.FC<{
           <span className="block truncate typography-micro text-muted-foreground">{meta}</span>
         ) : null}
       </span>
-      {/* Activity sits on the right, before the time — no reserved left gutter. */}
-      {isStreaming ? (
-        <Icon name="loader-4" className="size-3.5 shrink-0 animate-spin text-primary" aria-hidden />
-      ) : showUnreadDot ? (
-        <span className="size-1.5 shrink-0 rounded-full bg-[var(--status-info)]" aria-hidden />
-      ) : null}
+      {/* Activity sits on the right, before permissions and time — no reserved left gutter. */}
+      {activityIndicator && (
+        <span className="flex size-3.5 shrink-0 items-center justify-center">
+          {activityIndicator}
+        </span>
+      )}
+      {permissions.length > 0 && (
+        <span
+          className="inline-flex shrink-0 items-center gap-1 rounded bg-destructive/10 px-1 py-0.5 text-[0.7rem] text-destructive"
+          title={t('sessions.sidebar.session.status.permissionRequired')}
+          aria-label={t('sessions.sidebar.session.status.permissionRequired')}
+        >
+          <Icon name="shield" className="size-3" />
+          <span className="leading-none">{permissions.length}</span>
+        </span>
+      )}
       {timeLabel ? (
         <span className="shrink-0 typography-micro text-muted-foreground tabular-nums">{timeLabel}</span>
       ) : null}
@@ -118,8 +172,30 @@ export const MobileSessionSwitcher: React.FC<{
   const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
   const setCurrentSession = useSessionUIStore((state) => state.setCurrentSession);
   const setActiveProjectIdOnly = useProjectsStore((state) => state.setActiveProjectIdOnly);
+  const childStores = useChildStoreManager();
+  const bootstrapDemandOwner = `mobile-session-switcher:${React.useId()}`;
 
   const items = useSwitcherItems(open || shouldRender, { maxParents: RECENT_SESSIONS_LIMIT });
+
+  React.useEffect(() => {
+    const directories = new Set<string>();
+    for (const item of items) {
+      if (item.groupDirectory) directories.add(item.groupDirectory);
+    }
+    childStores.setBootstrapDemand(
+      bootstrapDemandOwner,
+      Array.from(directories, (directory) => ({
+        directory,
+        priority: 'visible' as const,
+        reason: 'action-demand' as const,
+      })),
+    );
+  }, [bootstrapDemandOwner, childStores, items]);
+
+  React.useEffect(
+    () => () => childStores.clearBootstrapDemand(bootstrapDemandOwner),
+    [bootstrapDemandOwner, childStores],
+  );
 
   React.useEffect(() => {
     if (open) {
@@ -208,6 +284,7 @@ export const MobileSessionSwitcher: React.FC<{
                 <SwitcherRow
                   key={session.id}
                   session={session}
+                  directory={item.groupDirectory}
                   meta={meta}
                   active={session.id === currentSessionId}
                   onSelect={() => {

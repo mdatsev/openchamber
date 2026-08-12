@@ -16,7 +16,7 @@
 | Session unread and pin metadata | `~/.config/openchamber/session-inbox.json` | Yes, with browser pin mirrors |
 | Electron browser profile | `~/.config/OpenChamber` or `~/.config/OpenChamber Dev` | No |
 
-The source runtime deliberately keeps the `OpenChamber Dev` Electron profile. This isolates Chromium local storage, cookies, window state, service workers, and embedded-browser data while leaving sessions and canonical server settings shared. The installed custom launcher uses content-hash-cached built UI assets without HMR; terminal development may still opt into HMR with `bun run electron:dev`.
+The source runtime deliberately keeps the `OpenChamber Dev` Electron profile. This isolates Chromium local storage, cookies, window state, service workers, and embedded-browser data while leaving sessions and canonical server settings shared. The installed custom launcher uses content-hash-cached built UI assets without HMR and pins its loopback server to port `46405`; the explicit override does not replace the packaged application's persisted port preference. Terminal development may still opt into HMR with `bun run electron:dev`.
 
 ## Browser-Local State
 

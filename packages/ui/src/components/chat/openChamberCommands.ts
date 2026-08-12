@@ -1,5 +1,3 @@
-import type { Message } from '@opencode-ai/sdk/v2/client';
-
 type OpenChamberCommandSurface = 'main' | 'embedded';
 
 type OpenChamberCommandDefinition = {
@@ -51,19 +49,3 @@ export const parseSideChatCommand = (value: string): SideChatCommand | null => {
     prompt: match[2].replace(/^\n+|\s+$/g, ''),
   };
 };
-
-export const getLatestCompletedAssistantMessageId = (messages: readonly Message[]): string | null => {
-  let latest: { id: string; completed: number } | null = null;
-  for (const message of messages) {
-    const completed = message.role === 'assistant' ? message.time?.completed : undefined;
-    if (typeof completed !== 'number' || !Number.isFinite(completed) || completed <= 0) continue;
-    if (!latest || completed >= latest.completed) latest = { id: message.id, completed };
-  }
-  return latest?.id ?? null;
-};
-
-export const getLatestCompletedAssistantMessageIdFromRecords = (
-  records: ReadonlyArray<{ info?: Message }>,
-): string | null => getLatestCompletedAssistantMessageId(
-  records.flatMap((record) => record.info ? [record.info] : []),
-);

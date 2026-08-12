@@ -133,6 +133,7 @@ fi
 export PATH="\$(dirname -- "\$bun_bin"):\$PATH"
 export OPENCHAMBER_ELECTRON_BIN="\$macos_dir/openchamber-custom-bin"
 export OPENCHAMBER_ELECTRON_CACHE_BUNDLED_UI=1
+export OPENCHAMBER_DESKTOP_PORT=46405
 
 cd "\$repo_root"
 exec "\$bun_bin" run electron:dev:bundled

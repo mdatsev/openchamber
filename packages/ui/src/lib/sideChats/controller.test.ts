@@ -1,10 +1,7 @@
 import { beforeEach, describe, expect, mock, test } from 'bun:test';
-import type { Message } from '@opencode-ai/sdk/v2';
 
 const requests: Array<Record<string, unknown>> = [];
 const sends: Array<Record<string, unknown>> = [];
-let messages: Message[] = [];
-let fetchedMessages: Message[] = [];
 let runtimeKey = 'runtime-a';
 let responseStatus = 201;
 let responseBody: Record<string, unknown> = {};
@@ -25,14 +22,12 @@ mock.module('@/lib/sideChats/runtimeOperation', () => ({
     }),
     client: {
       session: {
-        messages: mock(async () => ({ data: fetchedMessages.map((info) => ({ info, parts: [] })) })),
         promptAsync: mock(async (input: Record<string, unknown>) => { sends.push(input); return { data: true }; }),
       },
     },
   }),
 }));
 mock.module('@/sync/sync-refs', () => ({
-  getSyncMessages: () => messages,
   registerSessionDirectory: () => {},
 }));
 mock.module('@/sync/session-actions', () => ({
@@ -83,8 +78,6 @@ describe('side chat controller', () => {
   beforeEach(() => {
     requests.length = 0;
     sends.length = 0;
-    messages = [];
-    fetchedMessages = [];
     runtimeKey = 'runtime-a';
     responseStatus = 201;
     responseBody = {
@@ -95,17 +88,12 @@ describe('side chat controller', () => {
     phases.length = 0;
   });
 
-  test('forks from the latest completed answer and sends trailing text', async () => {
-    messages = [
-      { id: 'completed', role: 'assistant', time: { created: 1, completed: 2 } } as Message,
-      { id: 'streaming', role: 'assistant', time: { created: 3 } } as Message,
-    ];
-
+  test('forks all currently available parent context and sends trailing text', async () => {
     await openDisposableSideChat({
       parentSessionId: 'parent', directory: '/repo', prompt: 'explain', providerID: 'provider', modelID: 'model',
     });
 
-    expect(requests).toEqual([{ parentSessionID: 'parent', messageID: 'completed' }]);
+    expect(requests).toEqual([{ parentSessionID: 'parent' }]);
     expect({
       id: sends[0]?.sessionID,
       directory: sends[0]?.directory,
@@ -114,22 +102,11 @@ describe('side chat controller', () => {
     }).toEqual({ id: 'side', directory: '/repo', text: 'explain', messageId: 'message-side' });
   });
 
-  test('fails before creating when no completed answer exists', async () => {
-    messages = [{ id: 'streaming', role: 'assistant', time: { created: 1 } } as Message];
-    expect(openDisposableSideChat({
-      parentSessionId: 'parent', directory: '/repo', prompt: '', providerID: 'provider', modelID: 'model',
-    })).rejects.toThrow('No completed assistant response');
-    expect(requests).toEqual([]);
-  });
-
-  test('loads completed answer context when local messages are not materialized', async () => {
-    fetchedMessages = [{ id: 'completed-api', role: 'assistant', time: { created: 1, completed: 2 } } as Message];
-
+  test('creates without requiring a completed assistant response', async () => {
     await openDisposableSideChat({
       parentSessionId: 'parent', directory: '/repo', prompt: '', providerID: 'provider', modelID: 'model',
     });
-
-    expect(requests).toEqual([{ parentSessionID: 'parent', messageID: 'completed-api' }]);
+    expect(requests).toEqual([{ parentSessionID: 'parent' }]);
   });
 
   test('sends a non-empty prompt to an existing side chat', async () => {
@@ -143,7 +120,6 @@ describe('side chat controller', () => {
   });
 
   test('retains a surviving fork as cleanup-pending on typed failure', async () => {
-    messages = [{ id: 'completed', role: 'assistant', time: { created: 1, completed: 2 } } as Message];
     responseStatus = 502;
     responseBody = { error: 'cleanup failed', cleanupRequired: true, forkSessionID: 'surviving-side' };
     await expect(openDisposableSideChat({
@@ -154,7 +130,6 @@ describe('side chat controller', () => {
   });
 
   test('keeps a successful side chat under the captured runtime without opening the new runtime UI', async () => {
-    messages = [{ id: 'completed', role: 'assistant', time: { created: 1, completed: 2 } } as Message];
     responseBody = new Proxy(responseBody, {
       get(target, property) {
         if (property === 'id') runtimeKey = 'runtime-b';

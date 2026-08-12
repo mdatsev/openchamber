@@ -43,7 +43,7 @@ Users currently investigate a tangent by manually starting a new session from an
 
 **Opening and context**
 
-- R1. Entering `/side` or `/btw` from a main conversation must open a side-chat panel with context inherited through the latest completed assistant answer.
+- R1. Entering `/side` or `/btw` from a main conversation must open a side-chat panel with every parent message and part available when the fork is created, including an in-progress assistant answer.
 - R2. Text following `/side` or `/btw` must be submitted immediately as the first side-chat message.
 - R3. A command without trailing text must open the side-chat panel and focus an empty composer.
 - R4. The main conversation and side chat must both remain visible and usable while the panel is open.
@@ -65,7 +65,7 @@ Users currently investigate a tangent by manually starting a new session from an
 
 - F1. Open and ask immediately
   - **Trigger:** The user submits `/side <prompt>` or `/btw <prompt>` from the main conversation.
-  - **Steps:** Open a contextual side chat through the latest completed answer, display it beside the main conversation, and submit the trailing prompt.
+  - **Steps:** Snapshot all parent context available at creation, display the contextual side chat beside the main conversation, and submit the trailing prompt.
   - **Outcome:** The tangent proceeds without changing the main conversation context or appearing in normal session history.
   - **Covered by:** R1, R2, R4, R5.
 - F2. Open before composing
@@ -106,8 +106,8 @@ flowchart TB
 
 ### Acceptance Examples
 
-- AE1. **Covers R1, R2, R4, R5.** Given a completed assistant answer, when the user submits `/side explain that trade-off`, then a side panel opens with context through that answer, the prompt is sent immediately, the main conversation stays usable, and the fork is absent from normal session navigation.
-- AE2. **Covers R3.** Given a completed assistant answer, when the user submits `/btw`, then the contextual side panel opens with an empty focused composer and sends no message.
+- AE1. **Covers R1, R2, R4, R5.** Given an assistant answer is in progress, when the user submits `/side explain that trade-off`, then a side panel opens with the answer content available at fork time, the prompt is sent immediately, the main conversation stays usable, and the fork is absent from normal session navigation.
+- AE2. **Covers R3.** Given a main conversation with any amount of context, when the user submits `/btw`, then the contextual side panel opens with an empty focused composer and sends no message.
 - AE3. **Covers R6.** Given an idle disposable side chat, when the user closes its panel, then the side session and associated persisted UI state are deleted and do not reappear after reload.
 - AE4. **Covers R7.** Given a side chat that is generating or running a tool, when the user closes the panel, then OpenChamber asks for confirmation and preserves the open chat if the user cancels.
 - AE5. **Covers R9, R10.** Given a useful side chat, when the user promotes it, then it becomes visible in normal session navigation, the side panel closes, and the promoted conversation opens as the main session.
@@ -117,7 +117,7 @@ flowchart TB
 
 ### Success Criteria
 
-- A new side chat receives the same usable conversation context as manually starting a session from the latest completed answer.
+- A new side chat receives every parent message and part persisted when the fork request runs, including available content from an in-progress answer.
 - Successfully closing the side panel leaves no disposable session in normal history or persisted state.
 
 ### Scope Boundaries
@@ -146,7 +146,7 @@ flowchart TB
 - **Keep disposable sessions addressable but undiscoverable.** Sync and global stores may retain the session records needed for rendering, events, permissions, and deletion, but every normal navigation projection uses one shared `isDisposableSideChat` predicate. This avoids sidebar-only hiding while preserving direct session-ID access for the panel.
 - **Make the context panel the lifecycle owner.** A dedicated controller opens or focuses the one side-chat tab, coordinates active-work confirmation, abort-before-delete, promotion, and recovery, then mutates generic panel state only after the lifecycle action succeeds.
 - **Reserve `/side` and `/btw` as surface-aware OpenChamber commands.** A shared command definition controls autocomplete and exact-token parsing. These commands are available only in desktop/web main chat, win collisions with project commands, and are absent from mobile, VS Code, scheduled-task, multirun, draft, and embedded side-chat surfaces.
-- **Fork from the latest completed assistant message.** The command selects the newest assistant message whose completion timestamp is authoritative and ignores a streaming tail. If no completed answer exists, creation fails without clearing the main composer.
+- **Snapshot all context available at fork time.** The server omits OpenCode's optional fork `messageID`, causing OpenCode to copy every parent message and part persisted when the request runs, including an in-progress assistant answer. The snapshot is point-in-time: later parent updates do not flow into the side chat.
 - **Preserve one side chat per parent in v1.** (session-settled: user-approved — chosen over creating tabbed side chats on repeated invocation: focusing the existing chat keeps v1 lifecycle and navigation simple.) A repeated parent command focuses the current side tab; nested invocation is unavailable. Tabbed side chats remain the documented v2 candidate based on Codex App behavior.
 - **Delete only after active work is resolved and server deletion is confirmed.** (session-settled: user-approved — chosen over unconditional cancel-and-purge: active generation and tool work must receive a discard confirmation.) Cancellation keeps the panel and registry intact; confirmation aborts active work, waits for an idle/terminal state within a bounded lifecycle, and then uses canonical session deletion cleanup. A failed delete leaves recoverable ownership rather than pretending purge succeeded.
 - **Promotion clears disposable authority before navigation.** (session-settled: user-directed — chosen over always losing side-chat contents: useful tangent work must be preservable.) Promotion removes the server metadata marker first, publishes the normal session through existing stores, removes recovery ownership, closes the side panel without deletion, and finally selects the promoted session in the main chat.
@@ -229,11 +229,11 @@ The client lifecycle controller owns ordering but not domain storage. Session de
 
 ### U1. Disposable session identity and lifecycle route
 
-- **Goal:** Provide a server-backed operation that creates a fork through the latest completed answer, marks it disposable, and fails without leaving an ordinary orphan session.
+- **Goal:** Provide a server-backed operation that snapshots all parent context available at creation, marks the fork disposable, and fails without leaving an ordinary orphan session.
 - **Requirements:** R1, R5, R8, R9, R10.
 - **Files:** `packages/web/server/lib/side-chats/routes.js` (new), `packages/web/server/lib/side-chats/routes.test.js` (new), `packages/web/server/lib/opencode/feature-routes-runtime.js`, `packages/ui/src/lib/opencode/sideChatMetadata.ts` (new), `packages/ui/src/lib/opencode/sideChatMetadata.test.ts` (new), `packages/ui/src/lib/runtime-fetch.ts` (pattern only).
 - **Approach:** Add namespaced metadata helpers for disposable identity, parent ID, and promotion. Register an authenticated OpenChamber route before the generic proxy that validates directory/session/message inputs, invokes the upstream fork, patches metadata, returns the marked session, and deletes the fork on patch failure. Add promotion support that removes only side-chat metadata while preserving unrelated metadata.
-- **Test scenarios:** successful marked fork; latest completed message input accepted; invalid/missing identity rejected; upstream fork failure; marker update failure followed by delete; delete cleanup failure surfaced distinctly; promotion preserves unrelated metadata; repeated promotion is idempotent; auth and directory query forwarding remain intact.
+- **Test scenarios:** successful marked unbounded fork; missing parent identity rejected; upstream fork failure; marker update failure followed by delete; delete cleanup failure surfaced distinctly; promotion preserves unrelated metadata; repeated promotion is idempotent; auth and directory query forwarding remain intact.
 - **Verification:** `bun test packages/web/server/lib/side-chats/routes.test.js packages/ui/src/lib/opencode/sideChatMetadata.test.ts`.
 
 ### U2. Runtime-scoped recovery and discoverability contracts
@@ -252,8 +252,8 @@ The client lifecycle controller owns ordering but not domain storage. Session de
 - **Requirements:** R1, R2, R3, R11.
 - **Dependencies:** U1, U2.
 - **Files:** `packages/ui/src/components/chat/openChamberCommands.ts` (new), `packages/ui/src/components/chat/openChamberCommands.test.ts` (new), `packages/ui/src/components/chat/CommandAutocomplete.tsx`, `packages/ui/src/components/chat/ChatInput.tsx`, `packages/ui/src/sync/session-actions.ts`, `packages/ui/src/sync/session-actions.test.ts`, `packages/ui/src/components/layout/contextPanelEmbeddedChat.ts`, `packages/ui/src/components/layout/contextPanelEmbeddedChat.test.ts`.
-- **Approach:** Extract surface-aware OpenChamber command definitions used by autocomplete and submit parsing. Intercept exact side commands before composer consumption, locate the latest completed assistant message from authoritative session state, invoke the lifecycle controller, save the current model/agent selection for the side session, and send trailing text through the existing optimistic explicit-session send path. Empty commands open/focus only; failure restores the original text and leaves other composer state untouched.
-- **Test scenarios:** command discovery only on desktop/web main chat; aliases and case-insensitive exact tokens; `/sidebar` fallback; project-command collision precedence and dedupe; multiline trailing prompt; empty command; no completed answer; streaming tail chooses previous completion; repeated invocation focuses existing; embedded invocation rejected; creation/send failure restores text; attachments, queue, mentions, and inline drafts remain on the main composer.
+- **Approach:** Extract surface-aware OpenChamber command definitions used by autocomplete and submit parsing. Intercept exact side commands before composer consumption, invoke the lifecycle controller without a message boundary so OpenCode snapshots all currently available parent context, save the current model/agent selection for the side session, and send trailing text through the existing optimistic explicit-session send path. Empty commands open/focus only; failure restores the original text and leaves other composer state untouched.
+- **Test scenarios:** command discovery only on desktop/web main chat; aliases and case-insensitive exact tokens; `/sidebar` fallback; project-command collision precedence and dedupe; multiline trailing prompt; empty command; creation during a streaming answer; repeated invocation focuses existing; embedded invocation rejected; creation/send failure restores text; attachments, queue, mentions, and inline drafts remain on the main composer.
 - **Verification:** `bun test packages/ui/src/components/chat/openChamberCommands.test.ts packages/ui/src/components/layout/contextPanelEmbeddedChat.test.ts packages/ui/src/sync/session-actions.test.ts`.
 
 ### U4. Panel lifecycle, promotion, and recovery UI
@@ -300,7 +300,7 @@ Browser validation must cover desktop width and a constrained width where the ex
 
 - R1-R11 and AE1-AE8 are traced to passing focused tests or browser scenarios.
 - `/side` and `/btw` are available only in desktop/web main chat, send trailing text immediately, and focus the existing side chat on repeated invocation.
-- Side chats inherit through the latest completed assistant answer and never alter the parent conversation context.
+- Side chats snapshot every parent message and part available at creation, including an in-progress assistant answer, and never alter the parent conversation context.
 - Disposable sessions remain absent from normal sidebar, search, switcher, folder, pin, and retention surfaces across create events, snapshots, reloads, and runtime switches.
 - Idle close purges authoritatively; active close confirms, aborts, and purges; failure remains visible and recoverable.
 - Promotion clears disposable identity before opening the preserved session as the main chat and survives reload.

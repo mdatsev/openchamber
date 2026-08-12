@@ -1417,6 +1417,11 @@ const spawnLocalServer = async () => {
   inheritUserShellEnv();
 
   const settings = readSettingsRoot();
+  const configuredPortValue = process.env.OPENCHAMBER_DESKTOP_PORT;
+  const configuredPort = configuredPortValue ? Number(configuredPortValue) : null;
+  if (configuredPortValue && (!Number.isInteger(configuredPort) || configuredPort < 1 || configuredPort > 65535)) {
+    throw new Error(`OPENCHAMBER_DESKTOP_PORT must be an integer between 1 and 65535, received ${JSON.stringify(configuredPortValue)}.`);
+  }
   const storedPort = Number.isFinite(settings.desktopLocalPort) ? settings.desktopLocalPort : null;
   // When the user enables "Desktop Network Access" we bind on all interfaces
   // so phones/tablets on the same Wi-Fi can reach the app. UI shows a clear
@@ -1434,16 +1439,23 @@ const spawnLocalServer = async () => {
   // Probe before starting the server — main() in the server module sets up a
   // lot of global state before binding, and calling it twice after a listen
   // failure would double-wire runtimes. Pick a known-free port in one shot.
-  const candidates = [storedPort, DEFAULT_DESKTOP_PORT].filter((v) => Number.isFinite(v) && v > 0);
   let chosenPort = 0;
-  for (const candidate of candidates) {
-    if (await isPortFree(candidate, bindHost)) {
-      chosenPort = candidate;
-      break;
+  if (configuredPort !== null) {
+    if (!await isPortFree(configuredPort, bindHost)) {
+      throw new Error(`Configured desktop port ${configuredPort} is unavailable on ${bindHost}.`);
     }
-  }
-  if (chosenPort === 0) {
-    chosenPort = await pickUnusedPort(bindHost);
+    chosenPort = configuredPort;
+  } else {
+    const candidates = [storedPort, DEFAULT_DESKTOP_PORT].filter((v) => Number.isFinite(v) && v > 0);
+    for (const candidate of candidates) {
+      if (await isPortFree(candidate, bindHost)) {
+        chosenPort = candidate;
+        break;
+      }
+    }
+    if (chosenPort === 0) {
+      chosenPort = await pickUnusedPort(bindHost);
+    }
   }
 
   // The server module reads ENV_DESKTOP_NOTIFY / OPENCHAMBER_DIST_DIR /
@@ -1501,9 +1513,11 @@ const spawnLocalServer = async () => {
     durationMs: performance.now() - serverStartedAt,
   });
 
-  await mutateSettingsRoot((root) => {
-    root.desktopLocalPort = port;
-  });
+  if (configuredPort === null) {
+    await mutateSettingsRoot((root) => {
+      root.desktopLocalPort = port;
+    });
+  }
 
   return url;
 };
