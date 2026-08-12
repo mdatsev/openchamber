@@ -114,7 +114,9 @@ On Linux, the installer writes `${XDG_DATA_HOME:-~/.local/share}/applications/op
 
 On macOS, the installer writes `~/Applications/OpenChamber CUSTOM.app` with bundle identifier `dev.openchamber.custom.source`. Its executable wrapper builds and starts this checkout with cached bundled UI assets through the copied Electron runtime, so source edits cannot trigger HMR reloads, and writes the current run to `~/Library/Logs/OpenChamber CUSTOM/dev.log`. The cache uses the same input and staged-output validation as Linux. The bundle is ad-hoc signed after its identity and executable are replaced. Rerun `bun run install:custom` to update an existing wrapper, open it once from Finder, then choose **Keep in Dock**.
 
-Source runs retain the isolated Electron profile `OpenChamber Dev`. Canonical OpenChamber backend settings under `~/.config/openchamber` and OpenCode sessions remain shared with the packaged application. See [`../../docs/fork-runtime-state.md`](../../docs/fork-runtime-state.md) for browser-local state and simultaneous-runtime caveats.
+For live source reloading on macOS, run `bun run install:custom:hmr`. This additionally installs `~/Applications/OpenChamber CUSTOM HMR.app` with bundle identifier `dev.openchamber.custom.source.hmr`, starts the Vite HMR development runtime, and writes its current run to `~/Library/Logs/OpenChamber CUSTOM HMR/dev.log`. It uses the separate `OpenChamber Dev HMR` browser profile so it can run alongside the bundled custom launcher and be pinned independently. Rerun the command after moving the checkout or upgrading Electron.
+
+Bundled source runs retain the isolated Electron profile `OpenChamber Dev`; the macOS HMR launcher uses `OpenChamber Dev HMR`. Canonical OpenChamber backend settings under `~/.config/openchamber` and OpenCode sessions remain shared with the packaged application. See [`../../docs/fork-runtime-state.md`](../../docs/fork-runtime-state.md) for browser-local state and simultaneous-runtime caveats.
 
 ### Updater End-to-End Fixture
 
@@ -146,6 +148,7 @@ Use an explicit override when testing a different OpenCode CLI build or when a u
 | `OPENCHAMBER_ELECTRON_DEV=1` | Marks the runtime as desktop development mode |
 | `OPENCHAMBER_ELECTRON_USE_BUNDLED_UI=1` | Uses staged web assets instead of the HMR dev server |
 | `OPENCHAMBER_ELECTRON_CACHE_BUNDLED_UI=1` | Reuses matching staged web assets in bundled development mode; set by the custom source launcher, not packaging |
+| `OPENCHAMBER_ELECTRON_HMR_LAUNCHER=1` | Isolates the installed macOS HMR launcher's browser profile from other source runs; set by that launcher |
 | `OPENCHAMBER_SKIP_LOCAL_SERVER=1` | Skips the in-process local OpenChamber server and uses the configured default remote instance; Desktop imports this from the user's login-shell environment, and packaged/bundled UI remains available for connection recovery |
 | `OPENCHAMBER_DESKTOP_PORT` | Strict loopback server port override. Desktop fails startup if the value is invalid or unavailable and does not persist the override as the packaged application's preferred port. |
 | `OPENCHAMBER_HMR_UI_PORT` | Preferred Vite UI port for desktop dev, default `5173` |
@@ -186,7 +189,7 @@ Add new native capabilities in this order:
 
 Electron uses `electron-log`. In development, console logs are also visible in the terminal. In packaged apps, logs are written through the platform log path for the `OpenChamber` app name.
 
-Development builds use a separate user data directory named `OpenChamber Dev`, so dev state does not overwrite normal packaged app state.
+Development builds use a separate user data directory named `OpenChamber Dev`, so dev state does not overwrite normal packaged app state. The installed macOS HMR launcher uses `OpenChamber Dev HMR` so it can run concurrently with the bundled custom launcher.
 
 ## Things To Be Careful With
 

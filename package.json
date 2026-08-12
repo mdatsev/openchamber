@@ -50,6 +50,7 @@
     "electron:dev": "node ./packages/electron/scripts/electron-dev.mjs",
     "electron:dev:bundled": "OPENCHAMBER_ELECTRON_USE_BUNDLED_UI=1 node ./packages/electron/scripts/electron-dev.mjs",
     "install:custom": "./scripts/install-custom.sh",
+    "install:custom:hmr": "./scripts/install-custom.sh --hmr",
     "electron:build": "bun run --cwd packages/electron package",
     "mobile:build": "bun run --cwd packages/mobile build",
     "mobile:sync": "bun run --cwd packages/mobile sync",

@@ -38,6 +38,7 @@ const execFileAsync = promisify(execFile);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const isDev = process.env.OPENCHAMBER_ELECTRON_DEV === '1' || !app.isPackaged;
+const isHmrLauncher = isDev && process.env.OPENCHAMBER_ELECTRON_HMR_LAUNCHER === '1';
 const linuxDesktopName = isDev ? 'openchamber-custom-source.desktop' : 'openchamber.desktop';
 const electronStartupStartedAt = performance.now();
 
@@ -86,7 +87,7 @@ if (process.platform === 'linux') {
   app.setDesktopName(linuxDesktopName);
 }
 if (isDev) {
-  app.setPath('userData', path.join(app.getPath('appData'), 'OpenChamber Dev'));
+  app.setPath('userData', path.join(app.getPath('appData'), isHmrLauncher ? 'OpenChamber Dev HMR' : 'OpenChamber Dev'));
 }
 app.setAppUserModelId(APP_USER_MODEL_ID);
 app.commandLine.appendSwitch('proxy-bypass-list', '<-loopback>');
