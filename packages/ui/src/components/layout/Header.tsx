@@ -982,6 +982,7 @@ export const Header: React.FC<HeaderProps> = ({
         nextSuggestedCheckInSec: typeof data.nextSuggestedCheckInSec === 'number' ? data.nextSuggestedCheckInSec : undefined,
         packageManager: data.packageManager,
         updateCommand: data.updateCommand,
+        sourceRun: data.sourceRun === true,
       });
     } catch (error) {
       setRemoteUpdateInfo(null);

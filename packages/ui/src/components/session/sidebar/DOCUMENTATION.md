@@ -28,7 +28,7 @@
 - `SidebarHeader.tsx`: Top header UI for add-project, session search, selection mode, project sort, and the display menu (recent toggle, collapse/expand all).
 - `SidebarNav.tsx`: Text navigation rows above the tree (New session, Scheduled, Multi-run, Archive); hidden in VS Code.
 - `SidebarActivitySections.tsx`: Global top section renderer; currently used for the `recent` section only, styled as a zone header.
-- `SidebarFooter.tsx`: Static footer with icon-only settings, shortcuts, and about actions.
+- `SidebarFooter.tsx`: Footer with icon-only settings, shortcuts, and about actions plus an optional update notification action. Source-checkout runtimes keep this notification action enabled so users can open the changelog; the modal disables installation and shows the merge workflow.
 - `SidebarProjectsList.tsx`: Main scrollable renderer for project zones and their flat/archived groups plus empty/search states; owns project drag-to-reorder.
 - `SessionGroupSection.tsx`: Renders one flat (or archived) group: sessions first, then flat folder entries with path labels, show-more batching, and explicit loading/error/retry state for empty groups. Archived buckets (VS Code) virtualize past 50 rows.
 - `WorktreeChangesIndicator.tsx`: Requests a summary-only linked-worktree comparison for a mounted worktree header and displays a warning-colored commit marker when the worktree differs from the branch currently checked out in the primary worktree. It refreshes from one-shot Git hints and does not poll.
