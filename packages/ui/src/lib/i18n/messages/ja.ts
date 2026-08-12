@@ -509,7 +509,7 @@ export const dict: Record<I18nKey, string> = {
   'sessions.sidebar.session.menu.moveToWorktree': '新しいworktreeへ移動',
   'sessions.sidebar.session.moveToWorktree.success': 'セッションを新しいworktreeへ移動しました',
   'sessions.sidebar.session.moveToWorktree.failed': 'セッションを新しいworktreeへ移動できませんでした',
-  'sessions.sidebar.session.moveToWorktree.tooltip': '現在のブランチから新しいworktreeを作成し、未コミットの変更とこのセッションおよびサブセッションを移動します。',
+  'sessions.sidebar.session.moveToWorktree.tooltip': '現在のブランチから新しいworktreeを作成し、このセッションおよびサブセッションを移動します。',
   'sessions.sidebar.session.moveToWorktree.tooltipBusy': 'セッションがアイドル状態のときに利用できます。現在の処理を停止するか、完了するまでお待ちください。',
   'sessions.sidebar.session.moveToWorktree.tooltipMoving': 'このセッションはすでに新しいworktreeへ移動中です。',
   'sessions.sidebar.session.menu.runFusion': 'フュージョンを実行',

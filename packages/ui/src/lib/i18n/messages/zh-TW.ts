@@ -522,7 +522,7 @@ export const dict: Record<I18nKey, string> = {
   'sessions.sidebar.session.menu.moveToWorktree': '移至新工作樹',
   'sessions.sidebar.session.moveToWorktree.success': '工作階段已移至新工作樹',
   'sessions.sidebar.session.moveToWorktree.failed': '無法將工作階段移至新工作樹',
-  'sessions.sidebar.session.moveToWorktree.tooltip': '從目前分支建立新工作樹，轉移未提交的變更，並將此工作階段及其子工作階段移至其中。',
+  'sessions.sidebar.session.moveToWorktree.tooltip': '從目前分支建立新工作樹，並將此工作階段及其子工作階段移至其中。',
   'sessions.sidebar.session.moveToWorktree.tooltipBusy': '僅在工作階段閒置時可用。請停止目前活動或等待其完成。',
   'sessions.sidebar.session.moveToWorktree.tooltipMoving': '此工作階段已在移至新工作樹。',
   'sessions.sidebar.session.menu.runFusion': '執行 fusion',

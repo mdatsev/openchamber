@@ -2839,7 +2839,7 @@ export const dict = {
   'sessions.sidebar.session.menu.moveToWorktree': 'In neuen Worktree verschieben',
   'sessions.sidebar.session.moveToWorktree.success': 'Sitzung in einen neuen Worktree verschoben',
   'sessions.sidebar.session.moveToWorktree.failed': 'Sitzung konnte nicht in einen neuen Worktree verschoben werden',
-  'sessions.sidebar.session.moveToWorktree.tooltip': 'Erstellt einen neuen Worktree aus dem aktuellen Branch, überträgt nicht gespeicherte Änderungen und verschiebt diese Sitzung samt Untersitzungen dorthin.',
+  'sessions.sidebar.session.moveToWorktree.tooltip': 'Erstellt einen neuen Worktree aus dem aktuellen Branch und verschiebt diese Sitzung samt Untersitzungen dorthin.',
   'sessions.sidebar.session.moveToWorktree.tooltipBusy': 'Verfügbar, wenn die Sitzung inaktiv ist. Warten Sie oder beenden Sie die aktuelle Aktivität.',
   'sessions.sidebar.session.moveToWorktree.tooltipMoving': 'Diese Sitzung wird bereits in einen neuen Worktree verschoben.',
   'sessions.sidebar.session.export.failedLoadHistory': 'Die vollständige Sitzungshistorie konnte nicht geladen werden',

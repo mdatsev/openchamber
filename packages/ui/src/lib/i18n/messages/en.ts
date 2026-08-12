@@ -508,7 +508,7 @@ export const dict = {
   'sessions.sidebar.session.menu.moveToWorktree': 'Move to new worktree',
   'sessions.sidebar.session.moveToWorktree.success': 'Session moved to a new worktree',
   'sessions.sidebar.session.moveToWorktree.failed': 'Failed to move session to a new worktree',
-  'sessions.sidebar.session.moveToWorktree.tooltip': 'Creates a new worktree from the current branch, transfers uncommitted changes, and moves this session and its sub-sessions there.',
+  'sessions.sidebar.session.moveToWorktree.tooltip': 'Creates a new worktree from the current branch and moves this session and its sub-sessions there.',
   'sessions.sidebar.session.moveToWorktree.tooltipBusy': 'Available when the session is idle. Stop or wait for the current activity to finish.',
   'sessions.sidebar.session.moveToWorktree.tooltipMoving': 'This session is already being moved to a new worktree.',
   'sessions.sidebar.session.menu.runFusion': 'Run fusion',

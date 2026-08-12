@@ -509,7 +509,7 @@ export const dict: Record<I18nKey, string> = {
   "sessions.sidebar.session.menu.moveToWorktree": "Mover para um novo worktree",
   "sessions.sidebar.session.moveToWorktree.success": "Sessão movida para um novo worktree",
   "sessions.sidebar.session.moveToWorktree.failed": "Não foi possível mover a sessão para um novo worktree",
-  "sessions.sidebar.session.moveToWorktree.tooltip": "Cria um novo worktree a partir da branch atual, transfere alterações não commitadas e move esta sessão e suas subsessões para lá.",
+  "sessions.sidebar.session.moveToWorktree.tooltip": "Cria um novo worktree a partir da branch atual e move esta sessão e suas subsessões para lá.",
   "sessions.sidebar.session.moveToWorktree.tooltipBusy": "Disponível quando a sessão está ociosa. Interrompa a atividade atual ou aguarde sua conclusão.",
   "sessions.sidebar.session.moveToWorktree.tooltipMoving": "Esta sessão já está sendo movida para um novo worktree.",
   "sessions.sidebar.session.menu.runFusion": "Executar fusion",

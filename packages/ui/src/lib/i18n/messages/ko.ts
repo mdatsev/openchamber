@@ -509,7 +509,7 @@ export const dict: Record<I18nKey, string> = {
   'sessions.sidebar.session.menu.moveToWorktree': '새 worktree로 이동',
   'sessions.sidebar.session.moveToWorktree.success': '세션을 새 worktree로 이동했습니다',
   'sessions.sidebar.session.moveToWorktree.failed': '세션을 새 worktree로 이동하지 못했습니다',
-  'sessions.sidebar.session.moveToWorktree.tooltip': '현재 브랜치에서 새 worktree를 만들고 커밋되지 않은 변경 사항과 이 세션 및 하위 세션을 이동합니다.',
+  'sessions.sidebar.session.moveToWorktree.tooltip': '현재 브랜치에서 새 worktree를 만들고 이 세션 및 하위 세션을 이동합니다.',
   'sessions.sidebar.session.moveToWorktree.tooltipBusy': '세션이 유휴 상태일 때 사용할 수 있습니다. 현재 작업을 중지하거나 완료될 때까지 기다리세요.',
   'sessions.sidebar.session.moveToWorktree.tooltipMoving': '이 세션은 이미 새 worktree로 이동 중입니다.',
   'sessions.sidebar.session.menu.runFusion': 'fusion 실행',
