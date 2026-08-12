@@ -14,7 +14,8 @@ export const WorktreeChangesIndicator: React.FC<{
   directory: string;
   className?: string;
   showTooltip?: boolean;
-}> = ({ directory, className, showTooltip = true }) => {
+  manageRefresh?: boolean;
+}> = ({ directory, className, showTooltip = true, manageRefresh = true }) => {
   const { t } = useI18n();
   const { git } = useRuntimeAPIs();
   const normalizedDirectory = normalizeDirectory(directory);
@@ -22,13 +23,13 @@ export const WorktreeChangesIndicator: React.FC<{
   const fetchWorktreeComparison = useGitStore((state) => state.fetchWorktreeComparison);
 
   React.useEffect(() => {
-    if (!normalizedDirectory || !git.getWorktreeComparison) return;
+    if (!manageRefresh || !normalizedDirectory || !git.getWorktreeComparison) return;
     void fetchWorktreeComparison(normalizedDirectory, git);
     return sessionEvents.onGitRefreshHint((hint) => {
       if (normalizeDirectory(hint.directory) !== normalizedDirectory) return;
       void fetchWorktreeComparison(normalizedDirectory, git);
     });
-  }, [fetchWorktreeComparison, git, normalizedDirectory]);
+  }, [fetchWorktreeComparison, git, manageRefresh, normalizedDirectory]);
 
   if (!comparison?.available || !comparison.hasChanges) return null;
 

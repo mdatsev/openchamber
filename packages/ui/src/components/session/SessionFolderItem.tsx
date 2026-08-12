@@ -34,6 +34,7 @@ interface SessionFolderItemProps<TSessionNode> {
     renderContext?: 'project' | 'recent',
     renderExtras?: SessionNodeChildRenderExtras,
   ) => React.ReactNode;
+  secondaryMeta?: { projectLabel?: string | null; branchLabel?: string | null } | null;
   /**
    * Returns the precomputed per-row render extras for a given node. The
    * group precomputes subtree-contains lookups once, then resolves a
@@ -75,6 +76,7 @@ const SessionFolderItemBase = <TSessionNode,>({
   onRename,
   onDelete,
   renderSessionNode,
+  secondaryMeta,
   getRenderExtras,
   groupDirectory,
   projectId,
@@ -348,7 +350,7 @@ const SessionFolderItemBase = <TSessionNode,>({
           {/* Then sessions */}
           {sessions.length > 0 ? (
             sessions.map((node) =>
-              renderSessionNode(node, 0, groupDirectory ?? null, projectId ?? null, archivedBucket, undefined, 'project', getRenderExtras?.(node)),
+              renderSessionNode(node, 0, groupDirectory ?? null, projectId ?? null, archivedBucket, secondaryMeta, 'project', getRenderExtras?.(node)),
             )
           ) : !subFolderItems ? (
             <div className="py-1 pl-1.5 text-left typography-micro text-muted-foreground/70">

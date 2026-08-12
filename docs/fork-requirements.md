@@ -58,7 +58,8 @@
 
 ### FC-012: Add "move to a new worktree" action to mobile UI
 
-- Same behaviour as dektop
+- Match the desktop behavior on mobile.
+- When the source worktree has uncommitted changes, let the user name the new branch and directory and choose whether to move those changes.
 
 ### FC-013: Highlight changed words in patch previews
 
@@ -71,6 +72,7 @@
 - Not merged changes include both committed and uncommited changes.
 - Show indicator on unmerged worktrees in the sidebar.
 - Show indicator on sessions in the sidebar differentiating between root and worktree sessions, and clean/dirty root and merged/unmerged worktrees.
+- Use compact sidebar rows for worktrees with zero or one conversation.
 
 ### FC-015: Update OpenCode in settings
 
@@ -79,7 +81,7 @@
 ### FC-016: Switch between official and fork servers without interrupting agents
 
 - Provide a Linux server setup that can switch between official and custom OpenChamber.
-- Keep OpenCode and running agents alive while switching.
+- Keep OpenCode and running agents alive while switching or restarting the custom server.
 
 ### FC-017: Show Desktop Recent status indicators on Mobile
 
@@ -90,3 +92,8 @@
 
 - Limit memory use per command and across all agent commands.
 - Keep OpenCode alive when a command exceeds its limit, and report the out-of-memory failure to the agent.
+
+### FC-019: Keep fork-only preferences separate
+
+- Put fork-only preferences in a dedicated Custom Fork settings page.
+- Let users choose whether New Chat actions inherit the current worktree.

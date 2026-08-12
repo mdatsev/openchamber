@@ -77,6 +77,7 @@ import { useSessionGoalArmStore } from "@/stores/useSessionGoalArmStore"
 import { setSessionGoal } from "@/lib/sessionGoalActions"
 import { wrapSystemReminder } from "@/lib/systemReminder"
 import { useUIStore } from "@/stores/useUIStore"
+import { useForkSettingsStore } from "@/stores/useForkSettingsStore"
 import { useSelectionStore } from "./selection-store"
 import { getViewportSessionMemory, useViewportStore, viewportSessionKey } from "./viewport-store"
 import { useSessionWorktreeStore } from "./session-worktree-store"
@@ -884,6 +885,14 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       : null
     const persistedProjectByDir = resolveDraftProjectForDirectory(projects, availableWorktreesByProject, persistedTarget?.directory ?? null)
     const currentDirProject = resolveDraftProjectForDirectory(projects, availableWorktreesByProject, currentDirectory)
+    const usePrimaryProjectCheckout = !useForkSettingsStore.getState().startNewChatInCurrentWorktree
+      && currentDirectory !== null
+      && currentDirProject !== null
+      && [...availableWorktreesByProject.values()].some((worktrees) => worktrees.some((worktree) => {
+        const worktreeDirectory = normalizePath(worktree.path)
+        return worktreeDirectory !== null
+          && (currentDirectory === worktreeDirectory || currentDirectory.startsWith(`${worktreeDirectory}/`))
+      }))
 
     const selectedProject = (() => {
       if (explicitProject) return explicitProject
@@ -895,7 +904,10 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     const directory = (() => {
       if (explicitDirectory !== null) return explicitDirectory
       if (explicitProject) return normalizePath(explicitProject.path ?? null)
-      if (currentDirectory) return currentDirectory
+      if (currentDirectory) {
+        if (usePrimaryProjectCheckout) return normalizePath(currentDirProject?.path ?? null) ?? currentDirectory
+        return currentDirectory
+      }
       if (persistedTarget?.directory) return persistedTarget.directory
       return normalizePath(selectedProject?.path ?? null)
     })()

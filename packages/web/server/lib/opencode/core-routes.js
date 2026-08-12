@@ -58,6 +58,8 @@ const hasPreviewProxyCredential = (req) => {
   return Boolean(getQueryParam(req, 'oc_preview_token') || getCookieValue(req, 'oc_preview_token'));
 };
 
+const MANAGED_RESTART_EXIT_CODE = 75;
+
 export const registerServerStatusRoutes = (app, dependencies) => {
   const {
     express,
@@ -65,6 +67,7 @@ export const registerServerStatusRoutes = (app, dependencies) => {
     openchamberVersion,
     runtimeName,
     serverStartedAt,
+    managedRestartSupported,
     gracefulShutdown,
     getHealthSnapshot,
     // Stable server identity (hash of the public signing key — not a secret).
@@ -113,17 +116,22 @@ export const registerServerStatusRoutes = (app, dependencies) => {
     });
   };
 
+  const restartSupported = managedRestartSupported === true;
+  const capabilities = [
+    'api.health.v1',
+    'api.runtime-url.v1',
+    'api.raw-file.v1',
+    'realtime.sse.v1',
+    'realtime.websocket.global-events.v1',
+    'terminal.websocket.v1',
+  ];
+  if (restartSupported) {
+    capabilities.push('api.system.restart.v1');
+  }
   const compatibility = {
     apiVersion: 1,
     minClientApiVersion: 1,
-    capabilities: [
-      'api.health.v1',
-      'api.runtime-url.v1',
-      'api.raw-file.v1',
-      'realtime.sse.v1',
-      'realtime.websocket.global-events.v1',
-      'terminal.websocket.v1',
-    ],
+    capabilities,
   };
 
   const isDevShutdownAllowed = () => {
@@ -257,7 +265,7 @@ export const registerServerStatusRoutes = (app, dependencies) => {
     });
   });
 
-  const requireShutdownAuth = async (req, res, next) => {
+  const requireLifecycleAuth = async (req, res, next) => {
     if (!uiAuthController || typeof uiAuthController.requireAuth !== 'function') {
       return next();
     }
@@ -275,11 +283,32 @@ export const registerServerStatusRoutes = (app, dependencies) => {
 
   app.post('/api/system/shutdown', async (req, res, next) => {
     try {
-      await requireShutdownAuth(req, res, () => {
+      await requireLifecycleAuth(req, res, () => {
         res.json({ ok: true });
         gracefulShutdown({ exitProcess: true }).catch((error) => {
           console.error('Shutdown request failed:', error?.message || error);
         });
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post('/api/system/restart', async (req, res, next) => {
+    try {
+      await requireLifecycleAuth(req, res, () => {
+        if (!restartSupported) {
+          return res.status(501).json({ ok: false, error: 'Managed restart is not available' });
+        }
+
+        res.json({ ok: true });
+        void gracefulShutdown({ exitProcess: false })
+          .catch((error) => {
+            console.error('Restart shutdown cleanup failed:', error?.message || error);
+          })
+          .finally(() => {
+            process.exit(MANAGED_RESTART_EXIT_CODE);
+          });
       });
     } catch (error) {
       next(error);
@@ -356,6 +385,7 @@ export const registerServerStatusRoutes = (app, dependencies) => {
       runtime: runtimeName,
       pid: process.pid,
       startedAt: serverStartedAt,
+      restartSupported,
     });
   });
 

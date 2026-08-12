@@ -244,6 +244,8 @@ systemctl --user enable --now opencode openchamber
 - Background notifications plus reliable cross-tab session activity tracking
 - Built-in self-update + restart flow that keeps your server settings intact
 
+Source checkouts report available upstream releases and keep the changelog accessible. The modal disables package installation and directs users to merge the upstream release into their source branch instead.
+
 ## License
 
 MIT

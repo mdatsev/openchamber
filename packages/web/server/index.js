@@ -571,6 +571,8 @@ const {
 
 const ENV_SKIP_OPENCODE_START = process.env.OPENCODE_SKIP_START === 'true' ||
                                     process.env.OPENCHAMBER_SKIP_OPENCODE_START === 'true';
+const ENV_MANAGED_RESTART_SUPPORTED = isEnvFlagEnabled(process.env.OPENCHAMBER_MANAGED_RESTART)
+  && ENV_SKIP_OPENCODE_START;
 const ENV_DESKTOP_NOTIFY = (() => {
   if (process.env.OPENCHAMBER_DESKTOP_NOTIFY === 'true') {
     return true;
@@ -1492,6 +1494,7 @@ async function main(options = {}) {
     openchamberVersion: OPENCHAMBER_VERSION,
     runtimeName: process.env.OPENCHAMBER_RUNTIME || 'web',
     serverStartedAt,
+    managedRestartSupported: ENV_MANAGED_RESTART_SUPPORTED,
     gracefulShutdown,
     getHealthSnapshot: () => {
       const launchSpec = resolvedOpencodeBinary && !useWslForOpencode

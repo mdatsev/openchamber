@@ -1,5 +1,6 @@
 import { getRuntimeKey } from '@/lib/runtime-switch';
 import { getPinnedSessionKey } from '@/stores/useSessionPinnedStore';
+import type { SortableDragHandleProps } from './sortableItems';
 import type { SessionNode } from './types';
 
 /**
@@ -19,6 +20,7 @@ export type SessionNodeChildRenderExtras = {
 
 export type SessionNodeRenderExtras<TNode = SessionNode> = SessionNodeChildRenderExtras & {
   childRenderExtrasFor?: (child: TNode) => SessionNodeChildRenderExtras;
+  worktreeDragHandleProps?: SortableDragHandleProps | null;
 };
 
 /**

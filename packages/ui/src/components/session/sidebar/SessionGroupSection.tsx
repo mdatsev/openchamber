@@ -389,6 +389,13 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
       (foldersMap[scopeKey] ?? []).map((folder) => ({ folder, scopeKey, scopeDirectory: directory }))),
     [folderScopes, foldersMap]
   );
+  const canCompactLinkedWorktree = Boolean(
+    group.worktree
+    && !group.isMain
+    && !group.isArchivedBucket
+    && !hasSessionSearchQuery
+    && scopeFolders.length === 0,
+  );
 
   const nodeBySessionId = React.useMemo(() => {
     const map = new Map<string, SessionNode>();
@@ -563,6 +570,18 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
   }), [subtreeContainsEditing, menuOpenSessionId, resolveNodeStructureKey]);
 
   const totalSessions = ungroupedSessions.length;
+  const compactSingleWorktreeNode = canCompactLinkedWorktree && sourceGroupNodes.length === 1
+    ? sourceGroupNodes[0]
+    : null;
+  const compactEmptyWorktreeGroup = canCompactLinkedWorktree
+    && sourceGroupNodes.length === 0
+    && bootstrapState !== undefined;
+  const isGroupCollapsible = !compactEmptyWorktreeGroup;
+  const isBootstrapLoading = bootstrapState === 'queued' || bootstrapState === 'running';
+  const failedBootstrapDirectory = bootstrapState === 'failed' ? bootstrapDirectory : null;
+  const rowSecondaryMeta = group.branch && group.branch !== 'HEAD'
+    ? { branchLabel: group.branch }
+    : null;
   const visibleSessions = group.isArchivedBucket
     ? ungroupedSessions
     : hasSessionSearchQuery
@@ -751,7 +770,7 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
     return null;
   }
 
-  const showBranchSubtitle = !group.isMain && Boolean(group.branch);
+  const showBranchSubtitle = isGroupCollapsible && !group.isMain && Boolean(group.branch);
   const statusLine = group.branch && isBranchDifferentFromLabel(group.branch, group.label)
     ? { label: group.branch, color: null as string | null }
     : null;
@@ -766,6 +785,29 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
       unreadLabel={t('sessions.sidebar.session.status.unread')}
     />
   ) : null;
+
+  if (compactSingleWorktreeNode) {
+    return (
+      <div className="oc-group pb-0.5">
+        {renderSessionNode(
+          compactSingleWorktreeNode,
+          0,
+          group.directory,
+          projectId,
+          false,
+          rowSecondaryMeta,
+          'project',
+          {
+            subtreeContainsEditing,
+            menuOpenSessionId,
+            nodeStructureKey: resolveNodeStructureKey(compactSingleWorktreeNode),
+            childRenderExtrasFor,
+            worktreeDragHandleProps: dragHandleProps,
+          },
+        )}
+      </div>
+    );
+  }
 
   type FolderEntry = (typeof allFoldersForGroup)[number];
 
@@ -812,6 +854,7 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
               });
             }}
             renderSessionNode={renderSessionNode}
+            secondaryMeta={rowSecondaryMeta}
             getRenderExtras={resolveNodeStructureKey
               ? (node) => ({
                 subtreeContainsEditing,
@@ -916,7 +959,7 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
             // re-renders synchronously before paint. Rendering the plain rows
             // meanwhile keeps the container's height real so the scroller
             // never collapses/clamps during the flip.
-            visibleSessions.map((node) => renderSessionNode(node, 0, group.directory, projectId, group.isArchivedBucket === true, undefined, 'project', {
+            visibleSessions.map((node) => renderSessionNode(node, 0, group.directory, projectId, group.isArchivedBucket === true, rowSecondaryMeta, 'project', {
               subtreeContainsEditing,
               menuOpenSessionId,
               nodeStructureKey: resolveNodeStructureKey(node),
@@ -954,7 +997,7 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
                     transform: `translateY(${item.start - archivedScrollMargin}px)`,
                   }}
                 >
-                  {renderSessionNode(node, 0, group.directory, projectId, group.isArchivedBucket === true, undefined, 'project', {
+                  {renderSessionNode(node, 0, group.directory, projectId, group.isArchivedBucket === true, rowSecondaryMeta, 'project', {
                     subtreeContainsEditing,
                     menuOpenSessionId,
                     nodeStructureKey: resolveNodeStructureKey(node),
@@ -967,7 +1010,7 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
           )}
         </div>
       ) : (
-        visibleSessions.map((node) => renderSessionNode(node, 0, group.directory, projectId, group.isArchivedBucket === true, undefined, 'project', {
+        visibleSessions.map((node) => renderSessionNode(node, 0, group.directory, projectId, group.isArchivedBucket === true, rowSecondaryMeta, 'project', {
           subtreeContainsEditing,
           menuOpenSessionId,
           nodeStructureKey: resolveNodeStructureKey(node),
@@ -980,14 +1023,14 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
         <div className="py-1 pl-[26px] text-left typography-micro text-muted-foreground">
           {group.isArchivedBucket
             ? t('sessions.sidebar.group.empty.noArchivedSessions')
-            : bootstrapState === 'queued' || bootstrapState === 'running'
+            : isBootstrapLoading
               ? (
                 <span className="inline-flex items-center gap-1.5">
                   <Icon name="loader-4" className="size-3 animate-spin" />
                   {t('sessions.sidebar.group.empty.loadingSessions')}
                 </span>
               )
-              : bootstrapState === 'failed' && bootstrapDirectory
+              : failedBootstrapDirectory
                 ? (
                   <span className="inline-flex items-center gap-1.5">
                     {t('sessions.sidebar.group.empty.loadFailed')}
@@ -995,7 +1038,7 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
                       type="button"
                       className="text-foreground hover:underline"
                       onClick={() => childStores.requestBootstrap({
-                        directory: bootstrapDirectory,
+                        directory: failedBootstrapDirectory,
                         priority: isCollapsed ? 'visible' : 'expanded',
                         reason: group.isMain ? 'project-expanded' : 'worktree-expanded',
                         force: true,
@@ -1005,7 +1048,7 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
                     </button>
                   </span>
                 )
-            : t('sessions.sidebar.group.empty.noSessionsInWorkspace')}
+                : t('sessions.sidebar.group.empty.noSessionsInWorkspace')}
         </div>
       ) : null}
       {remainingCount > 0 ? (
@@ -1041,23 +1084,32 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
     return <div className="oc-group"><div className={cn('oc-group-body', groupBodyPaddingClass)}>{body}</div></div>;
   }
 
+  const groupToggleAriaLabel = isGroupCollapsible
+    ? isCollapsed
+      ? t('sessions.sidebar.group.expandAria', { label: group.label })
+      : t('sessions.sidebar.group.collapseAria', { label: group.label })
+    : undefined;
+  const handleGroupKeyDown = isGroupCollapsible
+    ? (event: React.KeyboardEvent<HTMLDivElement>) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        onToggleCollapsedGroup(groupKey);
+      }
+    : undefined;
+
   return (
     <div className="oc-group">
       <div
-        className={cn('group/gh relative flex items-start justify-between gap-1 py-1 min-w-0 rounded-md', 'cursor-pointer')}
-        onClick={() => onToggleCollapsedGroup(groupKey)}
-        role="button"
-        tabIndex={0}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault();
-            onToggleCollapsedGroup(groupKey);
-          }
-        }}
-        aria-label={isCollapsed
-          ? t('sessions.sidebar.group.expandAria', { label: group.label })
-          : t('sessions.sidebar.group.collapseAria', { label: group.label })}
-        aria-expanded={!isCollapsed}
+        className={cn(
+          'group/gh relative flex items-start justify-between gap-1 py-1 min-w-0 rounded-md',
+          isGroupCollapsible && 'cursor-pointer',
+        )}
+        onClick={isGroupCollapsible ? () => onToggleCollapsedGroup(groupKey) : undefined}
+        role={isGroupCollapsible ? 'button' : undefined}
+        tabIndex={isGroupCollapsible ? 0 : undefined}
+        onKeyDown={handleGroupKeyDown}
+        aria-label={groupToggleAriaLabel}
+        aria-expanded={isGroupCollapsible ? !isCollapsed : undefined}
       >
         <div
           ref={dragHandleProps?.setActivatorNodeRef}
@@ -1090,21 +1142,57 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
                 // folder-style row with a PR-tinted branch icon and PR badge.
                 <span className="flex w-full min-w-0 items-center gap-1.5">
                   <span className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center">
-                    <Icon name="git-branch"
-                      className={cn('h-3.5 w-3.5 shrink-0', !groupPrColor && 'text-muted-foreground', alwaysShowActions ? 'hidden' : 'group-hover/gh:hidden')}
+                    <Icon name={compactEmptyWorktreeGroup ? 'node-tree' : 'git-branch'}
+                      className={cn(
+                        'h-3.5 w-3.5 shrink-0',
+                        !groupPrColor && 'text-muted-foreground',
+                        isGroupCollapsible
+                          && (alwaysShowActions ? 'hidden' : 'group-hover/gh:hidden group-focus-within/gh:hidden'),
+                      )}
                       style={groupPrColor ? { color: groupPrColor } : undefined}
                     />
-                    <span className={cn(
-                      'text-muted-foreground h-3.5 w-3.5 items-center justify-center',
-                      alwaysShowActions ? 'inline-flex' : 'hidden group-hover/gh:inline-flex',
-                    )}>
-                      {isCollapsed ? <Icon name="arrow-right-s" className="h-3.5 w-3.5" /> : <Icon name="arrow-down-s" className="h-3.5 w-3.5" />}
-                    </span>
+                    {isGroupCollapsible ? (
+                      <span className={cn(
+                        'text-muted-foreground h-3.5 w-3.5 items-center justify-center',
+                        alwaysShowActions ? 'inline-flex' : 'hidden group-hover/gh:inline-flex group-focus-within/gh:inline-flex',
+                      )}>
+                        {isCollapsed ? <Icon name="arrow-right-s" className="h-3.5 w-3.5" /> : <Icon name="arrow-down-s" className="h-3.5 w-3.5" />}
+                      </span>
+                    ) : null}
                   </span>
                   <span className="min-w-0 truncate typography-ui-label font-semibold text-muted-foreground">
                     {renderHighlightedText(group.label, normalizedSessionSearchQuery)}
                   </span>
-                  {bootstrapDirectory ? <WorktreeChangesIndicator directory={bootstrapDirectory} /> : null}
+                  {compactEmptyWorktreeGroup ? (
+                    <span className="inline-flex shrink-0 items-center gap-1 typography-micro font-normal text-muted-foreground/75">
+                      {isBootstrapLoading ? (
+                        <>
+                          <Icon name="loader-4" className="size-3 animate-spin" />
+                          {t('sessions.sidebar.group.empty.loadingSessions')}
+                        </>
+                      ) : failedBootstrapDirectory ? (
+                        <>
+                          {t('sessions.sidebar.group.empty.loadFailed')}
+                          <button
+                            type="button"
+                            className="text-foreground hover:underline"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              childStores.requestBootstrap({
+                                directory: failedBootstrapDirectory,
+                                priority: 'expanded',
+                                reason: 'worktree-expanded',
+                                force: true,
+                              });
+                            }}
+                          >
+                            {t('sessions.sidebar.group.empty.retry')}
+                          </button>
+                        </>
+                      ) : t('sessions.sidebar.group.empty.noSessions')}
+                    </span>
+                  ) : null}
+                  {bootstrapDirectory ? <WorktreeChangesIndicator directory={bootstrapDirectory} manageRefresh={false} /> : null}
                   {groupActivityIndicator}
                   {groupPrSummary ? (
                     <span
@@ -1207,7 +1295,7 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
            </div>
          ) : null}
       </div>
-      {!isCollapsed ? <div className={cn('oc-group-body', groupBodyPaddingClass)}>{body}</div> : null}
+      {isGroupCollapsible && !isCollapsed ? <div className={cn('oc-group-body', groupBodyPaddingClass)}>{body}</div> : null}
     </div>
   );
 }

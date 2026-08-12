@@ -256,7 +256,10 @@ Transport-triggered health checks share the periodic monitor's failure accountin
 - `registerServerStatusRoutes(app, dependencies)`: registers status/system endpoints:
   - `GET /health`
   - `POST /api/system/shutdown`
+  - `POST /api/system/restart`
   - `GET /api/system/info`
+
+`POST /api/system/restart` uses the same UI/tunnel authentication boundary as shutdown and is available only when the server was explicitly started with managed-restart support. Supported requests acknowledge before graceful OpenChamber cleanup, then exit with status `75` so an external supervisor can restart the interface. `GET /api/system/info` exposes `restartSupported`, and the compatibility capabilities include `api.system.restart.v1` only when enabled. The server wiring enables this contract only when `OPENCHAMBER_MANAGED_RESTART` is true and OpenCode is external, preventing the restart route from terminating a managed OpenCode process and its active requests.
  - `registerAuthAndAccessRoutes(app, dependencies)`: registers browser auth/session exchange and API access middleware:
    - `GET /auth/session`
    - `POST /auth/session`

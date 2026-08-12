@@ -73,6 +73,7 @@ type Props = {
   collapsedProjects: Set<string>;
   hideDirectoryControls: boolean;
   projectRepoStatus: Map<string, boolean | null>;
+  projectRootDirtyStatus: Map<string, boolean | null>;
   isDesktopShellRuntime: boolean;
   stickyZoneHeaders: boolean;
   stuckProjectHeaders: Set<string>;
@@ -182,6 +183,9 @@ function SidebarProjectsListComponent(props: Props): React.ReactNode {
   const leadingProject =
     stuckProject ?? (props.hasSharedSessions ? null : props.sectionsForRender[0]?.project ?? null);
   const leadingProjectLabel = leadingProject ? getProjectLabel(leadingProject, props.homeDirectory) : null;
+  const leadingProjectHasRootChanges = leadingProject
+    ? props.projectRootDirtyStatus.get(leadingProject.id) === true
+    : false;
 
   if (props.sharedSessionsOnly) {
     return (
@@ -279,6 +283,7 @@ function SidebarProjectsListComponent(props: Props): React.ReactNode {
               const projectDescription = formatPathForDisplay(project.normalizedPath, props.homeDirectory);
               const isCollapsed = props.collapsedProjects.has(projectKey);
               const isRepo = props.projectRepoStatus.get(projectKey);
+              const rootHasChanges = props.projectRootDirtyStatus.get(projectKey) === true;
 
               return (
                 <SortableProjectItem
@@ -298,6 +303,7 @@ function SidebarProjectsListComponent(props: Props): React.ReactNode {
                   mobileVariant={props.mobileVariant}
                   alwaysShowActions={props.alwaysShowActions}
                   statusIndicator={isCollapsed ? props.renderProjectStatusIndicator?.(projectKey, section.groups) : null}
+                  rootHasChanges={rootHasChanges}
                   onToggle={() => props.toggleProject(projectKey)}
                   onNewSession={() => {
                     if (projectKey !== props.activeProjectId) props.setActiveProjectIdOnly(projectKey);
@@ -383,14 +389,19 @@ function SidebarProjectsListComponent(props: Props): React.ReactNode {
           aria-hidden="true"
         >
           {leadingProject && leadingProjectLabel ? (
-            <ProjectHeaderIdentity
-              id={leadingProject.id}
-              projectLabel={leadingProjectLabel}
-              projectIcon={leadingProject.icon}
-              projectColor={leadingProject.color}
-              projectIconImage={leadingProject.iconImage}
-              projectIconBackground={leadingProject.iconBackground}
-            />
+            <>
+              <ProjectHeaderIdentity
+                id={leadingProject.id}
+                projectLabel={leadingProjectLabel}
+                projectIcon={leadingProject.icon}
+                projectColor={leadingProject.color}
+                projectIconImage={leadingProject.iconImage}
+                projectIconBackground={leadingProject.iconBackground}
+              />
+              {leadingProjectHasRootChanges ? (
+                <Icon name="file-edit" className="size-3.5 shrink-0 text-status-warning" />
+              ) : null}
+            </>
           ) : (
             <>
               <Icon name="history" className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground/80" />

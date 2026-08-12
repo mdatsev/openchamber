@@ -44,6 +44,10 @@
 
 - VS Code is not a supported target for fork-only behavior. Fork-only features do not require VS Code implementation, parity, or validation unless the user explicitly requests it.
 
+## Fork-Only Settings
+
+- Place preferences for fork-only behavior under **Custom Fork > Fork Settings**, not in upstream-owned Settings pages.
+
 ## Fork Requirements
 
 - Do not change `docs/fork-requirements.md` without explicit user approval. If you find divergences between the requirements and the implementation, report them to the user.

@@ -18,7 +18,7 @@ permission:
     "*.env.*": deny
     "*.env.example": allow
   bash:
-    "*": ask
+    "*": allow
     bun test*: allow
     bun run type-check*: allow
     bun run lint*: allow

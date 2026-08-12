@@ -55,6 +55,8 @@ import { RuntimeAPIContext } from '@/contexts/runtimeAPIContext';
 import { startSessionTreeWorktreeMove, useIsSessionWorktreeMovePending } from '@/lib/worktrees/sessionWorktreeMove';
 import { streamPerfCount } from '@/stores/utils/streamDebug';
 import { useSessionUIStore } from '@/sync/session-ui-store';
+import { useResolvedWorktreeComparisonSummary } from '@/stores/useGitStore';
+import type { SortableDragHandleProps } from './sortableItems';
 
 type Folder = { id: string; name: string; sessionIds: string[] };
 
@@ -138,6 +140,7 @@ type Props = {
    * to fetch the right key for each child it produces.
    */
   childRenderExtrasFor?: (child: SessionNode) => SessionNodeChildRenderExtras;
+  worktreeDragHandleProps?: SortableDragHandleProps | null;
 };
 
 // Shared row geometry: the gutter edge matches the zone-header band padding
@@ -304,6 +307,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
     subtreeContainsEditing,
     menuOpenSessionId,
     childRenderExtrasFor,
+    worktreeDragHandleProps,
   } = props;
 
   const isVSCode = React.useMemo(() => isVSCodeRuntime(), []);
@@ -362,6 +366,8 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
   const tooltipProjectLabel = secondaryMeta?.projectLabel
     ?? (projectLabelFromStore ? formatProjectLabel(projectLabelFromStore) : null);
   const tooltipBranchLabel = secondaryMeta?.branchLabel ?? node.worktree?.branch ?? null;
+  const worktreeDirectory = normalizePath(node.worktree?.path ?? null);
+  const worktreeComparison = useResolvedWorktreeComparisonSummary(worktreeDirectory);
   const prLookupKey = React.useMemo(() => {
     if (isVSCode) return null;
     const branch = node.worktree?.branch?.trim();
@@ -375,7 +381,11 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
   // group sub-header, so the per-row marker only appears in flat mode and in
   // the mixed-context recent list.
   const showInlineBranchMarker = Boolean(tooltipBranchLabel)
-    && (renderContext === 'recent' || sessionGroupingMode === 'flat');
+    && (
+      renderContext === 'recent'
+      || sessionGroupingMode === 'flat'
+      || (!node.worktree && Boolean(secondaryMeta?.branchLabel))
+    );
   const prStatusLabel = React.useMemo(() => {
     if (!prSummary) return null;
     switch (prSummary.visualState) {
@@ -464,6 +474,51 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
       <Icon name="target" className="h-3 w-3" style={{ color: sessionGoalStatusColor[sessionGoal.status] }} />
     </span>
   ) : null;
+  const worktreeComparisonGlyph = worktreeComparison?.available ? (
+    <span
+      className={cn(
+        'inline-flex',
+        worktreeComparison.hasChanges ? 'text-status-warning' : 'text-status-success',
+      )}
+      aria-label={worktreeComparison.hasChanges
+        ? t('sessions.sidebar.worktreeChanges', {
+            branch: worktreeComparison.baseBranch,
+            count: worktreeComparison.fileCount,
+          })
+        : t('sessions.sidebar.session.status.worktreeClean', {
+            branch: worktreeComparison.baseBranch,
+          })}
+      role="img"
+    >
+      <Icon
+        name={worktreeComparison.hasChanges ? 'git-commit' : 'check'}
+        className="h-3 w-3"
+      />
+    </span>
+  ) : null;
+  const worktreeStateGlyphs = worktreeDirectory ? (
+    <span
+      ref={worktreeDragHandleProps?.setActivatorNodeRef}
+      data-worktree-drag-handle={worktreeDragHandleProps ? 'true' : undefined}
+      className={cn(
+        'inline-flex flex-shrink-0 items-center gap-1',
+        worktreeDragHandleProps && 'cursor-grab active:cursor-grabbing',
+      )}
+      {...(worktreeDragHandleProps?.listeners ?? {})}
+    >
+      <span
+        className="inline-flex"
+        role="img"
+        aria-label={t('sessions.sidebar.session.status.linkedWorktree')}
+      >
+        <Icon name="node-tree" className="h-3 w-3 text-muted-foreground/60" />
+      </span>
+      {worktreeComparisonGlyph}
+    </span>
+  ) : null;
+  const trailingMetadataVisibilityClass = worktreeDragHandleProps
+    ? 'opacity-100'
+    : hideOnHoverClass;
   const sessionTitle = resolvedSession.title || t('sessions.sidebar.session.untitled');
   const hasChildren = node.children.length > 0;
   const isPinnedSession = isSessionPinned(pinnedSessionIds, sessionDirectory, session.id);
@@ -1275,6 +1330,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
                         // Touch runtimes have no hover tooltip, so the compact
                         // date stays inline there.
                         <span className="ml-2 inline-flex flex-shrink-0 items-center gap-1 text-[0.72rem] text-muted-foreground/75">
+                          {worktreeStateGlyphs}
                           {sessionGoalGlyph}
                           {showInlineBranchMarker ? (
                             <Icon
@@ -1285,14 +1341,15 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
                           ) : null}
                           {sessionCompactUpdatedLabel}
                         </span>
-                      ) : (sessionGoalGlyph || showInlineBranchMarker) ? (
+                      ) : (worktreeStateGlyphs || sessionGoalGlyph || showInlineBranchMarker) ? (
                         <div className="relative ml-1 flex h-4 flex-shrink-0 items-center justify-end">
                           <span className={cn(
                             'inline-flex items-center gap-1 whitespace-nowrap text-right transition-opacity duration-150',
                             isSessionMenuOpen
                               ? 'opacity-0'
-                              : hideOnHoverClass,
+                              : trailingMetadataVisibilityClass,
                           )}>
+                            {worktreeStateGlyphs}
                             {sessionGoalGlyph}
                             {showInlineBranchMarker ? (
                               <Icon
@@ -1441,7 +1498,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
             sessionDirectory ?? groupDirectory,
             projectId,
             archivedBucket,
-            undefined,
+            secondaryMeta,
             renderContext,
             childRenderExtras,
           );
@@ -1583,6 +1640,7 @@ const areSessionNodeItemPropsEqual = (prev: Props, next: Props): boolean => {
   if (prev.normalizedSessionSearchQuery !== next.normalizedSessionSearchQuery) return false;
   if (prev.notifyOnSubtasks !== next.notifyOnSubtasks) return false;
   if (prev.nodeStructureKey !== next.nodeStructureKey) return false;
+  if (prev.worktreeDragHandleProps !== next.worktreeDragHandleProps) return false;
   if (getNodeSessionDirectory(prev.node) !== getNodeSessionDirectory(next.node)) return false;
   if (!isSecondaryMetaEqual(prev.secondaryMeta, next.secondaryMeta)) return false;
 

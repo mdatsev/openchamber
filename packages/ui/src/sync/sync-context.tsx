@@ -641,7 +641,14 @@ async function resyncDirectorySessionStatuses(
   if (nextStatuses === null) return null
   applySessionStatusSnapshot(store, nextStatuses, candidateSessionIds, mode)
   if (mode === "authoritative") {
-    store.setState({ sessionStatusSnapshotAt: requestedAt })
+    store.setState({
+      sessionStatusSnapshotAt: requestedAt,
+      sessionStatusSnapshotActiveIds: new Set(
+        Object.entries(nextStatuses)
+          .filter(([, status]) => status.type !== "idle")
+          .map(([sessionId]) => sessionId),
+      ),
+    })
     applyGlobalSessionStatusSnapshot(directory, nextStatuses, candidateSessionIds)
   }
   return nextStatuses
