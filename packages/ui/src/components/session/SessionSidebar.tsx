@@ -15,7 +15,7 @@ import { SessionPrefetchEffect } from './sidebar/hooks/useSessionPrefetch';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { getDeferredSafeStorage } from '@/stores/utils/safeStorage';
-import { useGitStore, useGitAllBranches, useGitRepoStatusMap } from '@/stores/useGitStore';
+import { useGitStore, useGitAllBranches, useGitCleanStatusMap, useGitRepoStatusMap } from '@/stores/useGitStore';
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { Icon } from '@/components/icon/Icon';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -1140,10 +1140,19 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
     void refreshGlobalSessionsForDirectories(addedDirectories, syncSessionsSnapshotRef.current);
   }, [isVSCode, projectSessionDirectories]);
 
-  const { github } = useRuntimeAPIs();
+  const { github, git } = useRuntimeAPIs();
   const githubAuthStatus = useGitHubAuthStore((state) => state.status);
   const githubAuthChecked = useGitHubAuthStore((state) => state.hasChecked);
   const gitRepoStatus = useGitRepoStatusMap(isVisible ? normalizedProjectPaths : EMPTY_STRING_ARRAY);
+  const gitCleanStatus = useGitCleanStatusMap(isVisible ? normalizedProjectPaths : EMPTY_STRING_ARRAY);
+  const projectRootDirtyStatus = React.useMemo(() => {
+    const statusByProjectId = new Map<string, boolean | null>();
+    for (const project of normalizedProjects) {
+      const isClean = gitCleanStatus.get(project.normalizedPath);
+      statusByProjectId.set(project.id, typeof isClean === 'boolean' ? !isClean : null);
+    }
+    return statusByProjectId;
+  }, [gitCleanStatus, normalizedProjects]);
   const ensurePrStatusEntry = useGitHubPrStatusStore((state) => state.ensureEntry);
   const setPrStatusParams = useGitHubPrStatusStore((state) => state.setParams);
   const refreshPrStatusTargets = useGitHubPrStatusStore((state) => state.refreshTargets);
@@ -1236,6 +1245,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
     collapsedFolderIds,
     gitBranches,
     gitRepoStatus,
+    gitCleanStatus,
     githubAuthStatus,
     githubAuthChecked,
     updateStore,
@@ -1340,6 +1350,44 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
   });
 
   projectSectionsRef.current = projectSections;
+
+  const visibleWorktreeDirectories = React.useMemo(() => {
+    if (!isVisible || isVSCode) return EMPTY_STRING_ARRAY;
+    return projectSections
+      .flatMap((section) => section.groups)
+      .filter((group) => !group.isArchivedBucket && Boolean(group.worktree))
+      .map((group) => normalizePath(group.directory ?? null))
+      .filter((directory): directory is string => Boolean(directory));
+  }, [isVSCode, isVisible, projectSections]);
+  const visibleWorktreeDirectoriesKey = visibleWorktreeDirectories.join('\0');
+  const normalizedProjectPathsKey = normalizedProjectPaths.join('\0');
+
+  React.useEffect(() => {
+    if (!isVisible) return;
+    const worktreeDirectories = visibleWorktreeDirectoriesKey
+      ? visibleWorktreeDirectoriesKey.split('\0')
+      : EMPTY_STRING_ARRAY;
+    const projectDirectories = normalizedProjectPathsKey
+      ? normalizedProjectPathsKey.split('\0')
+      : EMPTY_STRING_ARRAY;
+    const visibleWorktreeDirectorySet = new Set(worktreeDirectories);
+    const projectDirectorySet = new Set(projectDirectories);
+    const { fetchWorktreeComparison, fetchStatus } = useGitStore.getState();
+    const refreshWorktreeComparison = (directory: string) => {
+      if (!git.getWorktreeComparison || !visibleWorktreeDirectorySet.has(directory)) return;
+      void fetchWorktreeComparison(directory, git);
+    };
+
+    worktreeDirectories.forEach(refreshWorktreeComparison);
+    return sessionEvents.onGitRefreshHint((hint) => {
+      const directory = normalizePath(hint.directory);
+      if (!directory) return;
+      refreshWorktreeComparison(directory);
+      if (projectDirectorySet.has(directory)) {
+        void fetchStatus(directory, git, { silent: true });
+      }
+    });
+  }, [git, isVisible, normalizedProjectPathsKey, visibleWorktreeDirectoriesKey]);
 
   const searchEmptyState = React.useMemo(() => (
     <div className="py-6 text-center text-muted-foreground">
@@ -1652,6 +1700,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
         menuOpenSessionId={renderExtras?.menuOpenSessionId ?? null}
         nodeStructureKey={renderExtras?.nodeStructureKey ?? ''}
         childRenderExtrasFor={renderExtras?.childRenderExtrasFor}
+        worktreeDragHandleProps={renderExtras?.worktreeDragHandleProps}
       />
     ),
   );
@@ -1943,6 +1992,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
         collapsedProjects={collapsedProjects}
         hideDirectoryControls={hideDirectoryControls}
         projectRepoStatus={projectRepoStatus}
+        projectRootDirtyStatus={projectRootDirtyStatus}
         isDesktopShellRuntime={isDesktopShellRuntime}
         stickyZoneHeaders={stickyZoneHeaders}
         stuckProjectHeaders={stuckProjectHeaders}

@@ -121,6 +121,8 @@ export interface SortableProjectItemProps extends ProjectIdentityProps {
   setOpenSidebarMenuKey: (key: string | null) => void;
   /** Aggregated activity/attention indicator shown while the project is collapsed. */
   statusIndicator?: React.ReactNode;
+  /** Whether the project root's authoritative Git status contains changes. */
+  rootHasChanges?: boolean;
 }
 
 export const SortableProjectItem: React.FC<SortableProjectItemProps> = ({
@@ -150,6 +152,7 @@ export const SortableProjectItem: React.FC<SortableProjectItemProps> = ({
   openSidebarMenuKey,
   setOpenSidebarMenuKey,
   statusIndicator = null,
+  rootHasChanges = false,
 }) => {
   const { t } = useI18n();
   const stickyZoneHeaders = useSessionDisplayStore((state) => state.stickyZoneHeaders);
@@ -299,6 +302,24 @@ export const SortableProjectItem: React.FC<SortableProjectItemProps> = ({
                     />
                     {statusIndicator ? (
                       <span className="ml-1 inline-flex flex-shrink-0 items-center">{statusIndicator}</span>
+                    ) : null}
+                    {rootHasChanges ? (
+                      <span className="ml-1 inline-flex flex-shrink-0 items-center">
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span
+                              className="inline-flex size-4 shrink-0 items-center justify-center text-status-warning"
+                              role="img"
+                              aria-label={t('sessions.sidebar.project.status.uncommittedChanges')}
+                            >
+                              <Icon name="file-edit" className="size-3.5" />
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent side="right" sideOffset={8}>
+                            {t('sessions.sidebar.project.status.uncommittedChanges')}
+                          </TooltipContent>
+                        </Tooltip>
+                      </span>
                     ) : null}
                   </button>
                 </TooltipTrigger>

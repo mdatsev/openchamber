@@ -1380,6 +1380,28 @@ export const useGitRepoStatusMap = (directories: string[]) => {
   });
 };
 
+export const useGitCleanStatusMap = (directories: string[]) => {
+  const cacheRef = React.useRef<Map<string, boolean | null>>(new Map());
+  return useGitStore((state) => {
+    const previous = cacheRef.current;
+    let unchanged = previous.size === directories.length;
+    for (const directory of directories) {
+      if (previous.get(directory) !== (state.directories.get(directory)?.status?.isClean ?? null)) {
+        unchanged = false;
+        break;
+      }
+    }
+    if (unchanged) return previous;
+
+    const result = new Map<string, boolean | null>();
+    for (const directory of directories) {
+      result.set(directory, state.directories.get(directory)?.status?.isClean ?? null);
+    }
+    cacheRef.current = result;
+    return result;
+  });
+};
+
 export const useGitLoadingStatus = (directory: string | null) => {
   return useGitStore((state) => {
     if (!directory) return false;
@@ -1405,6 +1427,15 @@ export const useWorktreeComparisonSummary = (directory: string | null) => {
   return useGitStore((state) => {
     if (!directory) return null;
     return state.directories.get(directory)?.worktreeComparisonSummary ?? null;
+  });
+};
+
+export const useResolvedWorktreeComparisonSummary = (directory: string | null) => {
+  return useGitStore((state) => {
+    if (!directory) return null;
+    const directoryState = state.directories.get(directory);
+    if (directoryState?.isLoadingWorktreeComparisonSummary || directoryState?.worktreeComparisonSummaryError) return null;
+    return directoryState?.worktreeComparisonSummary ?? null;
   });
 };
 

@@ -25,6 +25,7 @@ export const DraggableSessionRow: React.FC<{
 
   const handlePointerDown = React.useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
+      if ((e.target as Element).closest('[data-worktree-drag-handle]')) return;
       e.stopPropagation();
       if (listeners?.onPointerDown) {
         (listeners.onPointerDown as (event: React.PointerEvent) => void)(e);
