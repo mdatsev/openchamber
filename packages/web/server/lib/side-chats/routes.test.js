@@ -64,7 +64,7 @@ const sideChatRequest = (body, overrides = {}) => ({
 });
 
 describe('side chat routes', () => {
-  it('creates a fork at the requested completed message and marks it disposable', async () => {
+  it('creates an unbounded fork that snapshots all available messages and marks it disposable', async () => {
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce(jsonResponse([]))
       .mockResolvedValueOnce(jsonResponse({ id: 'ses_side', metadata: { custom: { value: 'kept' } } }))
@@ -86,7 +86,7 @@ describe('side chat routes', () => {
     const response = createResponse();
 
     await getRoute('POST', '/api/openchamber/side-chats')(sideChatRequest(
-      { parentSessionID: 'ses_parent', messageID: 'msg_complete' },
+      { parentSessionID: 'ses_parent' },
       { query: { directory: '/repo/app' } },
     ), response);
 
@@ -95,7 +95,7 @@ describe('side chat routes', () => {
     expect(fetchImpl).toHaveBeenNthCalledWith(2, 'http://opencode.test/session/ses_parent/fork?directory=%2Frepo%2Fapp', expect.objectContaining({
       method: 'POST',
       headers: expect.objectContaining({ Authorization: 'Bearer upstream-token' }),
-      body: JSON.stringify({ messageID: 'msg_complete' }),
+      body: JSON.stringify({}),
     }));
     expect(fetchImpl).toHaveBeenNthCalledWith(3, 'http://opencode.test/session/ses_side?directory=%2Frepo%2Fapp', expect.objectContaining({
       method: 'PATCH',
@@ -108,18 +108,15 @@ describe('side chat routes', () => {
     }));
   });
 
-  it.each([
-    [{ messageID: 'msg_complete' }, 'parentSessionID is required'],
-    [{ parentSessionID: 'ses_parent' }, 'messageID is required'],
-  ])('rejects invalid identity %#', async (body, error) => {
+  it('rejects a missing parent identity', async () => {
     const fetchImpl = vi.fn();
     const { getRoute } = createHarness(fetchImpl);
     const response = createResponse();
 
-    await getRoute('POST', '/api/openchamber/side-chats')(sideChatRequest(body), response);
+    await getRoute('POST', '/api/openchamber/side-chats')(sideChatRequest({}), response);
 
     expect(response.statusCode).toBe(400);
-    expect(response.body).toEqual({ error });
+    expect(response.body).toEqual({ error: 'parentSessionID is required' });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
@@ -128,7 +125,7 @@ describe('side chat routes', () => {
     const { getRoute } = createHarness(fetchImpl, { isRequestOriginAllowed: async () => false });
     const response = createResponse();
     await getRoute('POST', '/api/openchamber/side-chats')(sideChatRequest({
-      parentSessionID: 'ses_parent', messageID: 'msg_complete',
+      parentSessionID: 'ses_parent',
     }), response);
     expect(response.statusCode).toBe(403);
     expect(fetchImpl).not.toHaveBeenCalled();
@@ -143,7 +140,6 @@ describe('side chat routes', () => {
 
     await getRoute('POST', '/api/openchamber/side-chats')(sideChatRequest({
       parentSessionID: 'ses_parent',
-      messageID: 'msg_complete',
     }), response);
 
     expect(response.statusCode).toBe(502);
@@ -162,7 +158,6 @@ describe('side chat routes', () => {
 
     await getRoute('POST', '/api/openchamber/side-chats')(sideChatRequest({
       parentSessionID: 'ses_parent',
-      messageID: 'msg_complete',
     }), response);
 
     expect(response.statusCode).toBe(500);
@@ -181,7 +176,6 @@ describe('side chat routes', () => {
 
     await getRoute('POST', '/api/openchamber/side-chats')(sideChatRequest({
       parentSessionID: 'ses_parent',
-      messageID: 'msg_complete',
     }), response);
 
     expect(response.statusCode).toBe(502);
@@ -205,7 +199,6 @@ describe('side chat routes', () => {
 
     await getRoute('POST', '/api/openchamber/side-chats')(sideChatRequest({
       parentSessionID: 'ses_parent',
-      messageID: 'msg_complete',
     }), response);
 
     expect(response.statusCode).toBe(502);
@@ -274,7 +267,7 @@ describe('side chat routes', () => {
     const { getRoute, resolveProjectDirectory } = createHarness(fetchImpl);
     const response = createResponse();
     const request = sideChatRequest(
-      { parentSessionID: 'ses_parent', messageID: 'msg_complete' },
+      { parentSessionID: 'ses_parent' },
       {
         get: (name) => name === 'x-opencode-directory'
           ? encodeURIComponent('/repo/app with space')
@@ -298,7 +291,7 @@ describe('side chat routes', () => {
     const response = createResponse();
 
     await getRoute('POST', '/api/openchamber/side-chats')(sideChatRequest({
-      parentSessionID: 'ses_parent', messageID: 'msg_complete',
+      parentSessionID: 'ses_parent',
     }), response);
 
     expect(response.statusCode).toBe(502);
@@ -333,7 +326,7 @@ describe('side chat routes', () => {
     const handler = getRoute('POST', '/api/openchamber/side-chats');
     const firstResponse = createResponse();
     const secondResponse = createResponse();
-    const request = sideChatRequest({ parentSessionID: 'ses_parent', messageID: 'msg_complete' });
+    const request = sideChatRequest({ parentSessionID: 'ses_parent' });
     const first = handler(request, firstResponse);
     const second = handler(request, secondResponse);
     releaseFork();
@@ -353,7 +346,7 @@ describe('side chat routes', () => {
     const { getRoute } = createHarness(fetchImpl);
     const response = createResponse();
     await getRoute('POST', '/api/openchamber/side-chats')(sideChatRequest({
-      parentSessionID: 'ses_parent', messageID: 'msg_complete',
+      parentSessionID: 'ses_parent',
     }), response);
     expect(response.statusCode).toBe(200);
     expect(response.body).toEqual(marked);
@@ -369,7 +362,7 @@ describe('side chat routes', () => {
     const { getRoute } = createHarness(fetchImpl);
     const response = createResponse();
     await getRoute('POST', '/api/openchamber/side-chats')(sideChatRequest({
-      parentSessionID: 'ses_parent', messageID: 'msg_complete',
+      parentSessionID: 'ses_parent',
     }), response);
     expect(response.body.id).toBe('ses_a');
     expect(fetchImpl).toHaveBeenNthCalledWith(2, 'http://opencode.test/session/ses_b?directory=%2Frepo%2Fapp', expect.objectContaining({ method: 'DELETE' }));
@@ -384,8 +377,8 @@ describe('side chat routes', () => {
     const handler = getRoute('POST', '/api/openchamber/side-chats');
     const firstResponse = createResponse();
     const secondResponse = createResponse();
-    await handler(sideChatRequest({ parentSessionID: 'ses_parent', messageID: 'msg_complete' }), firstResponse);
-    await handler(sideChatRequest({ parentSessionID: 'ses_parent', messageID: 'msg_complete' }), secondResponse);
+    await handler(sideChatRequest({ parentSessionID: 'ses_parent' }), firstResponse);
+    await handler(sideChatRequest({ parentSessionID: 'ses_parent' }), secondResponse);
     expect(firstResponse.statusCode).toBe(502);
     expect(secondResponse.body).toEqual(marked);
   });
@@ -397,7 +390,7 @@ describe('side chat routes', () => {
     const { getRoute } = createHarness(fetchImpl, { requestTimeoutMs: 1 });
     const response = createResponse();
     await getRoute('POST', '/api/openchamber/side-chats')(sideChatRequest({
-      parentSessionID: 'ses_parent', messageID: 'msg_complete',
+      parentSessionID: 'ses_parent',
     }), response);
     expect(response.statusCode).toBe(504);
     expect(response.body.error).toBeTruthy();

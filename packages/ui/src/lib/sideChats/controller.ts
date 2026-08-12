@@ -1,9 +1,5 @@
 import type { Session } from '@opencode-ai/sdk/v2';
 
-import {
-  getLatestCompletedAssistantMessageId,
-  getLatestCompletedAssistantMessageIdFromRecords,
-} from '@/components/chat/openChamberCommands';
 import { focusEmbeddedSessionChatComposer } from '@/components/layout/contextPanelEmbeddedChat';
 import { getRuntimeKey } from '@/lib/runtime-switch';
 import { captureSideChatRuntimeOperation, type SideChatRuntimeOperation } from '@/lib/sideChats/runtimeOperation';
@@ -15,7 +11,7 @@ import { optimisticSend } from '@/sync/session-actions';
 import { serializeDisposableSideChatSend } from '@/components/layout/disposableSideChatLifecycle';
 import { useSelectionStore } from '@/sync/selection-store';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { getSyncMessages, registerSessionDirectory } from '@/sync/sync-refs';
+import { registerSessionDirectory } from '@/sync/sync-refs';
 
 export type OpenDisposableSideChatInput = {
   parentSessionId: string;
@@ -94,18 +90,6 @@ export async function openDisposableSideChat(input: OpenDisposableSideChatInput)
   }
   if (existing) throw new Error('Side chat is still opening');
 
-  let messageID = getLatestCompletedAssistantMessageId(getSyncMessages(input.parentSessionId, input.directory));
-  if (!messageID) {
-    const response = await operation.client.session.messages({
-      sessionID: input.parentSessionId,
-      directory: input.directory,
-      limit: 50,
-    });
-    if (response.error) throw new Error('Could not load the parent conversation');
-    messageID = getLatestCompletedAssistantMessageIdFromRecords(response.data ?? []);
-  }
-  if (!messageID) throw new Error('No completed assistant response is available');
-
   const openingKey = useDisposableSideChatsStore.getState().beginOpening(target);
   if (!openingKey) throw new Error('Failed to reserve side chat');
 
@@ -115,7 +99,7 @@ export async function openDisposableSideChat(input: OpenDisposableSideChatInput)
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       query: { directory: input.directory },
-      body: JSON.stringify({ parentSessionID: input.parentSessionId, messageID }),
+      body: JSON.stringify({ parentSessionID: input.parentSessionId }),
     });
     const payload = await response.json().catch(() => null) as ((Session & SideChatFailurePayload) | SideChatFailurePayload) | null;
     if (!response.ok) {

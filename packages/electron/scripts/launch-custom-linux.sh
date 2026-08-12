@@ -21,6 +21,7 @@ fi
 
 export PATH="$(dirname -- "$bun_bin"):$PATH"
 export OPENCHAMBER_ELECTRON_CACHE_BUNDLED_UI=1
+export OPENCHAMBER_DESKTOP_PORT=46405
 
 printf 'Starting OpenChamber CUSTOM from %s\n' "$repo_root"
 printf 'Writing this run to %s\n\n' "$log_file"
