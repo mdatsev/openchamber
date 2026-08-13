@@ -73,6 +73,7 @@ import {
 import { useSessionPinnedStore } from '@/stores/useSessionPinnedStore';
 import {
   formatProjectLabel,
+  isPathWithinProject,
   normalizePath,
   selectExpandedParentKeysForContext,
   toggleExpandedParentKey,
@@ -138,13 +139,23 @@ const buildKnownSessionDirectories = (
 const isKnownActiveSessionDirectory = (
   session: Session,
   knownDirectories: Set<string>,
-  options?: { allowUnknownDirectory?: boolean; allowEmptyDirectorySet?: boolean },
+  options?: {
+    allowUnknownDirectory?: boolean;
+    allowEmptyDirectorySet?: boolean;
+    projectDirectories?: Set<string>;
+  },
 ): boolean => {
   if (session.time?.archived) return true;
   const directory = normalizePath(resolveGlobalSessionDirectory(session))?.toLowerCase();
   if (!directory) return options?.allowUnknownDirectory ?? true;
   if (knownDirectories.size === 0) return options?.allowEmptyDirectorySet ?? true;
-  return knownDirectories.has(directory);
+  if (knownDirectories.has(directory)) return true;
+
+  // See docs/records/incident-descendant-session-hidden-by-directory-allowlist.md.
+  for (const projectDirectory of options?.projectDirectories ?? []) {
+    if (isPathWithinProject(directory, projectDirectory)) return true;
+  }
+  return false;
 };
 
 const SIDEBAR_PR_NO_PR_RETRY_MS = 5 * 60_000;
@@ -564,6 +575,10 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
     () => buildKnownSessionDirectories(projects, availableWorktreesByProject, { includeWorktrees: !isVSCode }),
     [availableWorktreesByProject, isVSCode, projects],
   );
+  const projectDirectories = React.useMemo(
+    () => buildKnownSessionDirectories(projects, new Map(), { includeWorktrees: false }),
+    [projects],
+  );
 
   const sessions = React.useMemo(() => {
     const merged = [...globalActiveSessions];
@@ -579,8 +594,9 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
     return merged.filter((session) => isKnownActiveSessionDirectory(session, knownSessionDirectories, {
       allowUnknownDirectory: !isVSCode,
       allowEmptyDirectorySet: !isVSCode,
+      projectDirectories: isVSCode ? undefined : projectDirectories,
     }));
-  }, [globalActiveSessions, isVSCode, knownSessionDirectories, liveFallbackSessions]);
+  }, [globalActiveSessions, isVSCode, knownSessionDirectories, liveFallbackSessions, projectDirectories]);
 
   const persistenceSessions = React.useMemo(
     () => [...globalActiveSessions, ...archivedSessions],
