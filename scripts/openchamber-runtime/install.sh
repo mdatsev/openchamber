@@ -49,8 +49,6 @@ done
 [[ -f "$custom_repo/packages/web/bin/cli.js" ]] || fail "Custom OpenChamber checkout is invalid: $custom_repo"
 
 mkdir -p "$runtime_dir" "$bin_dir" "$unit_dir"
-install -m 0755 "$script_dir/opencode-cgroup-shell" "$runtime_dir/bash"
-install -m 0755 "$script_dir/openchamber-switch" "$bin_dir/openchamber-switch"
 staging_dir="$(mktemp -d "$unit_dir/.openchamber-runtime.XXXXXX")"
 trap 'rm -rf "$staging_dir"' EXIT
 install -m 0644 "$script_dir/systemd/opencode-tools.slice" "$staging_dir/opencode-tools.slice"
@@ -72,23 +70,29 @@ render_unit() {
 }
 
 render_unit "$script_dir/systemd/opencode.service.in" "$staging_dir/opencode.service"
+render_unit "$script_dir/systemd/opencode-tool-memory-supervisor.service.in" "$staging_dir/opencode-tool-memory-supervisor.service"
 render_unit "$script_dir/systemd/openchamber.service.in" "$staging_dir/openchamber.service"
 render_unit "$script_dir/systemd/openchamber-custom.service.in" "$staging_dir/openchamber-custom.service"
 
 systemd-analyze --user verify \
   "$staging_dir/opencode.service" \
+  "$staging_dir/opencode-tool-memory-supervisor.service" \
   "$staging_dir/opencode-tools.slice" \
   "$staging_dir/openchamber.service" \
   "$staging_dir/openchamber-custom.service"
+install -m 0755 "$script_dir/opencode-tool-memory-supervisor" "$runtime_dir/opencode-tool-memory-supervisor"
+install -m 0755 "$script_dir/openchamber-switch" "$bin_dir/openchamber-switch"
 install -m 0644 "$staging_dir/opencode.service" "$unit_dir/opencode.service"
+install -m 0644 "$staging_dir/opencode-tool-memory-supervisor.service" "$unit_dir/opencode-tool-memory-supervisor.service"
 install -m 0644 "$staging_dir/opencode-tools.slice" "$unit_dir/opencode-tools.slice"
 install -m 0644 "$staging_dir/openchamber.service" "$unit_dir/openchamber.service"
 install -m 0644 "$staging_dir/openchamber-custom.service" "$unit_dir/openchamber-custom.service"
 systemctl --user daemon-reload
+install -m 0755 "$script_dir/opencode-cgroup-shell" "$runtime_dir/bash"
 trap - EXIT
 rm -rf "$staging_dir"
 
-printf 'Installed external OpenCode runtime and OpenChamber switch units.\n'
+printf 'Installed external OpenCode runtime, tool-memory supervisor, and OpenChamber switch units.\n'
 printf 'No running service was changed. Inspect with: openchamber-switch status\n'
 
 if [[ -n "$activate" ]]; then

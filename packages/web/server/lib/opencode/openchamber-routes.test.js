@@ -12,6 +12,7 @@ vi.mock('../package-manager.js', () => ({
   checkForUpdates: vi.fn(),
   getUpdateCommand: vi.fn(),
   detectPackageManagerDetails: vi.fn(),
+  isSourceCheckout: vi.fn(() => false),
 }));
 
 const childProcess = await import('child_process');

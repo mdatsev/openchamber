@@ -14,6 +14,7 @@ import {
   ChildStoreManager,
   markDirectorySessionPartChanged,
   subscribeDirectoryPermission,
+  subscribeDirectoryPermissions,
   subscribeDirectoryQuestions,
   subscribeDirectorySessionMessages,
   type DirectoryBootstrapContext,
@@ -76,7 +77,7 @@ import { getRuntimeKey } from "@/lib/runtime-switch"
 import { getRegisteredRuntimeAPIs } from "@/contexts/runtimeAPIRegistry"
 import { isFilesystemError } from "@/lib/api/files-errors"
 import { listGlobalSessionPages } from "@/stores/globalSessions"
-import { areRequestArraysReferentiallyEqual, collectScopedBlockingRequests } from "./scoped-blocking-requests"
+import { areRequestArraysReferentiallyEqual, collectScopedBlockingRequests, computeScopedSubtreeIds, computeSubtreeIds } from "./scoped-blocking-requests"
 import { EMPTY_USER_MESSAGE_HISTORY_SNAPSHOT, buildUserMessageHistorySnapshot, type UserMessageHistorySnapshot } from "./user-message-history"
 import {
   EMPTY_SESSION_MESSAGE_LOAD_STATE,
@@ -407,7 +408,7 @@ async function materializeSessionFromServer(
   }
 
   if (statusBeforeMaterialization && statusBeforeMaterialization.type !== "idle" && !options?.isStale?.()) {
-    await resyncDirectorySessionStatuses(directory, store, [sessionID], "authoritative")
+    await resyncDirectorySessionStatuses(directory, store, [sessionID], "authoritative", true)
   }
 }
 
@@ -574,15 +575,28 @@ function toSessionStatus(status: Awaited<ReturnType<typeof opencodeClient.getSes
 }
 
 function getActiveSessionCandidateIds(directory: string, state: DirectoryStore): string[] {
-  return getReconnectCandidateSessionIds(state, {
+  const candidateSessionIds = getReconnectCandidateSessionIds(state, {
     directory,
     viewedSession: getViewedSessionMaterializationTarget(directory),
   })
+  if (!state.sessionStatusReconciliationPendingIds) return candidateSessionIds
+  return Array.from(new Set([
+    ...candidateSessionIds,
+    ...state.sessionStatusReconciliationPendingIds,
+  ]))
 }
 
 type DirectorySessionStatusSnapshot = NonNullable<
   Awaited<ReturnType<typeof opencodeClient.getSessionStatusForDirectory>>
 >
+
+type DirectorySessionStatusReconciliation = {
+  snapshot: DirectorySessionStatusSnapshot
+  requestedAt: number
+  candidateSessionIds: string[]
+  authority?: symbol
+  baseline?: State["session_status"]
+}
 
 // How a /session/status snapshot is reconciled into the store.
 //
@@ -648,42 +662,162 @@ async function resyncDirectorySessionStatuses(
   store: StoreApi<DirectoryStore>,
   candidateSessionIds: string[],
   mode: StatusSnapshotMode,
-): Promise<DirectorySessionStatusSnapshot | null> {
+  reconcileInterruptions: boolean,
+): Promise<DirectorySessionStatusReconciliation | null> {
+  const authoritativeCandidateSessionIds = mode === "authoritative"
+    ? Array.from(new Set([
+        ...candidateSessionIds,
+        ...(store.getState().sessionStatusReconciliationPendingIds ?? []),
+      ]))
+    : candidateSessionIds
   const requestedAt = Date.now()
-  const nextStatuses = await opencodeClient.getSessionStatusForDirectory(directory)
+  const baseline = store.getState().session_status
+  const authority = mode === "authoritative" ? Symbol("session-status-reconciliation") : undefined
+  if (authority) {
+    store.setState({ sessionStatusReconciliationAuthority: authority })
+  }
+  let nextStatuses: DirectorySessionStatusSnapshot | null
+  try {
+    nextStatuses = await opencodeClient.getSessionStatusForDirectory(directory)
+  } catch (error) {
+    if (authority && store.getState().sessionStatusReconciliationAuthority === authority) {
+      store.setState((current) => ({
+        sessionStatusReconciliationPendingIds: new Set([
+          ...(current.sessionStatusReconciliationPendingIds ?? []),
+          ...authoritativeCandidateSessionIds,
+        ]),
+      }))
+    }
+    throw error
+  }
   // null = fetch failed; preserve existing state. {} or populated = a snapshot
   // of active sessions — reconciled per `mode` (absence ≠ idle under monotonic).
-  if (nextStatuses === null) return null
-  applySessionStatusSnapshot(store, nextStatuses, candidateSessionIds, mode)
-  if (mode === "authoritative") {
-    store.setState({
-      sessionStatusSnapshotAt: requestedAt,
-      sessionStatusSnapshotActiveIds: new Set(
-        Object.entries(nextStatuses)
-          .filter(([, status]) => status.type !== "idle")
-          .map(([sessionId]) => sessionId),
-      ),
-    })
-    applyGlobalSessionStatusSnapshot(directory, nextStatuses, candidateSessionIds)
-    // An authoritative snapshot that settles sessions previously observed
-    // busy/retry can orphan running tool parts (managed process died
-    // mid-turn, #2577): finalize them now. The snapshot write above already
-    // lowered their status to explicit idle, which is the gate the helper
-    // requires — a session the snapshot reports busy stays untouched.
-    for (const sessionId of candidateSessionIds) {
-      const interrupted = interruptedTurnToolParts(store.getState(), sessionId)
-      if (interrupted) {
-        store.setState((state) => ({
-          part: { ...state.part, [interrupted.messageID]: interrupted.parts },
-        }))
+  if (nextStatuses === null) {
+    if (authority && store.getState().sessionStatusReconciliationAuthority === authority) {
+      store.setState((current) => ({
+        sessionStatusReconciliationPendingIds: new Set([
+          ...(current.sessionStatusReconciliationPendingIds ?? []),
+          ...authoritativeCandidateSessionIds,
+        ]),
+      }))
+    }
+    return null
+  }
+  if (mode === "monotonic") {
+    applySessionStatusSnapshot(store, nextStatuses, authoritativeCandidateSessionIds, mode)
+  } else {
+    if (!authority) return null
+    if (!reconcileInterruptions) {
+      return {
+        snapshot: nextStatuses,
+        requestedAt,
+        candidateSessionIds: authoritativeCandidateSessionIds,
+        authority,
+        baseline,
       }
-      setGlobalSessionInterrupted(
-        sessionId,
-        hasAuthoritativelyInterruptedTurn(store.getState(), sessionId),
-      )
+    }
+    await reconcileAuthoritativeSessionInterruptions(
+      directory,
+      store,
+      authoritativeCandidateSessionIds,
+      requestedAt,
+      nextStatuses,
+      authority,
+      baseline,
+    )
+  }
+  return {
+    snapshot: nextStatuses,
+    requestedAt,
+    candidateSessionIds: authoritativeCandidateSessionIds,
+  }
+}
+
+async function reconcileAuthoritativeSessionInterruptions(
+  directory: string,
+  store: StoreApi<DirectoryStore>,
+  candidateSessionIds: string[],
+  snapshotAt: number,
+  snapshot: DirectorySessionStatusSnapshot,
+  authority: symbol,
+  baseline: State["session_status"],
+): Promise<boolean> {
+  const state = store.getState()
+  if (state.sessionStatusReconciliationAuthority !== authority) return false
+
+  const hasBlockingRequestAuthority = await resyncBlockingRequestsForDirectory(
+    directory,
+    store,
+    getBlockingRequestCandidateSessionIds(state, candidateSessionIds),
+  )
+  if (!hasBlockingRequestAuthority) {
+    if (store.getState().sessionStatusReconciliationAuthority === authority) {
+      store.setState((current) => ({
+        sessionStatusReconciliationPendingIds: new Set([
+          ...(current.sessionStatusReconciliationPendingIds ?? []),
+          ...candidateSessionIds,
+        ]),
+      }))
+    }
+    return false
+  }
+  const current = store.getState()
+  if (
+    current.sessionStatusReconciliationAuthority !== authority
+    || current.session_status !== baseline
+  ) {
+    if (current.sessionStatusReconciliationAuthority === authority) {
+      store.setState({
+        sessionStatusReconciliationPendingIds: new Set([
+          ...(current.sessionStatusReconciliationPendingIds ?? []),
+          ...candidateSessionIds,
+        ]),
+      })
+    }
+    return false
+  }
+
+  applySessionStatusSnapshot(store, snapshot, candidateSessionIds, "authoritative")
+  applyGlobalSessionStatusSnapshot(directory, snapshot, candidateSessionIds)
+  store.setState({
+    sessionStatusSnapshotAt: snapshotAt,
+    sessionStatusSnapshotActiveIds: new Set(
+      Object.entries(snapshot)
+        .filter(([, status]) => status.type !== "idle")
+        .map(([sessionId]) => sessionId),
+    ),
+    sessionStatusReconciliationPendingIds: undefined,
+  })
+
+  // An authoritative snapshot that settles sessions previously observed
+  // busy/retry can orphan running tool parts. Blocker recovery above must
+  // succeed first; the status snapshot already lowered absent candidates.
+  for (const sessionId of candidateSessionIds) {
+    const interrupted = interruptedTurnToolParts(store.getState(), sessionId, Date.now(), true)
+    if (interrupted) {
+      store.setState((current) => ({
+        part: { ...current.part, [interrupted.messageID]: interrupted.parts },
+      }))
+    }
+    setGlobalSessionInterrupted(
+      sessionId,
+      hasAuthoritativelyInterruptedTurn(store.getState(), sessionId, true),
+    )
+  }
+  return true
+}
+
+function getBlockingRequestCandidateSessionIds(
+  state: DirectoryStore,
+  candidateSessionIds: string[],
+): string[] {
+  const blockingRequestCandidateIds = new Set(candidateSessionIds)
+  for (const sessionId of candidateSessionIds) {
+    for (const descendantId of computeSubtreeIds(state.session, sessionId)) {
+      blockingRequestCandidateIds.add(descendantId)
     }
   }
-  return nextStatuses
+  return Array.from(blockingRequestCandidateIds)
 }
 
 // After a monotonic poll, decide whether to escalate to a full authoritative
@@ -1227,6 +1361,7 @@ export async function resyncBlockingRequestsForDirectory(
   candidateSessionIds?: string[],
   options?: { includePermissions?: boolean },
 ) {
+  const expectedRuntimeKey = getRuntimeKey()
   const before = store.getState()
   const candidateIds = new Set<string>(candidateSessionIds ?? [
     ...before.session.map((session) => session.id),
@@ -1235,16 +1370,19 @@ export async function resyncBlockingRequestsForDirectory(
     ...Object.keys(before.question ?? {}),
     ...Object.keys(before.permission ?? {}),
   ])
-  if (candidateIds.size === 0) return
+  if (candidateIds.size === 0) return true
   const candidates = Array.from(candidateIds)
+  let questionsAuthoritative = false
 
   // Re-fetch pending questions that may have been asked during an SSE gap,
   // reconnect window, or directory materialization gap.
   try {
+    const questionAuthority = before.question
     const beforeSignatures = new Map(
       candidates.map((sessionId) => [sessionId, requestSignature(before.question[sessionId])]),
     )
     const pendingQuestions = await opencodeClient.listPendingQuestions({ directories: [directory] })
+    if (getRuntimeKey() !== expectedRuntimeKey) return false
     const grouped: Record<string, QuestionRequest[]> = {}
     for (const question of pendingQuestions) {
       if (!question?.id || !question.sessionID) continue
@@ -1257,32 +1395,15 @@ export async function resyncBlockingRequestsForDirectory(
       grouped[sessionId].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
     }
 
-    for (const [sessionId, questions] of Object.entries(grouped)) {
-      const knownIds = new Set((before.question[sessionId] ?? []).map((item) => item.id))
-      const isViewed = isViewedInCurrentSession(directory, sessionId)
-      if (isViewed) continue
-      for (const question of questions) {
-        if (knownIds.has(question.id)) continue
-        const toastKey = getQuestionToastKey(sessionId, question.id)
-        if (!toastKey || pendingQuestionToastIds.has(toastKey)) continue
-        pendingQuestionToastIds.add(toastKey)
-        const firstQuestion = question.questions?.[0]
-        const title = firstQuestion?.header?.trim() || "Input needed"
-        const description = firstQuestion?.question?.trim() || "Agent is waiting for your response"
-        toast.info(title, {
-          id: `question-${toastKey}`,
-          description,
-          action: {
-            label: "Open session",
-            onClick: () => openSessionFromToast(sessionId, directory),
-          },
-        })
-      }
-    }
-
+    let applied = false
     store.setState((state: DirectoryStore) => {
+      if (state.question !== questionAuthority) return {}
+      applied = true
       const merged = { ...state.question }
       for (const [sessionId, questions] of Object.entries(grouped)) {
+        const beforeSignature = beforeSignatures.get(sessionId) ?? ""
+        const currentSignature = requestSignature(state.question[sessionId])
+        if (currentSignature !== beforeSignature) continue
         merged[sessionId] = questions
       }
       for (const sessionId of candidates) {
@@ -1294,19 +1415,47 @@ export async function resyncBlockingRequestsForDirectory(
       }
       return { question: merged }
     })
-    clearInterruptedSessionsWaitingForInput(store.getState(), candidates)
+    if (applied) {
+      for (const [sessionId, questions] of Object.entries(grouped)) {
+        const knownIds = new Set((before.question[sessionId] ?? []).map((item) => item.id))
+        const isViewed = isViewedInCurrentSession(directory, sessionId)
+        if (isViewed) continue
+        for (const question of questions) {
+          if (knownIds.has(question.id)) continue
+          const toastKey = getQuestionToastKey(sessionId, question.id)
+          if (!toastKey || pendingQuestionToastIds.has(toastKey)) continue
+          pendingQuestionToastIds.add(toastKey)
+          const firstQuestion = question.questions?.[0]
+          const title = firstQuestion?.header?.trim() || "Input needed"
+          const description = firstQuestion?.question?.trim() || "Agent is waiting for your response"
+          toast.info(title, {
+            id: `question-${toastKey}`,
+            description,
+            action: {
+              label: "Open session",
+              onClick: () => openSessionFromToast(sessionId, directory),
+            },
+          })
+        }
+      }
+      clearInterruptedSessionsWaitingForInput(store.getState(), candidates)
+    }
+    questionsAuthoritative = applied
   } catch {
     // Non-fatal: question resync best-effort
   }
 
-  if (options?.includePermissions === false) return
+  if (options?.includePermissions === false) return questionsAuthoritative
 
   // Re-fetch pending permissions — same rationale as questions.
+  let permissionsAuthoritative = false
   try {
+    const permissionAuthority = before.permission
     const beforeSignatures = new Map(
       candidates.map((sessionId) => [sessionId, requestSignature(before.permission[sessionId])]),
     )
     const pendingPermissions = await opencodeClient.listPendingPermissions({ directories: [directory] })
+    if (getRuntimeKey() !== expectedRuntimeKey) return false
     const grouped: Record<string, PermissionRequest[]> = {}
     for (const permission of pendingPermissions) {
       if (!permission?.id || !permission.sessionID) continue
@@ -1319,46 +1468,15 @@ export async function resyncBlockingRequestsForDirectory(
       grouped[sessionId].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
     }
 
-    if (isVSCodeRuntime()) {
-      const acceptedIdsBySession = new Map<string, Set<string>>()
-      await Promise.all(Object.entries(grouped).flatMap(([sessionId, permissions]) =>
-        permissions.map(async (permission) => {
-          if (!(await processVSCodeReconciledPermissionAutoAccept(permission, directory))) return
-          const accepted = acceptedIdsBySession.get(sessionId) ?? new Set<string>()
-          accepted.add(permission.id)
-          acceptedIdsBySession.set(sessionId, accepted)
-        }),
-      ))
-
-      for (const sessionId of Object.keys(grouped)) {
-        const acceptedIds = acceptedIdsBySession.get(sessionId)
-        if (!acceptedIds) continue
-        const remaining = (grouped[sessionId] ?? []).filter((permission) => !acceptedIds.has(permission.id))
-        if (remaining.length > 0) grouped[sessionId] = remaining
-        else delete grouped[sessionId]
-      }
-    }
-
-    for (const [sessionId, permissions] of Object.entries(grouped)) {
-      const knownIds = new Set((before.permission[sessionId] ?? []).map((item) => item.id))
-      const isViewed = isViewedInCurrentSession(directory, sessionId)
-      if (isViewed) continue
-      for (const permission of permissions) {
-        if (knownIds.has(permission.id)) continue
-        showPermissionNeededToast({
-          permission,
-          directory,
-          isViewed,
-          pendingIds: pendingPermissionToastIds,
-          show: (title, options) => toast.info(title, options),
-          openSession: openSessionFromToast,
-        })
-      }
-    }
-
+    let applied = false
     store.setState((state: DirectoryStore) => {
+      if (state.permission !== permissionAuthority) return {}
+      applied = true
       const merged = { ...state.permission }
       for (const [sessionId, permissions] of Object.entries(grouped)) {
+        const beforeSignature = beforeSignatures.get(sessionId) ?? ""
+        const currentSignature = requestSignature(state.permission[sessionId])
+        if (currentSignature !== beforeSignature) continue
         merged[sessionId] = permissions
       }
       for (const sessionId of candidates) {
@@ -1370,10 +1488,57 @@ export async function resyncBlockingRequestsForDirectory(
       }
       return { permission: merged }
     })
-    clearInterruptedSessionsWaitingForInput(store.getState(), candidates)
+    if (applied) {
+      const acceptedIds = new Set<string>()
+      if (isVSCodeRuntime()) {
+        await Promise.all(Object.values(grouped).flatMap((permissions) =>
+          permissions.map(async (permission) => {
+            if (await processVSCodeReconciledPermissionAutoAccept(permission, directory, expectedRuntimeKey)) {
+              acceptedIds.add(permission.id)
+            }
+          }),
+        ))
+        if (getRuntimeKey() !== expectedRuntimeKey) return false
+      }
+
+      if (acceptedIds.size > 0) {
+        store.setState((state: DirectoryStore) => {
+          const next = { ...state.permission }
+          for (const [sessionId, permissions] of Object.entries(next)) {
+            const remaining = permissions.filter((permission) => !acceptedIds.has(permission.id))
+            if (remaining.length === permissions.length) continue
+            if (remaining.length > 0) next[sessionId] = remaining
+            else delete next[sessionId]
+          }
+          return { permission: next }
+        })
+      }
+
+      const currentPermissions = store.getState().permission
+      for (const [sessionId, permissions] of Object.entries(grouped)) {
+        const knownIds = new Set((before.permission[sessionId] ?? []).map((item) => item.id))
+        const currentIds = new Set((currentPermissions[sessionId] ?? []).map((item) => item.id))
+        const isViewed = isViewedInCurrentSession(directory, sessionId)
+        if (isViewed) continue
+        for (const permission of permissions) {
+          if (knownIds.has(permission.id) || acceptedIds.has(permission.id) || !currentIds.has(permission.id)) continue
+          showPermissionNeededToast({
+            permission,
+            directory,
+            isViewed,
+            pendingIds: pendingPermissionToastIds,
+            show: (title, options) => toast.info(title, options),
+            openSession: openSessionFromToast,
+          })
+        }
+      }
+      clearInterruptedSessionsWaitingForInput(store.getState(), candidates)
+    }
+    permissionsAuthoritative = applied
   } catch {
     // Non-fatal: permission resync best-effort
   }
+  return questionsAuthoritative && permissionsAuthoritative
 }
 
 export async function resyncBlockingRequestsForActiveDirectory(
@@ -1395,8 +1560,13 @@ async function resyncDirectoryAfterReconnect(
   const candidateSessionIds = getActiveSessionCandidateIds(directory, current)
   if (candidateSessionIds.length === 0) return
 
-  await resyncDirectorySessionStatuses(directory, store, candidateSessionIds, "authoritative")
-
+  const statusReconciliation = await resyncDirectorySessionStatuses(
+    directory,
+    store,
+    candidateSessionIds,
+    "authoritative",
+    false,
+  )
   const scopedClient = opencodeClient.getScopedSdkClient(directory)
   await Promise.all(candidateSessionIds.map(async (sessionId) => {
     syncDebug.recovery.materializing({ reason, directory, sessionID: sessionId })
@@ -1447,12 +1617,23 @@ async function resyncDirectoryAfterReconnect(
     setIndexedSessionMessages(routingIndex, sessionId, directory, store.getState().message[sessionId] ?? [])
   }))
 
-  await resyncBlockingRequestsForDirectory(directory, store, candidateSessionIds)
-
-  for (const sessionId of candidateSessionIds) {
-    setGlobalSessionInterrupted(
-      sessionId,
-      hasAuthoritativelyInterruptedTurn(store.getState(), sessionId),
+  if (statusReconciliation) {
+    if (statusReconciliation.authority && statusReconciliation.baseline) {
+      await reconcileAuthoritativeSessionInterruptions(
+        directory,
+        store,
+        statusReconciliation.candidateSessionIds,
+        statusReconciliation.requestedAt,
+        statusReconciliation.snapshot,
+        statusReconciliation.authority,
+        statusReconciliation.baseline,
+      )
+    }
+  } else {
+    await resyncBlockingRequestsForDirectory(
+      directory,
+      store,
+      getBlockingRequestCandidateSessionIds(store.getState(), candidateSessionIds),
     )
   }
 
@@ -1591,7 +1772,7 @@ export function handleEvent(
         if (expectedRuntimeKey !== getRuntimeKey()) return
         if (!accepted) handleEvent(rawDirectory, payload, childStores, routingIndex, expectedRuntimeKey, true, streamingDirectory)
       }
-      void processVSCodePermissionAutoAccept(permission, resolvedDirectory).then(
+      void processVSCodePermissionAutoAccept(permission, resolvedDirectory, expectedRuntimeKey).then(
         completePermissionCheck,
         () => completePermissionCheck(false),
       )
@@ -1980,6 +2161,7 @@ function clearInterruptedSessionLineage(state: DirectoryStore, sessionID: string
 function hasAuthoritativelyInterruptedTurn(
   state: DirectoryStore,
   sessionID: string,
+  requireSnapshotAuthority = false,
 ): boolean {
   if (
     collectScopedBlockingRequests(
@@ -1998,7 +2180,8 @@ function hasAuthoritativelyInterruptedTurn(
     ).length > 0
   ) return false
 
-  if (state.session_status?.[sessionID]?.type !== "idle") return false
+  const status = state.session_status?.[sessionID]
+  if (status && status.type !== "idle") return false
 
   const messages = state.message[sessionID] ?? []
   let message: Message | undefined
@@ -2015,12 +2198,23 @@ function hasAuthoritativelyInterruptedTurn(
   }
 
   const toolParts = (state.part[message.id] ?? []).filter((part) => part.type === "tool")
+  const inactiveStatusSnapshotAt = state.sessionStatusSnapshotActiveIds?.has(sessionID)
+    ? undefined
+    : state.sessionStatusSnapshotAt
+  const messageCreatedAt = (message as { time?: { created?: unknown } }).time?.created
+  const predatesAuthoritativeSnapshot = typeof inactiveStatusSnapshotAt === "number"
+    && (typeof messageCreatedAt !== "number" || messageCreatedAt <= inactiveStatusSnapshotAt)
+  if (predatesAuthoritativeSnapshot) return true
+
+  if (status?.type !== "idle") return false
+
   const hasInterruptedTool = toolParts.some((part) => {
     if (part.type !== "tool") return false
     const partState = (part as { state?: { status?: unknown; error?: unknown } }).state
     return partState?.status === "error" && partState.error === "Interrupted"
   })
   if (hasInterruptedTool) return true
+  if (requireSnapshotAuthority) return false
 
   const hasActiveTool = toolParts.some((part) => {
     const status = (part as { state?: { status?: unknown } }).state?.status
@@ -2028,8 +2222,8 @@ function hasAuthoritativelyInterruptedTurn(
   })
   if (hasActiveTool) return true
 
-  // A real terminal tool update supersedes the local interruption inference,
-  // even if the separate message completion event has not arrived yet.
+  // Without newer snapshot authority, a terminal tool is enough to suppress
+  // the narrow missing-message-completion fallback.
   const hasTerminalTool = toolParts.some((part) => {
     const status = (part as { state?: { status?: unknown } }).state?.status
     return typeof status === "string"
@@ -2041,8 +2235,9 @@ export function interruptedTurnToolParts(
   state: DirectoryStore,
   sessionID: string,
   now = Date.now(),
+  requireSnapshotAuthority = false,
 ): { messageID: string; parts: Part[] } | null {
-  if (!hasAuthoritativelyInterruptedTurn(state, sessionID)) return null
+  if (!hasAuthoritativelyInterruptedTurn(state, sessionID, requireSnapshotAuthority)) return null
 
   const messageID = getStaleRunningToolMessageID(state, sessionID)
   if (!messageID) return null
@@ -2494,11 +2689,14 @@ export function SyncProvider(props: {
       polling.add(directory)
       try {
         const before = store.getState()
-        const statuses = await runBackgroundNetworkTask(() => resyncDirectorySessionStatuses(directory, store, candidateSessionIds, "monotonic"))
-        if (!statuses) return
+        const statusReconciliation = await runBackgroundNetworkTask(() => (
+          resyncDirectorySessionStatuses(directory, store, candidateSessionIds, "monotonic", false)
+        ))
+        if (!statusReconciliation) return
+        const statuses = statusReconciliation.snapshot
         const needsSnapshot = candidateSessionIds.some((sessionId) => (
           needsSnapshotAfterStatusPoll(before, sessionId, statuses[sessionId])
-        ))
+        )) || before.sessionStatusReconciliationPendingIds !== undefined
         if (needsSnapshot) {
           triggerDirectoryResync(directory, "stale-status-resync")
         }
@@ -2790,16 +2988,18 @@ export function useSessionQuestions(sessionID: string, directory?: string) {
   )
 }
 
-/**
- * Total number of pending questions across the given session scopes. Each
- * scope names a directory store plus the session IDs to count inside it, so
- * collapsed subtree rows can roll up pending questions of hidden descendants
- * from their owning directory stores without bootstrapping them.
- *
- * Subscribes through the per-session question sidecar channel, so unrelated
- * streaming or session activity does not re-render rows.
- */
-export function useSessionQuestionCount(scopes: readonly { directory: string; sessionIDs: readonly string[] }[]) {
+type SessionBlockingRequestScope = { directory: string; sessionIDs: readonly string[] }
+
+function useSessionBlockingRequestCount<T extends { id: string }>(
+  scopes: readonly SessionBlockingRequestScope[],
+  includeDescendants: boolean,
+  selectRequests: (state: State) => Record<string, T[] | undefined>,
+  subscribeRequests: (
+    store: StoreApi<DirectoryStore>,
+    sessionIDs: readonly string[],
+    notify: () => void,
+  ) => () => void,
+) {
   const { childStores } = useSyncSystem()
   const scopedStores = React.useMemo(() => scopes.map((scope) => ({
     sessionIDs: scope.sessionIDs,
@@ -2812,22 +3012,57 @@ export function useSessionQuestionCount(scopes: readonly { directory: string; se
     }
   }, [childStores, scopes])
   const getSnapshot = React.useCallback(() => {
-    let count = 0
+    const requestIDs = new Set<string>()
     for (const { sessionIDs, store } of scopedStores) {
-      const questions = store.getState().question
-      for (const sessionID of sessionIDs) count += questions[sessionID]?.length ?? 0
+      const state = store.getState()
+      const scopedSessionIDs = includeDescendants
+        ? computeScopedSubtreeIds(state.session, sessionIDs)
+        : sessionIDs
+      const requests = selectRequests(state)
+      for (const sessionID of scopedSessionIDs) {
+        for (const request of requests[sessionID] ?? []) requestIDs.add(request.id)
+      }
     }
-    return count
-  }, [scopedStores])
+    return requestIDs.size
+  }, [includeDescendants, scopedStores, selectRequests])
   const subscribe = React.useCallback((notify: () => void) => {
-    const unsubscribers = scopedStores.map(({ sessionIDs, store }) => (
-      subscribeDirectoryQuestions(store, sessionIDs, notify)
-    ))
+    const unsubscribers = scopedStores.map(({ sessionIDs, store }) => {
+      const getSessionIDs = () => includeDescendants
+        ? [...computeScopedSubtreeIds(store.getState().session, sessionIDs)]
+        : sessionIDs
+      let unsubscribeRequests = subscribeRequests(store, getSessionIDs(), notify)
+      const unsubscribeSessions = includeDescendants
+        ? store.subscribe((state, previous) => {
+            if (state.session === previous.session) return
+            unsubscribeRequests()
+            unsubscribeRequests = subscribeRequests(store, getSessionIDs(), notify)
+            notify()
+          })
+        : () => undefined
+      return () => {
+        unsubscribeSessions()
+        unsubscribeRequests()
+      }
+    })
     return () => {
       for (const unsubscribe of unsubscribers) unsubscribe()
     }
-  }, [scopedStores])
+  }, [includeDescendants, scopedStores, subscribeRequests])
   return React.useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+}
+
+/**
+ * Pending questions across explicit directory/session roots. Collapsed rows
+ * derive hidden descendant membership from each directory store's session
+ * lineage while request updates stay on per-session sidecar channels.
+ */
+export function useSessionQuestionCount(scopes: readonly SessionBlockingRequestScope[], includeDescendants = false) {
+  return useSessionBlockingRequestCount(scopes, includeDescendants, selectQuestionRequestsBySession, subscribeDirectoryQuestions)
+}
+
+/** Pending permissions across explicit directory/session roots. */
+export function useSessionPermissionCount(scopes: readonly SessionBlockingRequestScope[], includeDescendants = false) {
+  return useSessionBlockingRequestCount(scopes, includeDescendants, selectPermissionRequestsBySession, subscribeDirectoryPermissions)
 }
 /** Get sessions list for a directory */
 export function useSessions(directory?: string) {

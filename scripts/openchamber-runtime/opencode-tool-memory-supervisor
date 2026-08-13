@@ -1,0 +1,267 @@
+#!/usr/bin/env bash
+
+set -u -o pipefail
+
+tools_slice='opencode-tools.slice'
+cgroup_root="${OPENCHAMBER_CGROUP_ROOT:-/sys/fs/cgroup}"
+runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+diagnosis_dir="$runtime_dir/openchamber-opencode-tools"
+lock_file="$diagnosis_dir/aggregate.lock"
+slice_path=''
+slice_control_group=''
+aggregate_high=''
+
+[[ "$cgroup_root" == /* ]] || exit 1
+mkdir -p -m 0700 "$diagnosis_dir" || exit 1
+chmod 0700 "$diagnosis_dir" || exit 1
+exec 8>"$lock_file"
+exec 9>&-
+shopt -s dotglob nullglob
+
+run() {
+  (exec 8>&-; exec "$@")
+}
+
+read_key() {
+  local file="$1" wanted="$2" key value
+  while read -r key value; do
+    [[ "$key" == "$wanted" ]] || continue
+    printf '%s\n' "$value"
+    return 0
+  done < "$file"
+  return 1
+}
+
+resolve_slice() {
+  local id hard_limit
+  id="$(run systemctl --user show "$tools_slice" --property=Id --value 2>/dev/null)" || return 1
+  [[ "$id" == "$tools_slice" ]] || return 1
+  slice_control_group="$(run systemctl --user show "$tools_slice" --property=ControlGroup --value 2>/dev/null)" || return 1
+  if [[ -z "$slice_control_group" ]]; then slice_path=''; return 2; fi
+  [[ "$slice_control_group" == /* ]] || return 1
+  slice_path="$cgroup_root$slice_control_group"
+  [[ -d "$slice_path" ]] || return 1
+  aggregate_high="$(<"$slice_path/memory.high")" || return 1
+  hard_limit="$(<"$slice_path/memory.max")" || return 1
+  [[ "$aggregate_high" =~ ^[0-9]+$ \
+    && "$hard_limit" =~ ^[0-9]+$ \
+    && "$aggregate_high" -lt "$hard_limit" ]]
+}
+
+wait_frozen() {
+  local wanted="$1" attempt
+  for ((attempt = 0; attempt < 50; attempt++)); do
+    [[ "$(read_key "$slice_path/cgroup.events" frozen 2>/dev/null)" == "$wanted" ]] && return 0
+    run sleep 0.02
+  done
+  return 1
+}
+
+scope_populated() {
+  [[ "$(read_key "$slice_path/$1/cgroup.events" populated 2>/dev/null)" == '1' ]]
+}
+
+write_pending() {
+  local scope="$1" diagnosis="$2"
+  local target="$diagnosis_dir/$scope.pending"
+  local temporary="$diagnosis_dir/.$scope.$$.${RANDOM}.tmp"
+  printf '%s\n' "$diagnosis" > "$temporary" || return 1
+  run mv -f -- "$temporary" "$target"
+}
+
+mark_all() {
+  local diagnosis="$1" child scope
+  for child in "$slice_path"/opencode-tool-*.scope; do
+    [[ -d "$child" ]] || continue
+    scope="${child##*/}"
+    scope_populated "$scope" || continue
+    write_pending "$scope" "$diagnosis" || true
+  done
+}
+
+finish_pending() {
+  local marker diagnosis scope attempt waiting=false broad=''
+  for marker in "$diagnosis_dir"/opencode-tool-*.scope.pending; do
+    [[ -f "$marker" ]] || continue
+    read -r diagnosis < "$marker" || continue
+    if [[ "$diagnosis" == 'selection-failed' || "$diagnosis" == 'cleanup-failed' ]]; then
+      broad="$diagnosis"
+      break
+    fi
+  done
+  [[ -z "$broad" ]] || mark_all "$broad"
+
+  for marker in "$diagnosis_dir"/opencode-tool-*.scope.pending; do
+    [[ -f "$marker" ]] || continue
+    scope="${marker##*/}"
+    scope="${scope%.pending}"
+    scope_populated "$scope" || continue
+    run systemctl --user kill --signal=KILL --kill-whom=all "$scope" >/dev/null 2>&1 || true
+    waiting=true
+  done
+  for ((attempt = 0; attempt < 100; attempt++)); do
+    [[ "$waiting" == true ]] || break
+    waiting=false
+    for marker in "$diagnosis_dir"/opencode-tool-*.scope.pending; do
+      [[ -f "$marker" ]] || continue
+      scope="${marker##*/}"
+      scope="${scope%.pending}"
+      scope_populated "$scope" && waiting=true
+    done
+    [[ "$waiting" == false ]] || run sleep 0.02
+  done
+  [[ "$waiting" == false ]] || return 1
+  for marker in "$diagnosis_dir"/opencode-tool-*.scope.pending; do
+    [[ -f "$marker" ]] || continue
+    run mv -f -- "$marker" "${marker%.pending}" || return 1
+  done
+}
+
+kill_all() {
+  run systemctl --user kill --signal=KILL --kill-whom=all "$tools_slice" >/dev/null 2>&1 \
+    || printf '1\n' 2>/dev/null > "$slice_path/cgroup.kill" \
+    || true
+}
+
+thaw() {
+  [[ "$(read_key "$slice_path/cgroup.events" frozen 2>/dev/null)" == '0' ]] && return 0
+  printf '0\n' 2>/dev/null > "$slice_path/cgroup.freeze" || true
+  wait_frozen 0 && return 0
+  mark_all cleanup-failed
+  kill_all
+  if ! finish_pending; then
+    printf '1\n' 2>/dev/null > "$slice_path/cgroup.freeze" || true
+    wait_frozen 1 || true
+    return 1
+  fi
+  printf '0\n' 2>/dev/null > "$slice_path/cgroup.freeze" || true
+  wait_frozen 0 || true
+  return 1
+}
+
+recover() {
+  run rm -f -- "$diagnosis_dir"/.*.tmp
+  if ! finish_pending; then
+    mark_all selection-failed
+    kill_all
+    finish_pending || return 1
+  fi
+  thaw
+}
+
+validate_scope() {
+  local scope="$1" id group state
+  id="$(run systemctl --user show "$scope" --property=Id --value 2>/dev/null)" || return 1
+  group="$(run systemctl --user show "$scope" --property=ControlGroup --value 2>/dev/null)" || return 1
+  state="$(run systemctl --user show "$scope" --property=ActiveState --value 2>/dev/null)" || return 1
+  [[ "$id" == "$scope" \
+    && "$group" == "$slice_control_group/$scope" \
+    && ( "$state" == 'active' || "$state" == 'deactivating' ) ]]
+}
+
+snapshot_scopes() {
+  local child scope populated memory
+  snapshot=''
+  snapshot_victim=''
+  snapshot_victim_memory=-1
+  for child in "$slice_path"/*; do
+    [[ -d "$child" ]] || continue
+    populated="$(read_key "$child/cgroup.events" populated 2>/dev/null)" || return 1
+    [[ "$populated" == '0' ]] && continue
+    scope="${child##*/}"
+    [[ "$populated" == '1' && "$scope" == opencode-tool-*.scope ]] \
+      && validate_scope "$scope" || return 1
+    memory="$(<"$child/memory.current")" || return 1
+    [[ "$memory" =~ ^[0-9]+$ ]] || return 1
+    snapshot+="$scope=$memory;"
+    if (( memory > snapshot_victim_memory )) \
+      || { (( memory == snapshot_victim_memory )) \
+        && [[ -n "$snapshot_victim" && "$scope" < "$snapshot_victim" ]]; }; then
+      snapshot_victim="$scope"
+      snapshot_victim_memory="$memory"
+    fi
+  done
+  [[ -n "$snapshot_victim" ]]
+}
+
+fail_selection() {
+  mark_all selection-failed
+  kill_all
+  if ! finish_pending; then
+    printf 'OpenCode tool memory supervisor: failed to terminate every marked command; the tool slice remains frozen for restart reconciliation.\n' >&2
+    return 1
+  fi
+  printf '0\n' 2>/dev/null > "$slice_path/cgroup.freeze" || true
+  if ! wait_frozen 0; then
+    printf 'OpenCode tool memory supervisor: terminated marked commands but could not confirm that the tool slice thawed.\n' >&2
+    return 1
+  fi
+  printf 'OpenCode tool memory supervisor: reliable aggregate victim selection failed; all active tool commands were terminated.\n' >&2
+}
+
+enforce() {
+  local current first_snapshot victim
+  current="$(<"$slice_path/memory.current")" || return 1
+  [[ "$current" =~ ^[0-9]+$ ]] || return 1
+  (( current > aggregate_high )) || return 0
+  printf '1\n' 2>/dev/null > "$slice_path/cgroup.freeze" || return 1
+  wait_frozen 1 || { thaw || true; return 1; }
+  current="$(<"$slice_path/memory.current")" || { fail_selection; return $?; }
+  [[ "$current" =~ ^[0-9]+$ ]] || { fail_selection; return $?; }
+  if (( current <= aggregate_high )); then thaw; return; fi
+
+  snapshot_scopes || { fail_selection; return $?; }
+  first_snapshot="$snapshot"
+  victim="$snapshot_victim"
+  run sleep 0.02
+  if ! snapshot_scopes || [[ "$snapshot" != "$first_snapshot" ]]; then
+    fail_selection
+    return $?
+  fi
+  write_pending "$victim" aggregate-oom || { fail_selection; return $?; }
+  finish_pending || { fail_selection; return $?; }
+  thaw || return 1
+  run sleep 0.25
+}
+
+reconcile() {
+  local result
+  resolve_slice
+  result=$?
+  [[ "$result" == '2' ]] && return 0
+  [[ "$result" == '0' ]] || return 1
+  recover
+}
+
+if [[ "${1:-}" == '--reconcile' ]]; then
+  [[ $# -eq 1 ]] || exit 2
+  reconcile
+  exit $?
+fi
+[[ $# -eq 0 ]] || exit 2
+
+stop_supervisor() {
+  trap - HUP INT TERM
+  flock 8
+  reconcile || true
+  flock -u 8
+  exit 0
+}
+
+trap stop_supervisor HUP INT TERM
+while :; do
+  flock 8
+  if [[ -z "$slice_path" || ! -d "$slice_path" ]]; then
+    reconcile
+    result=$?
+  else
+    result=0
+    frozen="$(read_key "$slice_path/cgroup.events" frozen 2>/dev/null)" || result=1
+    if [[ "$result" == '0' && "$frozen" == '1' ]] && ! recover; then result=1; fi
+    if [[ "$result" == '0' && "$frozen" != '0' && "$frozen" != '1' ]]; then result=1; fi
+    if [[ "$result" == '0' ]] && ! enforce; then result=1; fi
+  fi
+  flock -u 8
+  [[ "$result" == '0' || "$result" == '2' ]] || exit 1
+  [[ -n "$slice_path" ]] && run sleep 0.1 || run sleep 0.5
+done

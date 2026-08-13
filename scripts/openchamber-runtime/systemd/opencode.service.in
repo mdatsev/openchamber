@@ -1,7 +1,7 @@
 [Unit]
 Description=External OpenCode agent runtime
-After=network-online.target
-Wants=network-online.target
+Wants=network-online.target opencode-tool-memory-supervisor.service
+After=network-online.target opencode-tool-memory-supervisor.service
 
 [Service]
 Type=simple
@@ -13,6 +13,7 @@ Environment="OPENCHAMBER_REAL_SHELL=/bin/bash"
 Environment="OPENCHAMBER_TOOL_MEMORY_MAX=3G"
 Environment="OPENCHAMBER_TOOL_MEMORY_SWAP_MAX=512M"
 Environment="OPENCHAMBER_TOOL_TASKS_MAX=512"
+Environment="OPENCHAMBER_TOOL_OUTPUT_MAX_BYTES=16777216"
 EnvironmentFile=-@HOME@/.config/openchamber/opencode.env
 ExecStart=@OPENCODE_BIN@ serve --hostname 127.0.0.1 --port 4096
 Restart=on-failure

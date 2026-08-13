@@ -436,8 +436,16 @@ export function registerGitRoutes(app) {
         return res.status(400).json({ error: 'directory parameter is required' });
       }
 
+      const requestedMode = req.query.mode;
+      if (requestedMode !== undefined && requestedMode !== 'uncommitted' && requestedMode !== 'committed' && requestedMode !== 'combined') {
+        return res.status(400).json({ error: 'mode must be uncommitted, committed, or combined' });
+      }
+      const mode = requestedMode || 'combined';
+
       const context = req.query.context ? parseInt(String(req.query.context), 10) : undefined;
       const comparison = await getWorktreeComparison(directory, {
+        mode,
+        includeLegacyFiles: requestedMode === undefined,
         includePatches: req.query.patches === 'true',
         contextLines: Number.isFinite(context) ? context : 3,
       });

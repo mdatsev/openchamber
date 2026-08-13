@@ -36,6 +36,7 @@ import type {
   RevertCommitResponse,
   ResetToCommitResponse,
 } from './api/types';
+import { z } from 'zod';
 import { runtimeFetch } from './runtime-fetch';
 import { getRuntimeUrlResolver } from './runtime-url';
 import { getRuntimeKey } from './runtime-switch';
@@ -48,6 +49,63 @@ const gitStatusInFlight = new Map<string, Promise<GitStatus>>();
 const gitStatusCacheVersions = new Map<string, number>();
 const gitRepoCache = new Map<string, { value: boolean; expiresAt: number }>();
 const gitRepoInFlight = new Map<string, Promise<boolean>>();
+
+const worktreeComparisonModeSchema = z.enum(['uncommitted', 'committed', 'combined']);
+const worktreeComparisonFileSchema = z.object({
+  path: z.string(),
+  status: z.enum(['added', 'deleted', 'modified']),
+  additions: z.number(),
+  deletions: z.number(),
+  patch: z.string(),
+});
+const worktreeComparisonLayerSchema = z.object({
+  kind: z.enum(['committed', 'staged', 'unstaged', 'untracked', 'legacy-combined']),
+  base: z.string(),
+  target: z.string(),
+  fileCount: z.number(),
+  files: z.array(worktreeComparisonFileSchema).optional(),
+});
+const worktreeComparisonV2UnavailableSchema = z.object({
+  protocolVersion: z.literal(2),
+  available: z.literal(false),
+  reason: z.literal('primary-worktree'),
+  mode: worktreeComparisonModeSchema,
+});
+const worktreeComparisonV2AvailableSchema = z.object({
+  protocolVersion: z.literal(2),
+  available: z.literal(true),
+  mode: worktreeComparisonModeSchema,
+  primaryWorktree: z.string(),
+  baseBranch: z.string().nullable(),
+  baseHead: z.string().nullable(),
+  head: z.string(),
+  mergeBase: z.string().nullable(),
+  hasCommittedChanges: z.boolean(),
+  committedCommitCount: z.number(),
+  isDirty: z.boolean(),
+  fileCount: z.number(),
+  hasChanges: z.boolean(),
+  layers: z.array(worktreeComparisonLayerSchema),
+});
+const legacyWorktreeComparisonUnavailableSchema = z.object({
+  available: z.literal(false),
+  reason: z.literal('primary-worktree'),
+});
+const legacyWorktreeComparisonAvailableSchema = z.object({
+  available: z.literal(true),
+  baseBranch: z.string(),
+  baseHead: z.string(),
+  head: z.string(),
+  mergeBase: z.string().optional(),
+  hasUnintegratedCommits: z.boolean().optional(),
+  unintegratedCommitCount: z.number().optional(),
+  hasCommittedChanges: z.boolean().optional(),
+  committedCommitCount: z.number().optional(),
+  isDirty: z.boolean(),
+  fileCount: z.number(),
+  hasChanges: z.boolean(),
+  files: z.array(worktreeComparisonFileSchema).optional(),
+});
 
 const normalizeDirectoryKey = (directory: string): string => directory.trim();
 const getDirectoryCacheKey = (runtimeKey: string, directory: string): string =>
@@ -252,10 +310,11 @@ export async function getGitRangeDiff(
 
 export async function getWorktreeComparison(
   directory: string,
-  options: GetGitWorktreeComparisonOptions = {}
+  options: GetGitWorktreeComparisonOptions
 ): Promise<GitWorktreeComparison> {
   const response = await runtimeFetch(
     buildUrl(`${API_BASE}/worktree-comparison`, directory, {
+      mode: options.mode,
       patches: options.includePatches ? 'true' : undefined,
       context: options.contextLines,
     })
@@ -266,7 +325,63 @@ export async function getWorktreeComparison(
     throw new Error(payload?.error || `Failed to compare linked worktree: ${response.statusText}`);
   }
 
-  return response.json() as Promise<GitWorktreeComparison>;
+  const payload: unknown = await response.json();
+  const currentUnavailable = worktreeComparisonV2UnavailableSchema.safeParse(payload);
+  if (currentUnavailable.success) {
+    if (currentUnavailable.data.mode !== options.mode) {
+      throw new Error('The active OpenChamber server returned a mismatched worktree comparison mode');
+    }
+    return currentUnavailable.data;
+  }
+  const currentAvailable = worktreeComparisonV2AvailableSchema.safeParse(payload);
+  if (currentAvailable.success) {
+    if (currentAvailable.data.mode !== options.mode) {
+      throw new Error('The active OpenChamber server returned a mismatched worktree comparison mode');
+    }
+    return currentAvailable.data;
+  }
+
+  if (options.mode !== 'combined') {
+    throw new Error(`The active OpenChamber server does not support the ${options.mode} worktree comparison mode`);
+  }
+
+  const legacyUnavailable = legacyWorktreeComparisonUnavailableSchema.safeParse(payload);
+  if (legacyUnavailable.success) {
+    return {
+      protocolVersion: 1,
+      available: false,
+      reason: legacyUnavailable.data.reason,
+      mode: 'combined',
+    };
+  }
+  const legacyAvailable = legacyWorktreeComparisonAvailableSchema.safeParse(payload);
+  if (!legacyAvailable.success) {
+    throw new Error('The active OpenChamber server returned an invalid worktree comparison response');
+  }
+
+  const legacy = legacyAvailable.data;
+  const committedCommitCount = legacy.committedCommitCount ?? legacy.unintegratedCommitCount ?? 0;
+  return {
+    protocolVersion: 1,
+    available: true,
+    mode: 'combined',
+    baseBranch: legacy.baseBranch,
+    baseHead: legacy.baseHead,
+    head: legacy.head,
+    mergeBase: legacy.mergeBase ?? null,
+    hasCommittedChanges: legacy.hasCommittedChanges ?? legacy.hasUnintegratedCommits ?? committedCommitCount > 0,
+    committedCommitCount,
+    isDirty: legacy.isDirty,
+    fileCount: legacy.fileCount,
+    hasChanges: legacy.hasChanges,
+    layers: [{
+      kind: 'legacy-combined',
+      base: legacy.mergeBase ?? legacy.head,
+      target: 'worktree',
+      fileCount: legacy.fileCount,
+      files: legacy.files,
+    }],
+  };
 }
 
 export async function getGitFileDiff(directory: string, options: GetGitFileDiffOptions): Promise<GitFileDiffResponse> {

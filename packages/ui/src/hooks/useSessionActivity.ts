@@ -51,7 +51,10 @@ function useSessionActivity(sessionId: string | null | undefined, directory?: st
   const questions = useScopedBlockingQuestions(sessionId ?? null, directory);
   const inactiveStatusSnapshotAt = useDirectorySync(
     React.useCallback((state) => {
-      if (!sessionId || !state.sessionStatusSnapshotActiveIds) return undefined;
+      if (
+        !sessionId
+        || !state.sessionStatusSnapshotActiveIds
+      ) return undefined;
       return state.sessionStatusSnapshotActiveIds.has(sessionId)
         ? undefined
         : state.sessionStatusSnapshotAt;
@@ -103,12 +106,12 @@ function useSessionActivity(sessionId: string | null | undefined, directory?: st
     }
 
     if (hasLocallyInterruptedTool) return INTERRUPTED_RESULT;
-    if (hasTerminalTool) return IDLE_RESULT;
     if (!hasPendingAssistant) return IDLE_RESULT;
 
     const predatesAuthoritativeSnapshot = typeof inactiveStatusSnapshotAt === 'number'
       && (typeof lastMessageCreatedAt !== 'number' || lastMessageCreatedAt <= inactiveStatusSnapshotAt);
     if (predatesAuthoritativeSnapshot) return INTERRUPTED_RESULT;
+    if (hasTerminalTool) return IDLE_RESULT;
 
     if (status !== undefined) return IDLE_RESULT;
 

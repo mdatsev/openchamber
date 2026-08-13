@@ -1,8 +1,9 @@
 import * as React from 'react';
 import { Icon } from '@/components/icon/Icon';
 import { toast } from '@/components/ui/toast';
-import { reloadOpenCodeConfiguration } from '@/stores/useAgentsStore';
 import { useUIStore } from '@/stores/useUIStore';
+import { usePendingOpenCodeRestartStore } from '@/stores/usePendingOpenCodeRestartStore';
+import { refreshAfterOpenCodeUpgrade } from '@/stores/useAgentsStore';
 import { useI18n } from '@/lib/i18n';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { getRuntimeKey, subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
@@ -20,12 +21,22 @@ const UPGRADE_TOAST_ID = 'opencode-upgrade-progress';
 const INITIAL_CHECK_DELAY_MS = 5_000;
 const CHECK_RETRY_DELAYS_MS = [10_000, 60_000];
 const UPDATE_TOAST_DISMISSED_VERSION_KEY = 'opencode-update-toast-dismissed-version';
+const SUPERVISED_UPGRADE_POLL_INTERVAL_MS = 2_000;
+
+type OpenCodeUpgradeOperation = {
+  phase?: 'idle' | 'queued' | 'upgrading' | 'restarting' | 'updated' | 'failed';
+  version?: string | null;
+  completedAt?: number;
+  error?: string;
+};
 
 export const OpenCodeUpdateToast: React.FC = () => {
   const { t } = useI18n();
   const showOpenCodeUpdateNotifications = useUIStore((state) => state.showOpenCodeUpdateNotifications);
   const seenVersionsRef = React.useRef(new Set<string>());
   const upgradingRef = React.useRef(false);
+  const upgradePollTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const upgradePollCancelledRef = React.useRef(false);
 
   React.useEffect(() => {
     if (!showOpenCodeUpdateNotifications) {
@@ -33,18 +44,23 @@ export const OpenCodeUpdateToast: React.FC = () => {
     }
   }, [showOpenCodeUpdateNotifications]);
 
-  const reloadOpenCode = React.useCallback(() => {
-    toast.dismiss(UPGRADE_TOAST_ID);
-    void reloadOpenCodeConfiguration({
-      message: t('opencodeUpdate.toast.reload.message'),
-      mode: 'projects',
-      scopes: ['all'],
-    }).catch(() => undefined);
-  }, [t]);
+  React.useEffect(() => {
+    upgradePollCancelledRef.current = false;
+    return () => {
+      upgradePollCancelledRef.current = true;
+      if (upgradePollTimeoutRef.current) clearTimeout(upgradePollTimeoutRef.current);
+    };
+  }, []);
 
   const runUpgrade = React.useCallback(async () => {
     if (upgradingRef.current) return;
     upgradingRef.current = true;
+    upgradePollCancelledRef.current = false;
+    const upgradeRuntimeKey = getRuntimeKey();
+    if (upgradePollTimeoutRef.current) {
+      clearTimeout(upgradePollTimeoutRef.current);
+      upgradePollTimeoutRef.current = null;
+    }
     toast.dismiss(UPDATE_TOAST_ID);
     toast.message(t('opencodeUpdate.toast.upgrading.title'), {
       id: UPGRADE_TOAST_ID,
@@ -62,24 +78,94 @@ export const OpenCodeUpdateToast: React.FC = () => {
         },
         body: JSON.stringify({}),
       });
-      const payload = await response.json().catch(() => null) as null | { success?: boolean; version?: string; error?: string };
+      const payload = await response.json().catch(() => null) as null | { success?: boolean; queued?: boolean; version?: string; error?: string };
       if (!response.ok || payload?.success === false) {
         throw new Error(payload?.error || response.statusText || t('opencodeUpdate.toast.failed.description'));
       }
 
-      toast.success(t('opencodeUpdate.toast.updated.title'), {
-        id: UPGRADE_TOAST_ID,
-        description: payload?.version
-          ? t('opencodeUpdate.toast.updated.descriptionWithVersion', { version: payload.version })
-          : t('opencodeUpdate.toast.updated.description'),
-        duration: Infinity,
-        icon: <Icon name="check" className="h-4 w-4 text-[var(--status-success)]" />,
-        action: {
-          label: t('opencodeUpdate.toast.actions.reload'),
-          onClick: reloadOpenCode,
-        },
-      });
+      if (response.status === 202) {
+        toast.message(
+          payload?.queued
+            ? t('settings.fork.opencodeUpdate.state.queued')
+            : t('opencodeUpdate.toast.upgrading.title'),
+          {
+            id: UPGRADE_TOAST_ID,
+            duration: 5_000,
+            icon: <Icon name="refresh" className="h-4 w-4 animate-spin text-muted-foreground" />,
+          },
+        );
+        const pollUpgrade = async () => {
+          if (upgradePollCancelledRef.current || getRuntimeKey() !== upgradeRuntimeKey) return;
+          try {
+            const statusResponse = await runtimeFetch('/api/opencode/upgrade-status', {
+              headers: { Accept: 'application/json' },
+            });
+            const statusPayload = await statusResponse.json().catch(() => null) as null | {
+              currentVersion?: string | null;
+              operation?: OpenCodeUpgradeOperation;
+            };
+            if (upgradePollCancelledRef.current || getRuntimeKey() !== upgradeRuntimeKey) return;
+            if (!statusResponse.ok) throw new Error(statusResponse.statusText);
+            const operation = statusPayload?.operation;
+            if (operation?.phase === 'updated') {
+              upgradePollTimeoutRef.current = null;
+              usePendingOpenCodeRestartStore.getState().clear();
+              const upgradedVersion = operation.version || statusPayload?.currentVersion;
+              void refreshAfterOpenCodeUpgrade(operation.completedAt?.toString() || upgradedVersion).catch((error) => {
+                console.error('[OpenCodeUpdateToast] Failed to refresh configuration after upgrade:', error);
+              });
+              toast.success(t('opencodeUpdate.toast.updated.title'), {
+                id: UPGRADE_TOAST_ID,
+                description: upgradedVersion
+                  ? t('opencodeUpdate.toast.updated.descriptionWithVersion', {
+                      version: upgradedVersion,
+                    })
+                  : t('opencodeUpdate.toast.updated.description'),
+                icon: <Icon name="check" className="h-4 w-4 text-[var(--status-success)]" />,
+              });
+              return;
+            }
+            if (operation?.phase === 'failed') {
+              upgradePollTimeoutRef.current = null;
+              throw new Error(operation.error || t('opencodeUpdate.toast.failed.description'));
+            }
+            if (!operation || operation.phase === 'idle') {
+              upgradePollTimeoutRef.current = null;
+              toast.dismiss(UPGRADE_TOAST_ID);
+              return;
+            }
+            upgradePollTimeoutRef.current = setTimeout(() => {
+              void pollUpgrade();
+            }, SUPERVISED_UPGRADE_POLL_INTERVAL_MS);
+          } catch (error) {
+            upgradePollTimeoutRef.current = null;
+            if (upgradePollCancelledRef.current || getRuntimeKey() !== upgradeRuntimeKey) return;
+            toast.error(t('opencodeUpdate.toast.failed.title'), {
+              id: UPGRADE_TOAST_ID,
+              description: error instanceof Error ? error.message : t('opencodeUpdate.toast.failed.description'),
+              duration: Infinity,
+            });
+          }
+        };
+        upgradePollTimeoutRef.current = setTimeout(() => {
+          void pollUpgrade();
+        }, SUPERVISED_UPGRADE_POLL_INTERVAL_MS);
+      } else {
+        upgradePollTimeoutRef.current = null;
+        usePendingOpenCodeRestartStore.getState().clear();
+        void refreshAfterOpenCodeUpgrade(payload?.version).catch((error) => {
+          console.error('[OpenCodeUpdateToast] Failed to refresh configuration after upgrade:', error);
+        });
+        toast.success(t('opencodeUpdate.toast.updated.title'), {
+          id: UPGRADE_TOAST_ID,
+          description: payload?.version
+            ? t('opencodeUpdate.toast.updated.descriptionWithVersion', { version: payload.version })
+            : t('opencodeUpdate.toast.updated.description'),
+          icon: <Icon name="check" className="h-4 w-4 text-[var(--status-success)]" />,
+        });
+      }
     } catch (error) {
+      upgradePollTimeoutRef.current = null;
       toast.error(t('opencodeUpdate.toast.failed.title'), {
         id: UPGRADE_TOAST_ID,
         description: error instanceof Error ? error.message : t('opencodeUpdate.toast.failed.description'),
@@ -88,7 +174,7 @@ export const OpenCodeUpdateToast: React.FC = () => {
     } finally {
       upgradingRef.current = false;
     }
-  }, [reloadOpenCode, t]);
+  }, [t]);
 
   React.useEffect(() => {
     const showUpdateAvailableToast = (version: string) => {
@@ -162,6 +248,9 @@ export const OpenCodeUpdateToast: React.FC = () => {
     const unsubscribeRuntime = subscribeRuntimeEndpointChanged(({ runtimeKey }) => {
       seenVersionsRef.current.clear();
       toast.dismiss(UPDATE_TOAST_ID);
+      if (upgradePollTimeoutRef.current) clearTimeout(upgradePollTimeoutRef.current);
+      upgradePollTimeoutRef.current = null;
+      upgradePollCancelledRef.current = true;
       if (useUIStore.getState().showOpenCodeUpdateNotifications) {
         void checkForUpdate(0, runtimeKey);
       }

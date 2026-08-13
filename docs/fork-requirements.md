@@ -35,13 +35,14 @@
 
 ### FC-007: Show a background subagent under the agent that spawned it
 
-- Instead of being shown as a separate session.
+- Nest it in the spawning Task's chat summary. The child session may remain visible in session navigation.
 
 ### FC-008: /side: Disposable side chats
 
-- `/btw` and `/side` open a disposable chat in a side panel.
+- On web and Desktop, `/btw` and `/side` open a disposable chat in a side panel.
 - The side chat inherits the context at the point of invocation, even if mid-turn.
 - Allow the side chat to be promoted to a normal session.
+- Repeating either command for an existing side chat focuses it and sends the new prompt there.
 
 ### FC-009: Prevent accidental file reverts
 
@@ -70,6 +71,7 @@
 
 - Be able to see changes not merged to the root branch for each worktree.
 - Not merged changes include both committed and uncommited changes.
+- Let the user view committed changes, uncommitted changes, or both together. Cherry-pick equivalence is not supported.
 - Show indicator on unmerged worktrees in the sidebar.
 - Show indicator on sessions in the sidebar differentiating between root and worktree sessions, and clean/dirty root and merged/unmerged worktrees.
 - Use compact sidebar rows for worktrees with zero or one conversation.
@@ -77,6 +79,7 @@
 ### FC-015: Update OpenCode in settings
 
 - Show OpenCode update status and actions even after dismissing the update notification.
+- Support upgrading the external OpenCode service in the fork's systemd-managed runtime without interrupting active agents.
 
 ### FC-016: Switch between official and fork servers without interrupting agents
 
@@ -92,6 +95,7 @@
 
 - Limit memory use per command and across all agent commands.
 - Keep OpenCode alive when a command exceeds its limit, and report the out-of-memory failure to the agent.
+- When aggregate pressure requires selecting a command to stop, reliably stop the most memory-intensive command tree; if reliable selection is impossible, fail explicitly instead of claiming deterministic isolation.
 
 ### FC-019: Keep fork-only preferences separate
 

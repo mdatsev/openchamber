@@ -13,7 +13,7 @@ import {
 } from '@/stores/useGitStore';
 import { getRuntimeKey } from '@/lib/runtime-switch';
 import { cn } from '@/lib/utils';
-import type { GitStatus } from '@/lib/api/types';
+import type { GitStatus, GitWorktreeComparisonMode } from '@/lib/api/types';
 import {
     DropdownMenu,
     DropdownMenuContent,
@@ -27,6 +27,7 @@ import {
     TooltipTrigger,
 } from '@/components/ui/tooltip';
 import { Button } from '@/components/ui/button';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from '@/components/ui';
 
 import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
@@ -54,7 +55,7 @@ import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSessionMessages } from '@/sync/sync-context';
 import { getFirstChangedModifiedLineFromPatch } from './diffPatchUtils';
 import type { FileDiffMetadata } from '@pierre/diffs';
-import { mapWorktreeComparisonEntries } from '@/lib/git/worktreeComparison';
+import { mapWorktreeComparisonGroups } from '@/lib/git/worktreeComparison';
 
 // Minimum width for side-by-side diff view (px)
 const SIDE_BY_SIDE_MIN_WIDTH = 1100;
@@ -74,12 +75,16 @@ const getStackedViewDefaultExpandedCount = (fileCount: number): number => {
 };
 
 type FileEntry = GitStatus['files'][number] & {
+    comparisonKey?: string;
+    comparisonSectionLabel?: string;
     insertions: number;
     deletions: number;
     isNew: boolean;
     patch?: string | null;
     readOnly?: boolean;
 };
+
+const getFileEntryKey = (file: FileEntry): string => file.comparisonKey ?? file.path;
 
 type DiffContextMode = 'patch' | 'full';
 type DiffData = {
@@ -91,6 +96,12 @@ type DiffData = {
     contextMode?: DiffContextMode;
 };
 type DiffScope = 'all' | 'branch' | 'staged' | 'working' | 'turn';
+
+const getComparisonModeLabelKey = (mode: GitWorktreeComparisonMode): I18nKey => {
+    if (mode === 'uncommitted') return 'diffView.comparison.mode.uncommitted';
+    if (mode === 'committed') return 'diffView.comparison.mode.committed';
+    return 'diffView.comparison.mode.combined';
+};
 
 type TurnSnapshotDiff = {
     file?: string;
@@ -358,13 +369,13 @@ const FileList = React.memo<FileListProps>(({
             <ul className="flex flex-col gap-1">
                 {changedFiles.map((file) => {
                     const descriptor = describeChange(file);
-                    const isActive = selectedFile === file.path;
+                    const isActive = selectedFile === getFileEntryKey(file);
 
                     return (
-                        <li key={file.path}>
+                            <li key={getFileEntryKey(file)}>
                             <button
                                 type="button"
-                                onClick={() => onSelectFile(file.path)}
+                                    onClick={() => onSelectFile(getFileEntryKey(file))}
                                 className={cn(
                                     'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors',
                                     isActive
@@ -596,6 +607,7 @@ const FileDiffActionButton: React.FC<FileDiffActionButtonProps> = ({
 );
 
 interface MultiFileDiffEntryProps {
+    entryKey: string;
     directory: string;
     file: FileEntry;
     layout: 'inline' | 'side-by-side';
@@ -616,6 +628,7 @@ interface MultiFileDiffEntryProps {
 }
 
 const MultiFileDiffEntry = React.memo<MultiFileDiffEntryProps>(({
+    entryKey,
     directory,
     file,
     layout,
@@ -672,16 +685,16 @@ const MultiFileDiffEntry = React.memo<MultiFileDiffEntryProps>(({
 
     const setSectionRef = React.useCallback((node: HTMLDivElement | null) => {
         sectionRef.current = node;
-        registerSectionRef(file.path, node);
-    }, [file.path, registerSectionRef]);
+        registerSectionRef(entryKey, node);
+    }, [entryKey, registerSectionRef]);
 
     const handleOpenChange = React.useCallback((open: boolean) => {
-        onExpandedChange(file.path, open);
-    }, [file.path, onExpandedChange]);
+        onExpandedChange(entryKey, open);
+    }, [entryKey, onExpandedChange]);
 
     const handleSelect = React.useCallback(() => {
-        onSelect(file.path);
-    }, [file.path, onSelect]);
+        onSelect(entryKey);
+    }, [entryKey, onSelect]);
 
     React.useEffect(() => {
         if (!staged) {
@@ -782,6 +795,7 @@ const MultiFileDiffEntry = React.memo<MultiFileDiffEntryProps>(({
                 await git.revertGitFile(directory, file.path, { scope: 'working' });
             }
             setDiffRetryNonce((nonce) => nonce + 1);
+            useGitStore.getState().invalidateWorktreeComparison(directory);
             await fetchStatus(directory, git);
         } catch (error) {
             const fallbackKey = action === 'unstage'
@@ -797,6 +811,11 @@ const MultiFileDiffEntry = React.memo<MultiFileDiffEntryProps>(({
 
     return (
         <div ref={setSectionRef} className="scroll-mt-9 border-b border-[var(--interactive-border)]/40 last:border-b-0">
+            {file.comparisonSectionLabel ? (
+                <div className="border-b border-[var(--interactive-border)]/35 bg-[var(--surface-muted)] px-3 py-1.5 typography-micro font-semibold text-muted-foreground">
+                    {file.comparisonSectionLabel}
+                </div>
+            ) : null}
             <div className="sticky top-0 z-30 border-b border-[var(--interactive-border)]/35 bg-[var(--surface-elevated)]/90 backdrop-blur-md supports-[backdrop-filter]:bg-[var(--surface-elevated)]/80">
                 <div
                     role="button"
@@ -1019,11 +1038,13 @@ export const DiffView: React.FC<DiffViewProps> = ({
     const ensureStatus = useGitStore((state) => state.ensureStatus);
     const fetchStatus = useGitStore((state) => state.fetchStatus);
     const fetchWorktreeComparison = useGitStore((state) => state.fetchWorktreeComparison);
+    const ensureWorktreeComparison = useGitStore((state) => state.ensureWorktreeComparison);
     const clearDiffCache = useGitStore((state) => state.clearDiffCache);
     const setDiff = useGitStore((state) => state.setDiff);
-    const worktreeComparison = useWorktreeComparisonFull(effectiveDirectory ?? null);
-    const worktreeComparisonError = useWorktreeComparisonError(effectiveDirectory ?? null);
-    const isLoadingWorktreeComparison = useWorktreeComparisonLoading(effectiveDirectory ?? null);
+    const [comparisonMode, setComparisonMode] = React.useState<GitWorktreeComparisonMode>('combined');
+    const worktreeComparison = useWorktreeComparisonFull(effectiveDirectory ?? null, comparisonMode);
+    const worktreeComparisonError = useWorktreeComparisonError(effectiveDirectory ?? null, comparisonMode);
+    const isLoadingWorktreeComparison = useWorktreeComparisonLoading(effectiveDirectory ?? null, comparisonMode);
     const [displayFile, setDisplayFile] = React.useState<string | null>(null);
     const [displayFileStaged, setDisplayFileStaged] = React.useState(false);
     const [pinnedStackedTarget, setPinnedStackedTarget] = React.useState<string | null>(null);
@@ -1053,15 +1074,26 @@ export const DiffView: React.FC<DiffViewProps> = ({
     const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
     const sessionMessages = useSessionMessages(currentSessionId ?? '', effectiveDirectory ?? undefined);
     const diffWrapLines = diffWrapLinesStore;
-    const worktreeComparisonEntries = React.useMemo(
-        () => mapWorktreeComparisonEntries(worktreeComparison),
-        [worktreeComparison],
-    );
+    const worktreeComparisonEntries = React.useMemo(() => mapWorktreeComparisonGroups(worktreeComparison)
+        .flatMap((group) => group.entries.map((entry, index) => ({
+            ...entry,
+            comparisonSectionLabel: index === 0
+                ? group.kind === 'committed'
+                    ? t('diffView.comparison.layer.committed')
+                    : group.kind === 'staged'
+                        ? t('diffView.comparison.layer.staged')
+                        : group.kind === 'unstaged'
+                            ? t('diffView.comparison.layer.unstaged')
+                            : group.kind === 'untracked'
+                                ? t('diffView.comparison.layer.untracked')
+                                : t('diffView.comparison.layer.combined')
+                : undefined,
+        }))), [t, worktreeComparison]);
     const worktreeComparisonDiffData = React.useMemo(() => {
         const entries = new Map<string, DiffData>();
         for (const entry of worktreeComparisonEntries) {
             entries.set(
-                entry.path,
+                entry.comparisonKey,
                 entry.patch
                     ? createTextDiffDataFromPatch(entry.path, entry.patch, 'patch')
                     : { original: '', modified: '', contextMode: 'patch' },
@@ -1215,7 +1247,7 @@ export const DiffView: React.FC<DiffViewProps> = ({
     const branchFileCount = worktreeComparisonEntries.length;
 
     const changedFilePathsKey = React.useMemo(
-        () => changedFiles.map((file) => file.path).join('\0'),
+        () => changedFiles.map(getFileEntryKey).join('\0'),
         [changedFiles],
     );
 
@@ -1358,8 +1390,33 @@ export const DiffView: React.FC<DiffViewProps> = ({
 
     React.useEffect(() => {
         if (!isActive || !effectiveDirectory || isGitRepo !== true || !git.getWorktreeComparison) return;
-        void fetchWorktreeComparison(effectiveDirectory, git, { includePatches: true, contextLines: DEFAULT_CONTEXT_DIFF_LINES });
-    }, [effectiveDirectory, fetchWorktreeComparison, git, isActive, isGitRepo]);
+        void ensureWorktreeComparison(effectiveDirectory, git, {
+            mode: comparisonMode,
+            includePatches: true,
+            contextLines: DEFAULT_CONTEXT_DIFF_LINES,
+        });
+    }, [comparisonMode, effectiveDirectory, ensureWorktreeComparison, git, isActive, isGitRepo]);
+
+    React.useEffect(() => {
+        if (!isActive || !effectiveDirectory || isGitRepo !== true || !git.getWorktreeComparison) return;
+        const refresh = () => {
+            if (document.visibilityState !== 'visible') return;
+            void ensureWorktreeComparison(effectiveDirectory, git, {
+                mode: comparisonMode,
+                includePatches: true,
+                contextLines: DEFAULT_CONTEXT_DIFF_LINES,
+            });
+        };
+        const onVisibilityChange = () => {
+            if (document.visibilityState === 'visible') refresh();
+        };
+        window.addEventListener('focus', refresh);
+        document.addEventListener('visibilitychange', onVisibilityChange);
+        return () => {
+            window.removeEventListener('focus', refresh);
+            document.removeEventListener('visibilitychange', onVisibilityChange);
+        };
+    }, [comparisonMode, effectiveDirectory, ensureWorktreeComparison, git, isActive, isGitRepo]);
 
     React.useEffect(() => {
         if (!effectiveDirectory) {
@@ -1367,10 +1424,15 @@ export const DiffView: React.FC<DiffViewProps> = ({
         }
 
         return sessionEvents.onGitRefreshHint((hint) => {
-            if (normalizePath(hint.directory) !== normalizePath(effectiveDirectory)) {
+            const hintDirectory = normalizePath(hint.directory);
+            const linkedDirectory = normalizePath(effectiveDirectory);
+            const primaryDirectory = worktreeComparison?.available
+                ? normalizePath(worktreeComparison.primaryWorktree)
+                : '';
+            if (hintDirectory !== linkedDirectory && hintDirectory !== primaryDirectory) {
                 return;
             }
-            if (hint.paths?.length) {
+            if (hintDirectory === linkedDirectory && hint.paths?.length) {
                 pendingScrollAnchorRestoreRef.current = captureScrollAnchor() ?? lastScrollAnchorRef.current;
                 clearDiffCache(effectiveDirectory, hint.paths);
                 setFileDiffRefreshNonce((previous) => {
@@ -1381,12 +1443,18 @@ export const DiffView: React.FC<DiffViewProps> = ({
                     return next;
                 });
             }
-            void fetchStatus(effectiveDirectory, git, { silent: true });
+            if (hintDirectory === linkedDirectory) {
+                void fetchStatus(effectiveDirectory, git, { silent: true });
+            }
             if (isActive && isGitRepo === true && git.getWorktreeComparison) {
-                void fetchWorktreeComparison(effectiveDirectory, git, { includePatches: true, contextLines: DEFAULT_CONTEXT_DIFF_LINES });
+                void fetchWorktreeComparison(effectiveDirectory, git, {
+                    mode: comparisonMode,
+                    includePatches: true,
+                    contextLines: DEFAULT_CONTEXT_DIFF_LINES,
+                });
             }
         });
-    }, [captureScrollAnchor, clearDiffCache, effectiveDirectory, fetchStatus, fetchWorktreeComparison, git, isActive, isGitRepo]);
+    }, [captureScrollAnchor, clearDiffCache, comparisonMode, effectiveDirectory, fetchStatus, fetchWorktreeComparison, git, isActive, isGitRepo, worktreeComparison]);
 
     React.useLayoutEffect(() => {
         const anchor = pendingScrollAnchorRestoreRef.current;
@@ -1452,7 +1520,7 @@ export const DiffView: React.FC<DiffViewProps> = ({
             return;
         }
 
-        const stillExists = changedFiles.some((file) => file.path === displayFile);
+        const stillExists = changedFiles.some((file) => getFileEntryKey(file) === displayFile);
         if (!stillExists) {
             setDisplayFile(null);
             setDisplayFileStaged(false);
@@ -1501,7 +1569,7 @@ export const DiffView: React.FC<DiffViewProps> = ({
             if (previous.size > 0) {
                 return new Set();
             }
-            return new Set(changedFiles.map((file) => file.path));
+            return new Set(changedFiles.map(getFileEntryKey));
         });
         setMountedStackedFiles(new Set());
         queueVisibleStackedFilesSync();
@@ -1745,14 +1813,15 @@ export const DiffView: React.FC<DiffViewProps> = ({
                         <div className="flex flex-col [overflow-anchor:none]" data-diff-virtual-content>
                             {changedFiles.map((file) => (
                                 <MultiFileDiffEntry
-                                    key={`${file.path}:${fileDiffRefreshNonce.get(file.path) ?? 0}`}
+                                    key={`${getFileEntryKey(file)}:${fileDiffRefreshNonce.get(file.path) ?? 0}`}
+                                    entryKey={getFileEntryKey(file)}
                                     directory={effectiveDirectory}
                                     file={file}
                                     layout={getLayoutForFile(file)}
                                     wrapLines={diffWrapLines}
-                                    isSelected={false}
-                                    isExpanded={expandedFiles.has(file.path)}
-                                    isMounted={mountedStackedFiles.has(file.path) || file.path === pinnedStackedTarget}
+                                    isSelected={displayFile === getFileEntryKey(file)}
+                                    isExpanded={expandedFiles.has(getFileEntryKey(file))}
+                                    isMounted={mountedStackedFiles.has(getFileEntryKey(file)) || getFileEntryKey(file) === pinnedStackedTarget}
                                     onSelect={handleSelectFile}
                                     onExpandedChange={handleStackedEntryExpandedChange}
                                     registerSectionRef={registerSectionRef}
@@ -1765,7 +1834,7 @@ export const DiffView: React.FC<DiffViewProps> = ({
                                     readOnly={file.readOnly}
                                     loadFullFiles={isWorktreeComparisonScope ? false : loadFullFiles}
                                     initialDiffData={renderedDiffScope === 'branch'
-                                        ? worktreeComparisonDiffData.get(file.path) ?? null
+                                        ? worktreeComparisonDiffData.get(getFileEntryKey(file)) ?? null
                                         : renderedDiffScope === 'turn'
                                             ? lastTurnDiffData.get(file.path) ?? null
                                             : null}
@@ -1827,6 +1896,7 @@ export const DiffView: React.FC<DiffViewProps> = ({
                             disabled={isLoadingWorktreeComparison}
                             onClick={() => {
                                 void fetchWorktreeComparison(effectiveDirectory, git, {
+                                    mode: comparisonMode,
                                     includePatches: true,
                                     contextLines: DEFAULT_CONTEXT_DIFF_LINES,
                                 });
@@ -1843,7 +1913,11 @@ export const DiffView: React.FC<DiffViewProps> = ({
             return (
                 <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
                     {renderedDiffScope === 'branch' && worktreeComparison?.available
-                        ? t('diffView.state.noBranchChanges', { branch: worktreeComparison.baseBranch })
+                        ? comparisonMode === 'uncommitted'
+                            ? t('diffView.state.noUncommittedChanges')
+                            : comparisonMode === 'committed'
+                                ? t('diffView.state.noCommittedChanges', { branch: worktreeComparison.baseBranch })
+                                : t('diffView.state.noCombinedChanges', { branch: worktreeComparison.baseBranch })
                         : renderedDiffScope === 'turn'
                             ? t('diffView.state.noLastTurnChanges')
                             : t('diffView.state.cleanWorkingTree')}
@@ -1884,6 +1958,25 @@ export const DiffView: React.FC<DiffViewProps> = ({
                         </div>
                     )
                 )}
+                {worktreeComparisonSelected && worktreeComparison?.available !== false ? (
+                    <Select<GitWorktreeComparisonMode>
+                        value={comparisonMode}
+                        onValueChange={(mode) => setComparisonMode(mode)}
+                    >
+                        <SelectTrigger
+                            size="sm"
+                            className="max-w-40 min-w-0"
+                            aria-label={t('diffView.comparison.mode.selectorAria')}
+                        >
+                            <SelectValue>{t(getComparisonModeLabelKey(comparisonMode))}</SelectValue>
+                        </SelectTrigger>
+                        <SelectContent align="start">
+                            <SelectItem value="uncommitted">{t('diffView.comparison.mode.uncommitted')}</SelectItem>
+                            <SelectItem value="committed">{t('diffView.comparison.mode.committed')}</SelectItem>
+                            <SelectItem value="combined">{t('diffView.comparison.mode.combined')}</SelectItem>
+                        </SelectContent>
+                    </Select>
+                ) : null}
                 {changedFiles.length > 0 && (
                     <Button
                         variant="ghost"

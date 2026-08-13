@@ -6,6 +6,14 @@ real_shell="${OPENCHAMBER_REAL_SHELL:-/bin/bash}"
 memory_max="${OPENCHAMBER_TOOL_MEMORY_MAX:-3G}"
 memory_swap_max="${OPENCHAMBER_TOOL_MEMORY_SWAP_MAX:-512M}"
 tasks_max="${OPENCHAMBER_TOOL_TASKS_MAX:-512}"
+output_max_bytes="${OPENCHAMBER_TOOL_OUTPUT_MAX_BYTES:-16777216}"
+tools_slice='opencode-tools.slice'
+supervisor_unit='opencode-tool-memory-supervisor.service'
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+supervisor="$script_dir/opencode-tool-memory-supervisor"
+runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+diagnosis_dir="$runtime_dir/openchamber-opencode-tools"
+aggregate_lock="$diagnosis_dir/aggregate.lock"
 
 fail() {
   printf 'OpenCode cgroup shell: %s\n' "$1" >&2
@@ -24,12 +32,14 @@ validate_count() {
 validate_size OPENCHAMBER_TOOL_MEMORY_MAX "$memory_max"
 validate_size OPENCHAMBER_TOOL_MEMORY_SWAP_MAX "$memory_swap_max"
 validate_count OPENCHAMBER_TOOL_TASKS_MAX "$tasks_max"
+validate_count OPENCHAMBER_TOOL_OUTPUT_MAX_BYTES "$output_max_bytes"
 
 if [[ "${1:-}" != '-c' ]]; then
   exec "$real_shell" "$@"
 fi
 
 [[ $# -ge 2 ]] || fail 'missing command after -c'
+[[ -x "$supervisor" ]] || fail "memory supervisor is not executable: $supervisor"
 shift
 command="$1"
 shift
@@ -37,16 +47,66 @@ shift
 unit="opencode-tool-${PPID}-$$-${RANDOM}"
 scope="${unit}.scope"
 runner_pid=''
+diagnosis_file="$diagnosis_dir/$scope"
+output_overflow_file="$diagnosis_dir/.$scope.output-overflow"
+
+mkdir -p -m 0700 "$diagnosis_dir" || fail "cannot create diagnosis directory: $diagnosis_dir"
+chmod 0700 "$diagnosis_dir" || fail "cannot secure diagnosis directory: $diagnosis_dir"
+rm -f "$diagnosis_file" "$diagnosis_file.pending"
+rm -f "$output_overflow_file"
+
+systemctl_user() {
+  (exec 9>&-; exec systemctl --user "$@")
+}
+
+print_diagnosis() {
+  local result diagnosis=''
+  result="$(systemctl_user show "$scope" --property=Result --value 2>/dev/null)" || result=''
+  if [[ -r "$diagnosis_file" ]]; then
+    read -r diagnosis < "$diagnosis_file" || true
+  elif [[ -r "$diagnosis_file.pending" ]]; then
+    read -r diagnosis < "$diagnosis_file.pending" || true
+  fi
+  case "$diagnosis" in
+    aggregate-oom)
+      printf 'OpenCode command terminated: aggregate tool-command memory limit exceeded; this was the largest active command tree at selection time.\n' >&2
+      ;;
+    enforcement-unavailable)
+      printf 'OpenCode command terminated: aggregate memory enforcement is unavailable; the command was cancelled rather than run without a reliable aggregate limit.\n' >&2
+      ;;
+    selection-failed)
+      printf 'OpenCode command terminated: aggregate memory limit exceeded, but the largest active command tree could not be selected reliably; all active tool commands were cancelled without claiming deterministic victim selection.\n' >&2
+      ;;
+    cleanup-failed)
+      printf 'OpenCode command terminated: the aggregate tool slice could not be thawed after memory enforcement, so frozen commands were terminated to avoid leaked work.\n' >&2
+      ;;
+    output-limit)
+      printf 'OpenCode command terminated: combined command output exceeded %s bytes; the command tree was stopped to protect the OpenCode runtime from output amplification.\n' "$output_max_bytes" >&2
+      ;;
+    '')
+      if [[ "$result" == 'oom-kill' ]]; then
+        printf 'OpenCode command terminated: its cgroup reported an out-of-memory kill after a command or emergency aggregate memory limit was reached.\n' >&2
+      fi
+      ;;
+  esac
+}
 
 terminate() {
   local exit_code="$1"
   trap - HUP INT TERM
-  systemctl --user stop "$scope" >/dev/null 2>&1 || true
+  systemctl_user stop "$scope" >/dev/null 2>&1 || true
   if [[ -n "$runner_pid" ]] && kill -0 "$runner_pid" 2>/dev/null; then
     kill -TERM "$runner_pid" 2>/dev/null || true
     wait "$runner_pid" 2>/dev/null || true
   fi
-  systemctl --user reset-failed "$scope" >/dev/null 2>&1 || true
+  exec 9>"$aggregate_lock"
+  flock 9
+  "$supervisor" --reconcile >/dev/null 2>&1 || true
+  print_diagnosis
+  systemctl_user reset-failed "$scope" >/dev/null 2>&1 || true
+  rm -f "$diagnosis_file" "$diagnosis_file.pending"
+  rm -f "$output_overflow_file"
+  flock -u 9
   exit "$exit_code"
 }
 
@@ -54,26 +114,85 @@ trap 'terminate 129' HUP
 trap 'terminate 130' INT
 trap 'terminate 143' TERM
 
-systemd-run \
-  --user \
-  --scope \
-  --quiet \
-  --same-dir \
-  --expand-environment=no \
-  --unit="$unit" \
-  --slice=opencode-tools.slice \
-  --description='OpenCode tool command' \
-  --property=MemoryAccounting=yes \
-  --property="MemoryMax=$memory_max" \
-  --property="MemorySwapMax=$memory_swap_max" \
-  --property=TasksAccounting=yes \
-  --property="TasksMax=$tasks_max" \
-  --property=OOMPolicy=kill \
-  -- \
-  "$real_shell" -c "$command" "$@" &
+systemctl_user start "$supervisor_unit" >/dev/null 2>&1 \
+  || fail 'aggregate memory supervisor could not be started'
+
+exec 9>"$aggregate_lock"
+flock 9
+systemctl_user start "$tools_slice" >/dev/null 2>&1 \
+  || fail 'aggregate tool slice could not be started'
+"$supervisor" --reconcile \
+  || fail 'stale aggregate freeze could not be reconciled safely'
+systemctl_user is-active --quiet "$supervisor_unit" \
+  || fail 'aggregate memory supervisor is not active'
+
+(
+  exec 9>&-
+  systemd-run \
+    --user \
+    --scope \
+    --quiet \
+    --same-dir \
+    --expand-environment=no \
+    --unit="$unit" \
+    --slice="$tools_slice" \
+    --description='OpenCode tool command' \
+    --property=MemoryAccounting=yes \
+    --property="MemoryMax=$memory_max" \
+    --property="MemorySwapMax=$memory_swap_max" \
+    --property=TasksAccounting=yes \
+    --property="TasksMax=$tasks_max" \
+    --property=OOMPolicy=kill \
+    -- \
+    "$real_shell" -c "$command" "$@"
+) 2>&1 | (
+  exec 9>&-
+  initial_size=1
+  block_size=65536
+  dd bs="$initial_size" count=1 status=none
+  remaining_bytes=$((output_max_bytes - initial_size))
+  block_count=$((remaining_bytes / block_size))
+  remainder=$((remaining_bytes % block_size))
+  if (( block_count > 0 )); then
+    dd bs="$block_size" count="$block_count" iflag=fullblock status=none
+  fi
+  if (( remainder > 0 )); then
+    dd bs="$remainder" count=1 iflag=fullblock status=none
+  fi
+  : > "$output_overflow_file"
+  dd bs=1 count=1 iflag=fullblock status=none of="$output_overflow_file"
+  if [[ -s "$output_overflow_file" ]]; then
+    printf 'output-limit\n' > "$diagnosis_file" || true
+    systemctl_user kill --signal=KILL --kill-whom=all "$scope" >/dev/null 2>&1 || true
+    dd status=none of=/dev/null
+    exit 125
+  fi
+) &
 runner_pid=$!
+
+scope_realized=false
+for ((attempt = 0; attempt < 50; attempt++)); do
+  if [[ "$(systemctl_user show "$scope" --property=Id --value 2>/dev/null)" == "$scope" \
+    && "$(systemctl_user show "$scope" --property=ActiveState --value 2>/dev/null)" == 'active' ]]; then
+    scope_realized=true
+    break
+  fi
+  kill -0 "$runner_pid" 2>/dev/null || break
+  sleep 0.02
+done
+if [[ "$scope_realized" != true ]] && kill -0 "$runner_pid" 2>/dev/null; then
+  printf 'enforcement-unavailable\n' > "$diagnosis_file" || true
+  systemctl_user kill --signal=KILL --kill-whom=all "$scope" >/dev/null 2>&1 || true
+fi
+flock -u 9
 
 wait "$runner_pid" 2>/dev/null
 status=$?
-systemctl --user reset-failed "$scope" >/dev/null 2>&1 || true
+flock 9
+"$supervisor" --reconcile || true
+print_diagnosis
+systemctl_user reset-failed "$scope" >/dev/null 2>&1 || true
+rm -f "$diagnosis_file"
+rm -f "$output_overflow_file"
+flock -u 9
 exit "$status"

@@ -80,6 +80,19 @@ export function subscribeDirectoryPermission(
   return subscribeBlockingRequest(permissionSubscribersByStore, store, sessionID, listener)
 }
 
+export function subscribeDirectoryPermissions(
+  store: StoreApi<DirectoryStore>,
+  sessionIDs: readonly string[],
+  listener: BlockingRequestSubscriber,
+): () => void {
+  const unsubscribers = [...new Set(sessionIDs.filter(Boolean))].map((sessionID) => (
+    subscribeBlockingRequest(permissionSubscribersByStore, store, sessionID, listener)
+  ))
+  return () => {
+    for (const unsubscribe of unsubscribers) unsubscribe()
+  }
+}
+
 export function subscribeDirectoryQuestion(
   store: StoreApi<DirectoryStore>,
   sessionID: string,

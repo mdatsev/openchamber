@@ -7,15 +7,18 @@ import type {
   GitLogResponse,
   GitIdentitySummary,
   GitWorktreeComparison,
+  GitWorktreeComparisonMode,
   GetGitWorktreeComparisonOptions,
 } from '@/lib/api/types';
 import { getDeferredSafeStorage } from '@/stores/utils/safeStorage';
 import { getRuntimeKey } from '@/lib/runtime-switch';
 import { runBackgroundNetworkTask } from '@/lib/background-network';
+import { normalizePath } from '@/lib/pathNormalization';
 
 const LOG_STALE_THRESHOLD = 10000;
 const REPO_CHECK_STALE_THRESHOLD = 60_000;
 const STATUS_STALE_THRESHOLD = 5_000;
+const WORKTREE_COMPARISON_STALE_THRESHOLD = 30_000;
 const BRANCHES_STALE_THRESHOLD = 30_000;
 const IDENTITY_STALE_THRESHOLD = 60_000;
 const DIFF_PREFETCH_MAX_FILES = 25;
@@ -51,10 +54,15 @@ interface DirectoryGitState {
   isLoadingIdentity: boolean;
   worktreeComparisonSummary?: GitWorktreeComparison | null;
   worktreeComparisonFull?: GitWorktreeComparison | null;
+  worktreeComparisonSummaryFetchedAt?: number;
+  worktreeComparisonFullFetchedAt?: number;
+  worktreeComparisonFullContextLines?: number;
   worktreeComparisonSummaryError?: string | null;
   worktreeComparisonError?: string | null;
+  worktreeComparisonErrorMode?: GitWorktreeComparisonMode | null;
   isLoadingWorktreeComparisonSummary?: boolean;
   isLoadingWorktreeComparison?: boolean;
+  worktreeComparisonLoadingMode?: GitWorktreeComparisonMode | null;
 }
 
 interface GitStore {
@@ -73,8 +81,14 @@ interface GitStore {
   fetchWorktreeComparison: (
     directory: string,
     git: GitAPI,
-    options?: GetGitWorktreeComparisonOptions,
+    options: GetGitWorktreeComparisonOptions,
   ) => Promise<void>;
+  ensureWorktreeComparison: (
+    directory: string,
+    git: GitAPI,
+    options: GetGitWorktreeComparisonOptions,
+  ) => Promise<void>;
+  invalidateWorktreeComparison: (directory: string) => void;
   fetchAll: (directory: string, git: GitAPI, options?: { force?: boolean; silentIfCached?: boolean }) => Promise<void>;
 
   ensureStatus: (directory: string, git: GitAPI) => Promise<void>;
@@ -111,7 +125,7 @@ interface GitAPI {
   getGitFileDiff: (directory: string, options: { path: string }) => Promise<GitFileDiffResponse>;
   getWorktreeComparison?: (
     directory: string,
-    options?: GetGitWorktreeComparisonOptions,
+    options: GetGitWorktreeComparisonOptions,
   ) => Promise<GitWorktreeComparison>;
 }
 
@@ -120,6 +134,9 @@ const diffFetchGenerationByDirectory = new Map<string, number>();
 const inFlightStatusFetches = new Map<string, Promise<boolean>>();
 const inFlightEnsureAllByDirectory = new Map<string, Promise<void>>();
 const inFlightWorktreeComparisons = new Map<string, Promise<void>>();
+const comparisonPrimaryByDirectory = new Map<string, string>();
+const comparisonInvalidationRevisionByDirectory = new Map<string, number>();
+let comparisonInvalidationRevision = 0;
 const requestGenerationByChannel = new Map<string, number>();
 const statusMutationRevisionByDirectory = new Map<string, number>();
 let gitRuntimeGeneration = 0;
@@ -210,10 +227,15 @@ const createEmptyDirectoryState = (): DirectoryGitState => ({
   isLoadingIdentity: false,
   worktreeComparisonSummary: null,
   worktreeComparisonFull: null,
+  worktreeComparisonSummaryFetchedAt: 0,
+  worktreeComparisonFullFetchedAt: 0,
+  worktreeComparisonFullContextLines: 0,
   worktreeComparisonSummaryError: null,
   worktreeComparisonError: null,
+  worktreeComparisonErrorMode: null,
   isLoadingWorktreeComparisonSummary: false,
   isLoadingWorktreeComparison: false,
+  worktreeComparisonLoadingMode: null,
 });
 
 // ---------------------------------------------------------------------------
@@ -583,6 +605,9 @@ export const useGitStore = create<GitStore>()(
         inFlightStatusFetches.clear();
         inFlightEnsureAllByDirectory.clear();
         inFlightWorktreeComparisons.clear();
+        comparisonPrimaryByDirectory.clear();
+        comparisonInvalidationRevisionByDirectory.clear();
+        comparisonInvalidationRevision = 0;
         inFlightDiffFetchesByDirectory.clear();
         diffFetchGenerationByDirectory.clear();
         set({ runtimeKey, directories: seedDirectoriesFromBranchCache(runtimeKey), activeDirectory: null });
@@ -665,6 +690,7 @@ export const useGitStore = create<GitStore>()(
                 lastStatusFetch: now,
               });
               set({ directories: newDirectories });
+              get().invalidateWorktreeComparison(directory);
               return false;
             }
 
@@ -720,12 +746,15 @@ export const useGitStore = create<GitStore>()(
                 isGitRepo: true,
                 status: mergedStatus,
                 diffCache: nextDiffCache,
+                worktreeComparisonSummaryFetchedAt: 0,
+                worktreeComparisonFullFetchedAt: 0,
                 indexRevision: indexStatusChanged ? currentDirState.indexRevision + 1 : currentDirState.indexRevision,
                 lastRepoCheckAt: shouldProbeRepository ? now : currentDirState.lastRepoCheckAt,
                 lastStatusFetch: Date.now(),
                 lastStatusChange: hasFileContentChange ? Date.now() : currentDirState.lastStatusChange,
               });
               set({ directories: newDirectories });
+              get().invalidateWorktreeComparison(directory);
             } else {
 
               const newDirectories = new Map(get().directories);
@@ -815,10 +844,13 @@ export const useGitStore = create<GitStore>()(
             files: nextFiles,
             isClean: nextFiles.length === 0,
           },
+          worktreeComparisonSummaryFetchedAt: 0,
+          worktreeComparisonFullFetchedAt: 0,
           indexRevision: dirState.indexRevision + 1,
           lastStatusChange: Date.now(),
         });
         set({ directories: nextDirectories });
+        get().invalidateWorktreeComparison(directory);
 
         return previousStatus;
       },
@@ -840,6 +872,7 @@ export const useGitStore = create<GitStore>()(
           lastStatusChange: Date.now(),
         });
         set({ directories: nextDirectories });
+        get().invalidateWorktreeComparison(directory);
       },
 
       bumpIndexRevision: (directory) => {
@@ -857,6 +890,7 @@ export const useGitStore = create<GitStore>()(
           indexRevision: dirState.indexRevision + 1,
         });
         set({ directories: nextDirectories });
+        get().invalidateWorktreeComparison(directory);
       },
 
       fetchBranches: async (directory, git) => {
@@ -948,24 +982,42 @@ export const useGitStore = create<GitStore>()(
         }
       },
 
-      fetchWorktreeComparison: async (directory, git, options = {}) => {
+      fetchWorktreeComparison: async (directory, git, options) => {
         if (!git.getWorktreeComparison) return;
 
         const includePatches = options.includePatches === true;
         const requestTier = includePatches ? 'full' : 'summary';
         const runtimeKey = getRuntimeKey();
-        const requestKey = JSON.stringify([runtimeKey, directory, requestTier]);
+        const requestKey = JSON.stringify([
+          runtimeKey,
+          directory,
+          requestTier,
+          options.mode,
+          options.contextLines ?? 3,
+        ]);
         const existing = inFlightWorktreeComparisons.get(requestKey);
-        if (existing) return existing;
+        const current = get().directories.get(directory);
+        if (existing && (!includePatches || current?.worktreeComparisonLoadingMode === options.mode)) {
+          return existing;
+        }
+        if (existing) {
+          inFlightWorktreeComparisons.delete(requestKey);
+        }
 
         const channel = `worktree-comparison-${requestTier}`;
         const token = startRequest(directory, channel);
+        const authorityRevision = comparisonInvalidationRevision;
         const request = (async () => {
           {
             const directories = new Map(get().directories);
             const current = directories.get(directory) ?? createEmptyDirectoryState();
             const loadingState = includePatches
-              ? { isLoadingWorktreeComparison: true, worktreeComparisonError: null }
+              ? {
+                  isLoadingWorktreeComparison: true,
+                  worktreeComparisonLoadingMode: options.mode,
+                  worktreeComparisonError: null,
+                  worktreeComparisonErrorMode: null,
+                }
               : { isLoadingWorktreeComparisonSummary: true, worktreeComparisonSummaryError: null };
             directories.set(directory, {
               ...current,
@@ -979,26 +1031,65 @@ export const useGitStore = create<GitStore>()(
               if (!isRequestCurrent(token, directory)) return null;
               return git.getWorktreeComparison?.(directory, options) ?? null;
             };
-            const comparison = includePatches
+            let comparison = includePatches
               ? await load()
               : await runBackgroundNetworkTask(load);
             if (!comparison || !isRequestCurrent(token, directory)) return;
+            const primary = comparison.available ? normalizePath(comparison.primaryWorktree) : null;
+            const directoryInvalidatedAt = comparisonInvalidationRevisionByDirectory.get(
+              runtimeDirectoryKey(token.runtimeKey, directory),
+            ) ?? 0;
+            const primaryInvalidatedAt = primary
+              ? comparisonInvalidationRevisionByDirectory.get(runtimeDirectoryKey(token.runtimeKey, primary)) ?? 0
+              : 0;
+            if (directoryInvalidatedAt > authorityRevision || primaryInvalidatedAt > authorityRevision) {
+              const retryAuthorityRevision = comparisonInvalidationRevision;
+              comparison = await git.getWorktreeComparison?.(directory, options) ?? null;
+              if (!comparison || !isRequestCurrent(token, directory)) return;
+              const retryPrimary = comparison.available ? normalizePath(comparison.primaryWorktree) : null;
+              const retryDirectoryInvalidatedAt = comparisonInvalidationRevisionByDirectory.get(
+                runtimeDirectoryKey(token.runtimeKey, directory),
+              ) ?? 0;
+              const retryPrimaryInvalidatedAt = retryPrimary
+                ? comparisonInvalidationRevisionByDirectory.get(runtimeDirectoryKey(token.runtimeKey, retryPrimary)) ?? 0
+                : 0;
+              if (retryDirectoryInvalidatedAt > retryAuthorityRevision || retryPrimaryInvalidatedAt > retryAuthorityRevision) {
+                const directories = new Map(get().directories);
+                const current = directories.get(directory);
+                if (current) {
+                  directories.set(directory, includePatches
+                    ? { ...current, isLoadingWorktreeComparison: false, worktreeComparisonLoadingMode: null }
+                    : { ...current, isLoadingWorktreeComparisonSummary: false });
+                  set({ directories });
+                }
+                return;
+              }
+            }
+            if (comparison.available) {
+              const resolvedPrimary = normalizePath(comparison.primaryWorktree);
+              if (resolvedPrimary) comparisonPrimaryByDirectory.set(runtimeDirectoryKey(token.runtimeKey, directory), resolvedPrimary);
+            }
 
             const directories = new Map(get().directories);
             const current = directories.get(directory) ?? createEmptyDirectoryState();
             const loadedState = includePatches
               ? {
                   worktreeComparisonFull: comparison,
+                  worktreeComparisonFullFetchedAt: Date.now(),
+                  worktreeComparisonFullContextLines: options.contextLines ?? 3,
                   worktreeComparisonError: null,
+                  worktreeComparisonErrorMode: null,
                   isLoadingWorktreeComparison: false,
+                  worktreeComparisonLoadingMode: null,
                 }
               : {
+                  worktreeComparisonSummary: comparison,
+                  worktreeComparisonSummaryFetchedAt: Date.now(),
                   worktreeComparisonSummaryError: null,
                   isLoadingWorktreeComparisonSummary: false,
                 };
             directories.set(directory, {
               ...current,
-              worktreeComparisonSummary: comparison,
               ...loadedState,
             });
             set({ directories });
@@ -1008,7 +1099,12 @@ export const useGitStore = create<GitStore>()(
             const directories = new Map(get().directories);
             const current = directories.get(directory) ?? createEmptyDirectoryState();
             const failedState = includePatches
-              ? { worktreeComparisonError: message, isLoadingWorktreeComparison: false }
+              ? {
+                  worktreeComparisonError: message,
+                  worktreeComparisonErrorMode: options.mode,
+                  isLoadingWorktreeComparison: false,
+                  worktreeComparisonLoadingMode: null,
+                }
               : { worktreeComparisonSummaryError: message, isLoadingWorktreeComparisonSummary: false };
             directories.set(directory, {
               ...current,
@@ -1026,6 +1122,87 @@ export const useGitStore = create<GitStore>()(
             inFlightWorktreeComparisons.delete(requestKey);
           }
         }
+      },
+
+      ensureWorktreeComparison: async (directory, git, options) => {
+        const directoryState = get().directories.get(directory);
+        const includePatches = options.includePatches === true;
+        const comparison = includePatches
+          ? directoryState?.worktreeComparisonFull
+          : directoryState?.worktreeComparisonSummary;
+        const fetchedAt = includePatches
+          ? directoryState?.worktreeComparisonFullFetchedAt
+          : directoryState?.worktreeComparisonSummaryFetchedAt;
+        const hasCurrentContext = !includePatches
+          || directoryState?.worktreeComparisonFullContextLines === (options.contextLines ?? 3);
+        const error = includePatches
+          ? directoryState?.worktreeComparisonError
+          : directoryState?.worktreeComparisonSummaryError;
+        if (
+          !error
+          && comparison?.mode === options.mode
+          && hasCurrentContext
+          && Date.now() - (fetchedAt ?? 0) < WORKTREE_COMPARISON_STALE_THRESHOLD
+        ) {
+          return;
+        }
+        await get().fetchWorktreeComparison(directory, git, options);
+      },
+
+      invalidateWorktreeComparison: (directory) => {
+        const directories = new Map(get().directories);
+        const normalizedDirectory = normalizePath(directory) ?? directory;
+        const runtimeKey = getRuntimeKey();
+        comparisonInvalidationRevision += 1;
+        comparisonInvalidationRevisionByDirectory.set(
+          runtimeDirectoryKey(runtimeKey, normalizedDirectory),
+          comparisonInvalidationRevision,
+        );
+        for (const requestKey of inFlightWorktreeComparisons.keys()) {
+          try {
+            const [requestRuntime, requestDirectory] = JSON.parse(requestKey) as [string, string];
+            const knownPrimary = comparisonPrimaryByDirectory.get(runtimeDirectoryKey(runtimeKey, requestDirectory));
+            if (
+              requestRuntime !== runtimeKey
+              || (normalizePath(requestDirectory) !== normalizedDirectory && knownPrimary !== normalizedDirectory)
+            ) continue;
+            startRequest(requestDirectory, 'worktree-comparison-summary');
+            startRequest(requestDirectory, 'worktree-comparison-full');
+            inFlightWorktreeComparisons.delete(requestKey);
+          } catch {
+            inFlightWorktreeComparisons.delete(requestKey);
+          }
+        }
+        let invalidated = false;
+        for (const [candidateDirectory, current] of directories) {
+          const knownPrimary = comparisonPrimaryByDirectory.get(runtimeDirectoryKey(runtimeKey, candidateDirectory));
+          const summaryPrimary = current.worktreeComparisonSummary?.available
+            ? normalizePath(current.worktreeComparisonSummary.primaryWorktree)
+            : null;
+          const fullPrimary = current.worktreeComparisonFull?.available
+            ? normalizePath(current.worktreeComparisonFull.primaryWorktree)
+            : null;
+          if (
+            normalizePath(candidateDirectory) !== normalizedDirectory
+            && knownPrimary !== normalizedDirectory
+            && summaryPrimary !== normalizedDirectory
+            && fullPrimary !== normalizedDirectory
+          ) continue;
+
+          startRequest(candidateDirectory, 'worktree-comparison-summary');
+          startRequest(candidateDirectory, 'worktree-comparison-full');
+          directories.set(candidateDirectory, {
+            ...current,
+            worktreeComparisonSummaryFetchedAt: 0,
+            worktreeComparisonFullFetchedAt: 0,
+            isLoadingWorktreeComparisonSummary: false,
+            isLoadingWorktreeComparison: false,
+            worktreeComparisonLoadingMode: null,
+          });
+          invalidated = true;
+        }
+        if (!invalidated) return;
+        set({ directories });
       },
 
       fetchAll: async (directory, git, options = {}) => {
@@ -1439,23 +1616,31 @@ export const useResolvedWorktreeComparisonSummary = (directory: string | null) =
   });
 };
 
-export const useWorktreeComparisonFull = (directory: string | null) => {
+export const useWorktreeComparisonFull = (directory: string | null, mode: GitWorktreeComparisonMode) => {
   return useGitStore((state) => {
     if (!directory) return null;
-    return state.directories.get(directory)?.worktreeComparisonFull ?? null;
+    const directoryState = state.directories.get(directory);
+    if (directoryState?.worktreeComparisonErrorMode === mode) return null;
+    const comparison = directoryState?.worktreeComparisonFull;
+    return comparison?.mode === mode ? comparison : null;
   });
 };
 
-export const useWorktreeComparisonError = (directory: string | null) => {
+export const useWorktreeComparisonError = (directory: string | null, mode: GitWorktreeComparisonMode) => {
   return useGitStore((state) => {
     if (!directory) return null;
-    return state.directories.get(directory)?.worktreeComparisonError ?? null;
+    const directoryState = state.directories.get(directory);
+    return directoryState?.worktreeComparisonErrorMode === mode
+      ? directoryState.worktreeComparisonError ?? null
+      : null;
   });
 };
 
-export const useWorktreeComparisonLoading = (directory: string | null) => {
+export const useWorktreeComparisonLoading = (directory: string | null, mode: GitWorktreeComparisonMode) => {
   return useGitStore((state) => {
     if (!directory) return false;
-    return state.directories.get(directory)?.isLoadingWorktreeComparison ?? false;
+    const directoryState = state.directories.get(directory);
+    return directoryState?.worktreeComparisonLoadingMode === mode
+      && directoryState.isLoadingWorktreeComparison === true;
   });
 };

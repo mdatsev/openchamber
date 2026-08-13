@@ -42,6 +42,7 @@ export interface ChangesGroupConfig {
   showRevertActions?: boolean;
   /** Comparison-only group with no stage, unstage, or revert operations. */
   readOnly?: boolean;
+  getStats?: (file: GitStatus['files'][number]) => { insertions: number; deletions: number } | undefined;
   /** Visually mark this group as "ready to commit". */
   accent?: boolean;
 }
@@ -491,7 +492,7 @@ export const ChangesPanel: React.FC<ChangesPanelProps> = ({
           actionLabel={group.getActionLabel(file.path)}
           actionSymbol={group.actionSymbol}
           onAction={() => group.onActionFile(file.path)}
-          stats={diffStats?.[file.path]}
+          stats={group.getStats?.(file) ?? diffStats?.[file.path]}
           onViewDiff={() => group.onViewDiff(file.path)}
           onRevert={() => setPendingFileRevert({ groupId: group.id, path: file.path })}
           isReverting={revertingPaths.has(file.path) || isRevertingAll}

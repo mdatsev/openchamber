@@ -1556,7 +1556,7 @@ const ensureOpenCodeProjectId = async (primaryWorktree) => {
   return projectId;
 };
 
-const resolveWorktreeProjectContext = async (directory) => {
+const resolveWorktreeProjectContext = async (directory, { includeProjectMetadata = true } = {}) => {
   const directoryPath = normalizeDirectoryPath(directory);
   if (!directoryPath) {
     throw new Error('Directory is required');
@@ -1576,8 +1576,8 @@ const resolveWorktreeProjectContext = async (directory) => {
   );
   const commonDir = path.resolve(sandbox, commonResult.stdout.trim());
   const primaryWorktree = path.dirname(commonDir);
-  const projectID = await ensureOpenCodeProjectId(primaryWorktree);
-  const worktreeRoot = path.join(getOpenCodeDataPath(), 'worktree', projectID);
+  const projectID = includeProjectMetadata ? await ensureOpenCodeProjectId(primaryWorktree) : null;
+  const worktreeRoot = projectID ? path.join(getOpenCodeDataPath(), 'worktree', projectID) : null;
 
   return {
     projectID,
@@ -2749,15 +2749,122 @@ const countPatchChanges = (patch) => {
   return { additions, deletions };
 };
 
-export async function getWorktreeComparison(directory, { includePatches = false, contextLines = 3 } = {}) {
-  const context = await resolveWorktreeProjectContext(directory);
+const WORKTREE_COMPARISON_PROTOCOL_VERSION = 2;
+
+const loadTrackedWorktreeComparisonLayer = async (
+  directory,
+  { kind, base, target, diffArgs, includePatches, contextLines }
+) => {
+  const pathsResult = await runGitCommandOrThrow(
+    directory,
+    ['diff', '--name-only', '--no-renames', '-z', ...diffArgs, '--'],
+    `Failed to list ${kind} linked worktree changes`
+  );
+  const paths = parseWorktreeComparisonPaths(pathsResult.stdout)
+    .sort((left, right) => left.localeCompare(right));
+  const layer = { kind, base, target, fileCount: paths.length };
+  if (!includePatches || paths.length === 0) {
+    return { layer: includePatches ? { ...layer, files: [] } : layer, paths };
+  }
+
+  const [statusesResult, statsResult, patchResult] = await Promise.all([
+    runGitCommandOrThrow(
+      directory,
+      ['diff', '--name-status', '--no-renames', '-z', ...diffArgs, '--'],
+      `Failed to classify ${kind} linked worktree changes`
+    ),
+    runGitCommandOrThrow(
+      directory,
+      ['diff', '--numstat', '--no-renames', '-z', ...diffArgs, '--'],
+      `Failed to calculate ${kind} linked worktree change statistics`
+    ),
+    runGitCommandOrThrow(
+      directory,
+      ['diff', '--no-color', '--no-ext-diff', '--no-renames', `-U${contextLines}`, ...diffArgs, '--'],
+      `Failed to load ${kind} linked worktree patches`
+    ),
+  ]);
+  const statuses = parseWorktreeComparisonStatuses(statusesResult.stdout);
+  const stats = parseWorktreeComparisonStats(statsResult.stdout);
+  const patches = new Map();
+  for (const patch of splitWorktreeComparisonPatch(patchResult.stdout)) {
+    const filePath = fileFromComparisonPatch(patch);
+    if (!filePath) continue;
+    patches.set(filePath, `${patches.get(filePath) || ''}${patch}`);
+  }
+
+  return {
+    paths,
+    layer: {
+      ...layer,
+      files: paths.map((filePath) => ({
+        path: filePath,
+        status: statuses.get(filePath) || 'modified',
+        additions: stats.get(filePath)?.additions || 0,
+        deletions: stats.get(filePath)?.deletions || 0,
+        patch: patches.get(filePath) || '',
+      })),
+    },
+  };
+};
+
+const loadUntrackedWorktreeComparisonLayer = async (
+  directory,
+  paths,
+  { includePatches, contextLines }
+) => {
+  const sortedPaths = [...paths].sort((left, right) => left.localeCompare(right));
+  const layer = { kind: 'untracked', base: 'empty-tree', target: 'worktree', fileCount: sortedPaths.length };
+  if (!includePatches || sortedPaths.length === 0) {
+    return { layer: includePatches ? { ...layer, files: [] } : layer, paths: sortedPaths };
+  }
+
+  const patches = await getUntrackedDiffs(directory, sortedPaths, { concurrency: 4, contextLines });
+  return {
+    paths: sortedPaths,
+    layer: {
+      ...layer,
+      files: sortedPaths.map((filePath, index) => {
+        const patch = patches[index] || '';
+        const stats = countPatchChanges(patch);
+        return {
+          path: filePath,
+          status: 'added',
+          additions: stats.additions,
+          deletions: stats.deletions,
+          patch,
+        };
+      }),
+    },
+  };
+};
+
+export async function getWorktreeComparison(directory, options) {
+  const {
+    mode = 'combined',
+    includeLegacyFiles = false,
+    includePatches = false,
+    contextLines = 3,
+  } = options || {};
+  if (mode !== 'uncommitted' && mode !== 'committed' && mode !== 'combined') {
+    throw new Error('Comparison mode must be uncommitted, committed, or combined');
+  }
+
+  // Comparisons need only repository topology. Skipping OpenCode project
+  // metadata prevents this read-only endpoint from creating `.git/opencode`.
+  const context = await resolveWorktreeProjectContext(directory, { includeProjectMetadata: false });
   const [sandboxCanonical, primaryCanonical] = await Promise.all([
     canonicalPath(context.sandbox),
     canonicalPath(context.primaryWorktree),
   ]);
 
   if (sandboxCanonical === primaryCanonical) {
-    return { available: false, reason: 'primary-worktree' };
+    return {
+      protocolVersion: WORKTREE_COMPARISON_PROTOCOL_VERSION,
+      available: false,
+      reason: 'primary-worktree',
+      mode,
+    };
   }
 
   const [baseBranchResult, baseHeadResult, headResult, statusResult] = await Promise.all([
@@ -2767,13 +2874,13 @@ export async function getWorktreeComparison(directory, { includePatches = false,
     runGitCommand(context.sandbox, ['status', '--porcelain=v1', '-z', '--untracked-files=all']),
   ]);
 
-  const baseBranch = String(baseBranchResult.stdout || '').trim();
-  const baseHead = String(baseHeadResult.stdout || '').trim();
+  const baseBranch = String(baseBranchResult.stdout || '').trim() || null;
+  const baseHead = String(baseHeadResult.stdout || '').trim() || null;
   const head = String(headResult.stdout || '').trim();
-  if (!baseBranchResult.success || !baseBranch) {
+  if (mode !== 'uncommitted' && (!baseBranchResult.success || !baseBranch)) {
     throw new Error('The primary worktree must have a checked-out branch');
   }
-  if (!baseHeadResult.success || !baseHead) {
+  if (mode !== 'uncommitted' && (!baseHeadResult.success || !baseHead)) {
     throw new Error('The primary worktree branch has no commit to compare');
   }
   if (!headResult.success || !head) {
@@ -2783,103 +2890,117 @@ export async function getWorktreeComparison(directory, { includePatches = false,
     throw new Error(statusResult.message || 'Failed to read linked worktree status');
   }
 
-  const cherryResult = await runGitCommandOrThrow(
-    context.sandbox,
-    ['cherry', baseHead, head],
-    'Failed to compare linked worktree commits'
-  );
-  const unintegratedCommitCount = String(cherryResult.stdout || '')
-    .split('\n')
-    .filter((line) => line.trim().startsWith('+')).length;
-  const hasUnintegratedCommits = unintegratedCommitCount > 0;
   const statusOutput = String(statusResult.stdout || '');
   const isDirty = Boolean(statusOutput);
-  const untrackedPaths = listUntrackedPathsFromStatus(statusOutput);
-
-  let mergeBase = head;
-  if (hasUnintegratedCommits) {
-    // `git cherry` treats patch-equivalent cherry-picks as integrated. When all
-    // commits are integrated, compare HEAD only to its dirty tree. Otherwise a
-    // merge base excludes primary-only commits from the remaining branch diff.
-    const mergeBaseResult = await runGitCommand(
-      context.sandbox,
-      ['merge-base', baseHead, head]
-    );
-    mergeBase = String(mergeBaseResult.stdout || '').trim();
+  const comparisonContextLines = Number.isFinite(contextLines) ? Math.max(0, contextLines) : 3;
+  let mergeBase = null;
+  let committedCommitCount = 0;
+  if (mode !== 'uncommitted') {
+    const mergeBaseResult = await runGitCommand(context.sandbox, ['merge-base', baseHead, head]);
+    mergeBase = String(mergeBaseResult.stdout || '').trim() || null;
     if (!mergeBaseResult.success || !mergeBase) {
       throw new Error('The primary and linked worktree branches do not share an ancestor');
     }
+
+    const commitCountResult = await runGitCommandOrThrow(
+      context.sandbox,
+      ['rev-list', '--count', `${baseHead}..${head}`],
+      'Failed to count linked worktree commits'
+    );
+    committedCommitCount = Number.parseInt(String(commitCountResult.stdout || '').trim(), 10);
+    if (!Number.isFinite(committedCommitCount)) {
+      throw new Error('Failed to count linked worktree commits');
+    }
   }
 
-  const trackedPathsResult = await runGitCommandOrThrow(
-    context.sandbox,
-    ['diff', '--name-only', '--no-renames', '-z', mergeBase, '--'],
-    'Failed to list linked worktree changes'
-  );
-  const trackedPaths = parseWorktreeComparisonPaths(trackedPathsResult.stdout);
-  const paths = Array.from(new Set([...trackedPaths, ...untrackedPaths])).sort((left, right) => left.localeCompare(right));
+  const layerRequests = [];
+  if (mode !== 'uncommitted') {
+    layerRequests.push(loadTrackedWorktreeComparisonLayer(context.sandbox, {
+      kind: 'committed',
+      base: mergeBase,
+      target: head,
+      diffArgs: [mergeBase, head],
+      includePatches,
+      contextLines: comparisonContextLines,
+    }));
+  }
+  if (mode !== 'committed') {
+    layerRequests.push(
+      loadTrackedWorktreeComparisonLayer(context.sandbox, {
+        kind: 'staged',
+        base: head,
+        target: 'index',
+        diffArgs: ['--cached', head],
+        includePatches,
+        contextLines: comparisonContextLines,
+      }),
+      loadTrackedWorktreeComparisonLayer(context.sandbox, {
+        kind: 'unstaged',
+        base: 'index',
+        target: 'worktree',
+        diffArgs: [],
+        includePatches,
+        contextLines: comparisonContextLines,
+      }),
+      loadUntrackedWorktreeComparisonLayer(
+        context.sandbox,
+        listUntrackedPathsFromStatus(statusOutput),
+        { includePatches, contextLines: comparisonContextLines }
+      )
+    );
+  }
+  const loadedLayers = await Promise.all(layerRequests);
+  const changedPaths = new Set(loadedLayers.flatMap(({ paths }) => paths));
+  const layers = loadedLayers.map(({ layer }) => layer);
   const summary = {
+    protocolVersion: WORKTREE_COMPARISON_PROTOCOL_VERSION,
     available: true,
+    mode,
+    primaryWorktree: context.primaryWorktree,
     baseBranch,
     baseHead,
     head,
     mergeBase,
-    hasUnintegratedCommits,
-    unintegratedCommitCount,
+    hasCommittedChanges: committedCommitCount > 0,
+    committedCommitCount,
     isDirty,
-    fileCount: paths.length,
-    hasChanges: paths.length > 0,
+    fileCount: changedPaths.size,
+    hasChanges: layers.some((layer) => layer.fileCount > 0),
+    layers,
   };
 
-  if (!includePatches || paths.length === 0) {
-    return includePatches ? { ...summary, files: [] } : summary;
+  if (!includeLegacyFiles) {
+    return summary;
   }
 
-  const comparisonContextLines = Number.isFinite(contextLines) ? Math.max(0, contextLines) : 3;
-  const [statusesResult, statsResult, patchResult, untrackedPatches] = await Promise.all([
-    runGitCommandOrThrow(
-      context.sandbox,
-      ['diff', '--name-status', '--no-renames', '-z', mergeBase, '--'],
-      'Failed to classify linked worktree changes'
-    ),
-    runGitCommandOrThrow(
-      context.sandbox,
-      ['diff', '--numstat', '--no-renames', '-z', mergeBase, '--'],
-      'Failed to calculate linked worktree change statistics'
-    ),
-    runGitCommandOrThrow(
-      context.sandbox,
-      ['diff', '--no-color', '--no-ext-diff', '--no-renames', `-U${comparisonContextLines}`, mergeBase, '--'],
-      'Failed to load linked worktree patches'
-    ),
-    getUntrackedDiffs(context.sandbox, untrackedPaths, { concurrency: 4, contextLines: comparisonContextLines }),
-  ]);
-
-  const statuses = parseWorktreeComparisonStatuses(statusesResult.stdout);
-  const stats = parseWorktreeComparisonStats(statsResult.stdout);
-  const patches = new Map();
-  for (const patch of splitWorktreeComparisonPatch(patchResult.stdout)) {
-    const filePath = fileFromComparisonPatch(patch);
-    if (!filePath) continue;
-    patches.set(filePath, `${patches.get(filePath) || ''}${patch}`);
-  }
-  untrackedPaths.forEach((filePath, index) => {
-    const patch = untrackedPatches[index] || '';
-    patches.set(filePath, `${patches.get(filePath) || ''}${patch}`);
-    if (!stats.has(filePath)) stats.set(filePath, countPatchChanges(patch));
-    if (!statuses.has(filePath)) statuses.set(filePath, 'added');
-  });
-
-  return {
+  const legacySummary = {
     ...summary,
-    files: paths.map((filePath) => ({
-      path: filePath,
-      status: statuses.get(filePath) || 'modified',
-      additions: stats.get(filePath)?.additions || 0,
-      deletions: stats.get(filePath)?.deletions || 0,
-      patch: patches.get(filePath) || '',
-    })),
+    diffBase: mergeBase,
+    hasUnintegratedCommits: committedCommitCount > 0,
+    unintegratedCommitCount: committedCommitCount,
   };
+  if (!includePatches) {
+    return legacySummary;
+  }
+
+  const legacy = await loadTrackedWorktreeComparisonLayer(context.sandbox, {
+    kind: 'combined',
+    base: mergeBase,
+    target: 'worktree',
+    diffArgs: [mergeBase],
+    includePatches,
+    contextLines: comparisonContextLines,
+  });
+  const legacyUntracked = await loadUntrackedWorktreeComparisonLayer(
+    context.sandbox,
+    listUntrackedPathsFromStatus(statusOutput),
+    { includePatches, contextLines: comparisonContextLines }
+  );
+  const legacyFiles = includePatches
+    ? [...(legacy.layer.files || []), ...(legacyUntracked.layer.files || [])]
+        .sort((left, right) => left.path.localeCompare(right.path))
+    : undefined;
+  return { ...legacySummary, files: legacyFiles };
 }
 
 const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico', 'bmp', 'avif'];

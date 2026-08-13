@@ -33,6 +33,7 @@ const buildContextPrompt = (entries) => {
 export const createContextObligatoryRuntime = ({
   buildOpenCodeUrl,
   getOpenCodeAuthHeaders,
+  runWithTurnAdmission,
 }) => {
   const inflight = new Set();
   let stopped = false;
@@ -94,7 +95,7 @@ export const createContextObligatoryRuntime = ({
     const modelID = typeof executionInfo?.modelID === 'string' ? executionInfo.modelID : '';
     if (!providerID || !modelID) throw new Error('no pre-compaction assistant provider/model');
     const agent = typeof executionInfo.agent === 'string' ? executionInfo.agent : executionInfo.mode;
-    await openCodeFetch(`/session/${encodeURIComponent(sessionId)}/prompt_async`, {
+    const send = () => openCodeFetch(`/session/${encodeURIComponent(sessionId)}/prompt_async`, {
       directory,
       method: 'POST',
       body: {
@@ -103,6 +104,11 @@ export const createContextObligatoryRuntime = ({
         parts: [{ type: 'text', text: buildContextPrompt(entries), synthetic: true }],
       },
     });
+    if (typeof runWithTurnAdmission === 'function') {
+      await runWithTurnAdmission(send);
+    } else {
+      await send();
+    }
 
     const fresh = await openCodeFetch(`/session/${encodeURIComponent(sessionId)}`, { directory });
     const freshState = readContextState(fresh);

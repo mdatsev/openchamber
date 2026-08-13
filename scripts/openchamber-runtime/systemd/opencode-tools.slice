@@ -3,6 +3,7 @@ Description=OpenCode tool command resource boundary
 
 [Slice]
 MemoryAccounting=yes
+MemoryHigh=6656M
 MemoryMax=7G
 MemorySwapMax=1G
 TasksAccounting=yes

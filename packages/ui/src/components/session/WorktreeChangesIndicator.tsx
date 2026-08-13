@@ -6,7 +6,7 @@ import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
 import { useI18n } from '@/lib/i18n';
 import { sessionEvents } from '@/lib/sessionEvents';
 import { cn } from '@/lib/utils';
-import { useGitStore, useWorktreeComparisonSummary } from '@/stores/useGitStore';
+import { useGitStore, useResolvedWorktreeComparisonSummary } from '@/stores/useGitStore';
 
 const normalizeDirectory = (value: string): string => value.replace(/\\/g, '/').replace(/\/+$/, '');
 
@@ -19,22 +19,23 @@ export const WorktreeChangesIndicator: React.FC<{
   const { t } = useI18n();
   const { git } = useRuntimeAPIs();
   const normalizedDirectory = normalizeDirectory(directory);
-  const comparison = useWorktreeComparisonSummary(normalizedDirectory || null);
+  const comparison = useResolvedWorktreeComparisonSummary(normalizedDirectory || null);
   const fetchWorktreeComparison = useGitStore((state) => state.fetchWorktreeComparison);
+  const ensureWorktreeComparison = useGitStore((state) => state.ensureWorktreeComparison);
 
   React.useEffect(() => {
     if (!manageRefresh || !normalizedDirectory || !git.getWorktreeComparison) return;
-    void fetchWorktreeComparison(normalizedDirectory, git);
+    void ensureWorktreeComparison(normalizedDirectory, git, { mode: 'combined' });
     return sessionEvents.onGitRefreshHint((hint) => {
       if (normalizeDirectory(hint.directory) !== normalizedDirectory) return;
-      void fetchWorktreeComparison(normalizedDirectory, git);
+      void fetchWorktreeComparison(normalizedDirectory, git, { mode: 'combined' });
     });
-  }, [fetchWorktreeComparison, git, manageRefresh, normalizedDirectory]);
+  }, [ensureWorktreeComparison, fetchWorktreeComparison, git, manageRefresh, normalizedDirectory]);
 
-  if (!comparison?.available || !comparison.hasChanges) return null;
+  if (!comparison?.available || (!comparison.hasCommittedChanges && !comparison.isDirty)) return null;
 
   const label = t('sessions.sidebar.worktreeChanges', {
-    branch: comparison.baseBranch,
+    branch: comparison.baseBranch ?? '',
     count: comparison.fileCount,
   });
   const indicator = (

@@ -51,6 +51,7 @@ const createHarness = (fetchImpl = vi.fn(), overrides = {}) => {
     resolveProjectDirectory,
     fetch: fetchImpl,
     requestTimeoutMs: 25,
+    acquireTurnAdmission: () => () => {},
     ...overrides,
   });
   return { getRoute, resolveProjectDirectory, fetchImpl };

@@ -1375,17 +1375,23 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
       : EMPTY_STRING_ARRAY;
     const visibleWorktreeDirectorySet = new Set(worktreeDirectories);
     const projectDirectorySet = new Set(projectDirectories);
-    const { fetchWorktreeComparison, fetchStatus } = useGitStore.getState();
+    const { ensureWorktreeComparison, fetchWorktreeComparison, fetchStatus } = useGitStore.getState();
     const refreshWorktreeComparison = (directory: string) => {
       if (!git.getWorktreeComparison || !visibleWorktreeDirectorySet.has(directory)) return;
-      void fetchWorktreeComparison(directory, git);
+      void fetchWorktreeComparison(directory, git, { mode: 'combined' });
     };
-
-    worktreeDirectories.forEach(refreshWorktreeComparison);
+    worktreeDirectories.forEach((directory) => {
+      if (!git.getWorktreeComparison) return;
+      void ensureWorktreeComparison(directory, git, { mode: 'combined' });
+    });
     return sessionEvents.onGitRefreshHint((hint) => {
       const directory = normalizePath(hint.directory);
       if (!directory) return;
-      refreshWorktreeComparison(directory);
+      if (projectDirectorySet.has(directory)) {
+        worktreeDirectories.forEach(refreshWorktreeComparison);
+      } else {
+        refreshWorktreeComparison(directory);
+      }
       if (projectDirectorySet.has(directory)) {
         void fetchStatus(directory, git, { silent: true });
       }

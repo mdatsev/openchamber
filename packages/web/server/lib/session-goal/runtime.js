@@ -248,6 +248,7 @@ export const createSessionGoalRuntime = ({
   buildOpenCodeUrl,
   getOpenCodeAuthHeaders,
   getSmallModelService,
+  runWithTurnAdmission,
   emitGoalNotification,
   idleQuietMs = IDLE_QUIET_MS,
   kickoffQuietMs = KICKOFF_QUIET_MS,
@@ -431,7 +432,7 @@ export const createSessionGoalRuntime = ({
       ? lastAssistantInfo.agent
       : (typeof lastAssistantInfo?.mode === 'string' ? lastAssistantInfo.mode : '');
     const variant = typeof lastAssistantInfo?.variant === 'string' ? lastAssistantInfo.variant : '';
-    await openCodeFetch(`/session/${encodeURIComponent(sessionId)}/prompt_async`, {
+    const send = () => openCodeFetch(`/session/${encodeURIComponent(sessionId)}/prompt_async`, {
       directory,
       method: 'POST',
       body: {
@@ -441,6 +442,11 @@ export const createSessionGoalRuntime = ({
         parts: [{ type: 'text', text: buildContinuationPrompt(goal) }],
       },
     });
+    if (typeof runWithTurnAdmission === 'function') {
+      await runWithTurnAdmission(send);
+    } else {
+      await send();
+    }
   };
 
   const tick = async (sessionId, directory) => {

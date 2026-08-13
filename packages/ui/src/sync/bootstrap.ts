@@ -137,6 +137,13 @@ export async function bootstrapDirectory(input: {
   }
   const state = getState()
   const loading = state.status !== "complete"
+  const sessionStatusBaseline = state.session_status
+  const sessionStatusAuthority = Symbol("session-status-reconciliation")
+  let initialSessionStatus: {
+    snapshot: State["session_status"]
+    requestedAt: number
+  } | undefined
+  commit({ sessionStatusReconciliationAuthority: sessionStatusAuthority })
 
   // Seed from global state while we fetch directory-specific data
   const seededProject = projectID(directory, g.projects)
@@ -171,16 +178,10 @@ export async function bootstrapDirectory(input: {
     retry(() => {
       const requestedAt = Date.now()
       return sdk.session.status().then((x) => {
-        const sessionStatusSnapshot = unwrap(x, "session.status")
-        commit({
-          session_status: sessionStatusSnapshot,
-          sessionStatusSnapshotAt: requestedAt,
-          sessionStatusSnapshotActiveIds: new Set(
-            Object.entries(sessionStatusSnapshot)
-              .filter(([, status]) => status.type !== "idle")
-              .map(([sessionId]) => sessionId),
-          ),
-        })
+        initialSessionStatus = {
+          snapshot: unwrap(x, "session.status"),
+          requestedAt,
+        }
       })
     }),
   ])
@@ -194,8 +195,7 @@ export async function bootstrapDirectory(input: {
   // De-block the UI: only a total failure (OpenCode genuinely unreachable)
   // should abort the directory. Don't let one transient initial fetch strand
   // the directory in "loading" forever and skip phase 2/3 (sessions).
-  //   - session.status is LIVE data the event pipeline keeps current — a failed
-  //     initial snapshot is harmless; SSE will deliver the real status.
+  //   - session.status is committed only with matching blocker authority below.
   //   - path.get feeds project resolution, but if we already resolved a project
   //     (from global projects) its failure is tolerable; the worktree path is
   //     refreshed by later events.
@@ -215,89 +215,145 @@ export async function bootstrapDirectory(input: {
   // Phase 2: Deferrable — fetch after first paint without blocking.
   // These enrich the UI but aren't required for basic functionality.
   // ---------------------------------------------------------------------------
-  const runDeferredPhase = () => Promise.allSettled([
-    retry(() => sdk.command.list().then((x) => commit({ command: unwrap(x, "command.list") }))),
-    retry(() => sdk.mcp.status().then((x) => commit({ mcp: unwrap(x, "mcp.status") }))),
-    retry(() => sdk.lsp.status().then((x) => commit({ lsp: unwrap(x, "lsp.status") }))),
-    retry(() =>
-      sdk.vcs.get().then((x) => {
-        const current = getState()
+  const runDeferredPhase = async () => {
+    const results = await Promise.allSettled([
+      retry(() => sdk.command.list().then((x) => commit({ command: unwrap(x, "command.list") }))),
+      retry(() => sdk.mcp.status().then((x) => commit({ mcp: unwrap(x, "mcp.status") }))),
+      retry(() => sdk.lsp.status().then((x) => commit({ lsp: unwrap(x, "lsp.status") }))),
+      retry(() =>
+        sdk.vcs.get().then((x) => {
+          const current = getState()
+          if (x.error) {
+            throw new Error(`vcs.get failed: ${String(x.error)}`)
+          }
+          commit({ vcs: x.data ?? current.vcs })
+        }),
+      ),
+      initialSessionStatus
+        ? Promise.resolve(initialSessionStatus)
+        : retry(() => {
+            const requestedAt = Date.now()
+            return sdk.session.status().then((x) => ({
+              snapshot: unwrap(x, "session.status"),
+              requestedAt,
+            }))
+          }),
+      retry(async () => {
+        const before = getState()
+        const questionAuthority = before.question
+        const beforeSignatures = new Map(
+          Object.entries(before.question ?? {}).map(([sessionID, questions]) => [sessionID, requestSignature(questions)]),
+        )
+        const x = await sdk.question.list(directory ? { directory } : undefined)
         if (x.error) {
-          throw new Error(`vcs.get failed: ${String(x.error)}`)
+          const status = (x as { response?: { status?: number } }).response?.status
+          const err = new Error(`question.list failed${status ? ` (${status})` : ""}: ${String(x.error)}`)
+          if (status !== undefined) (err as Error & { status?: number }).status = status
+          throw err
         }
-        commit({ vcs: x.data ?? current.vcs })
+        const grouped = groupBySession(
+          (x.data ?? []).filter((q): q is QuestionRequest => !!q?.id && !!q.sessionID),
+        )
+        const current = getState()
+        if (current.question !== questionAuthority) return false
+        const merged = { ...current.question }
+        for (const [sessionID, questions] of Object.entries(grouped)) {
+          const beforeSignature = beforeSignatures.get(sessionID) ?? ""
+          const currentSignature = requestSignature(current.question[sessionID])
+          if (currentSignature !== beforeSignature) continue
+          merged[sessionID] = questions
+            .filter((q) => !!q?.id)
+            .sort((a, b) => cmp(a.id, b.id))
+        }
+        for (const sessionID of beforeSignatures.keys()) {
+          if (grouped[sessionID]) continue
+          const beforeSignature = beforeSignatures.get(sessionID) ?? ""
+          const currentSignature = requestSignature(current.question[sessionID])
+          if (currentSignature !== beforeSignature) continue
+          delete merged[sessionID]
+        }
+        commit({ question: merged })
+        return true
       }),
-    ),
-    retry(async () => {
-      const before = getState()
-      const beforeSignatures = new Map(
-        Object.entries(before.question ?? {}).map(([sessionID, questions]) => [sessionID, requestSignature(questions)]),
-      )
-      const x = await sdk.question.list(directory ? { directory } : undefined)
-      if (x.error) {
-        const status = (x as { response?: { status?: number } }).response?.status
-        const err = new Error(`question.list failed${status ? ` (${status})` : ""}: ${String(x.error)}`)
-        if (status !== undefined) (err as Error & { status?: number }).status = status
-        throw err
+      retry(async () => {
+        const before = getState()
+        const permissionAuthority = before.permission
+        const beforeSignatures = new Map(
+          Object.entries(before.permission ?? {}).map(([sessionID, permissions]) => [sessionID, requestSignature(permissions)]),
+        )
+        const x = await sdk.permission.list(directory ? { directory } : undefined)
+        if (x.error) {
+          const status = (x as { response?: { status?: number } }).response?.status
+          const err = new Error(`permission.list failed${status ? ` (${status})` : ""}: ${String(x.error)}`)
+          if (status !== undefined) (err as Error & { status?: number }).status = status
+          throw err
+        }
+        const grouped = groupBySession(
+          (x.data ?? []).filter((perm): perm is PermissionRequest => !!perm?.id && !!perm?.sessionID),
+        )
+        const current = getState()
+        if (current.permission !== permissionAuthority) return false
+        const merged = { ...current.permission }
+        for (const [sessionID, perms] of Object.entries(grouped)) {
+          const beforeSignature = beforeSignatures.get(sessionID) ?? ""
+          const currentSignature = requestSignature(current.permission[sessionID])
+          if (currentSignature !== beforeSignature) continue
+          merged[sessionID] = perms
+            .filter((p) => !!p?.id)
+            .sort((a, b) => cmp(a.id, b.id))
+        }
+        for (const sessionID of beforeSignatures.keys()) {
+          if (grouped[sessionID]) continue
+          const beforeSignature = beforeSignatures.get(sessionID) ?? ""
+          const currentSignature = requestSignature(current.permission[sessionID])
+          if (currentSignature !== beforeSignature) continue
+          delete merged[sessionID]
+        }
+        commit({ permission: merged })
+        return true
+      }),
+    ])
+    const statusResult = results[4]
+    const questionsAuthoritative = results[5]?.status === "fulfilled" && results[5].value === true
+    const permissionsAuthoritative = results[6]?.status === "fulfilled" && results[6].value === true
+    if (
+      statusResult?.status === "fulfilled"
+      && questionsAuthoritative
+      && permissionsAuthoritative
+      && getState().sessionStatusReconciliationAuthority === sessionStatusAuthority
+      && getState().session_status === sessionStatusBaseline
+    ) {
+      const { snapshot: sessionStatusSnapshot, requestedAt } = statusResult.value
+      commit({
+        session_status: sessionStatusSnapshot,
+        sessionStatusSnapshotAt: requestedAt,
+        sessionStatusSnapshotActiveIds: new Set(
+          Object.entries(sessionStatusSnapshot)
+            .filter(([, status]) => status.type !== "idle")
+            .map(([sessionId]) => sessionId),
+        ),
+        sessionStatusReconciliationPendingIds: undefined,
+      })
+    } else {
+      if (getState().sessionStatusReconciliationAuthority === sessionStatusAuthority) {
+        const current = getState()
+        commit({
+          sessionStatusReconciliationPendingIds: new Set([
+            ...current.session.map((session) => session.id),
+            ...Object.keys(current.session_status),
+            ...Object.keys(current.message),
+            ...(statusResult?.status === "fulfilled" ? Object.keys(statusResult.value.snapshot) : []),
+          ]),
+        })
       }
-      const grouped = groupBySession(
-        (x.data ?? []).filter((q): q is QuestionRequest => !!q?.id && !!q.sessionID),
-      )
-      const current = getState()
-      const merged = { ...current.question }
-      for (const [sessionID, questions] of Object.entries(grouped)) {
-        merged[sessionID] = questions
-          .filter((q) => !!q?.id)
-          .sort((a, b) => cmp(a.id, b.id))
-      }
-      for (const sessionID of beforeSignatures.keys()) {
-        if (grouped[sessionID]) continue
-        const beforeSignature = beforeSignatures.get(sessionID) ?? ""
-        const currentSignature = requestSignature(current.question[sessionID])
-        if (currentSignature !== beforeSignature) continue
-        delete merged[sessionID]
-      }
-      commit({ question: merged })
-    }),
-    retry(async () => {
-      const before = getState()
-      const beforeSignatures = new Map(
-        Object.entries(before.permission ?? {}).map(([sessionID, permissions]) => [sessionID, requestSignature(permissions)]),
-      )
-      const x = await sdk.permission.list(directory ? { directory } : undefined)
-      if (x.error) {
-        const status = (x as { response?: { status?: number } }).response?.status
-        const err = new Error(`permission.list failed${status ? ` (${status})` : ""}: ${String(x.error)}`)
-        if (status !== undefined) (err as Error & { status?: number }).status = status
-        throw err
-      }
-      const grouped = groupBySession(
-        (x.data ?? []).filter((perm): perm is PermissionRequest => !!perm?.id && !!perm?.sessionID),
-      )
-      const current = getState()
-      const merged = { ...current.permission }
-      for (const [sessionID, perms] of Object.entries(grouped)) {
-        merged[sessionID] = perms
-          .filter((p) => !!p?.id)
-          .sort((a, b) => cmp(a.id, b.id))
-      }
-      for (const sessionID of beforeSignatures.keys()) {
-        if (grouped[sessionID]) continue
-        const beforeSignature = beforeSignatures.get(sessionID) ?? ""
-        const currentSignature = requestSignature(current.permission[sessionID])
-        if (currentSignature !== beforeSignature) continue
-        delete merged[sessionID]
-      }
-      commit({ permission: merged })
-    }),
-  ]).then((results) => {
+    }
     const errors = results
       .filter((r): r is PromiseRejectedResult => r.status === "rejected")
       .map((r) => r.reason)
     if (errors.length) {
       console.error(`[bootstrap] deferred phase failed for ${directory}`, errors[0])
     }
-  })
+  }
 
   // ---------------------------------------------------------------------------
   // Phase 3: Authoritative session list. Keep this scheduler-owned so bounded

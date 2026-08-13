@@ -3,6 +3,7 @@ import { Icon } from '@/components/icon/Icon';
 
 import { toast } from '@/components/ui';
 import { Button } from '@/components/ui/button';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ScrollShadow } from '@/components/ui/ScrollShadow';
 import { ChangesPanel, type ChangesGroupConfig } from '@/components/views/git/ChangesPanel';
 import { CommitSection } from '@/components/views/git/CommitSection';
@@ -10,14 +11,13 @@ import { SyncActions } from '@/components/views/git/SyncActions';
 import { PierreDiffViewer } from '@/components/views/PierreDiffViewer';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
 import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
-import type { GitStatus } from '@/lib/api/types';
+import type { GitStatus, GitWorktreeComparisonMode } from '@/lib/api/types';
 import { useI18n } from '@/lib/i18n';
 import { fileDiffFromPatch } from '@/lib/diff/patchFileDiff';
 import { generateCommitMessage, stageGitFile, stageGitFiles, unstageGitFile, unstageGitFiles } from '@/lib/gitApi';
 import type { GitRemote } from '@/lib/gitApi';
 import {
-  getWorktreeComparisonDiffStats,
-  mapWorktreeComparisonEntries,
+  mapWorktreeComparisonGroups,
 } from '@/lib/git/worktreeComparison';
 import { sessionEvents } from '@/lib/sessionEvents';
 import { getLanguageFromExtension, isImageFile } from '@/lib/toolHelpers';
@@ -53,6 +53,7 @@ const isUnstagedStatusFile = (file: GitStatus['files'][number]): boolean => {
 const diffCacheKey = (path: string, staged: boolean): string => staged ? `${path}\u0000staged` : path;
 
 type MobileChangesSurfaceProps = {
+  active?: boolean;
   /** When provided, the list header gets a close X that calls this. */
   onClose?: () => void;
   /**
@@ -64,7 +65,7 @@ type MobileChangesSurfaceProps = {
   initialDiffStaged?: boolean;
 };
 
-export const MobileChangesSurface: React.FC<MobileChangesSurfaceProps> = ({ onClose, initialDiffPath, initialDiffStaged = false }) => {
+export const MobileChangesSurface: React.FC<MobileChangesSurfaceProps> = ({ active = true, onClose, initialDiffPath, initialDiffStaged = false }) => {
   const { t } = useI18n();
   const { git } = useRuntimeAPIs();
   const currentDirectory = normalizePath(useEffectiveDirectory() ?? null);
@@ -80,12 +81,14 @@ export const MobileChangesSurface: React.FC<MobileChangesSurfaceProps> = ({ onCl
   const setDiff = useGitStore((state) => state.setDiff);
 
   const fetchWorktreeComparison = useGitStore((state) => state.fetchWorktreeComparison);
-  const worktreeComparison = useWorktreeComparisonFull(currentDirectory || null);
-  const worktreeComparisonError = useWorktreeComparisonError(currentDirectory || null);
-  const isLoadingWorktreeComparison = useWorktreeComparisonLoading(currentDirectory || null);
+  const ensureWorktreeComparison = useGitStore((state) => state.ensureWorktreeComparison);
+  const [comparisonMode, setComparisonMode] = React.useState<GitWorktreeComparisonMode>('combined');
+  const worktreeComparison = useWorktreeComparisonFull(currentDirectory || null, comparisonMode);
+  const worktreeComparisonError = useWorktreeComparisonError(currentDirectory || null, comparisonMode);
+  const isLoadingWorktreeComparison = useWorktreeComparisonLoading(currentDirectory || null, comparisonMode);
   const [scope, setScope] = React.useState<ChangesScope>('branch');
-  const [route, setRoute] = React.useState<{ type: 'list' } | { type: 'diff'; path: string; staged: boolean; comparison: boolean }>(
-    () => (initialDiffPath ? { type: 'diff', path: initialDiffPath, staged: initialDiffStaged, comparison: false } : { type: 'list' }),
+  const [route, setRoute] = React.useState<{ type: 'list' } | { type: 'diff'; path: string; staged: boolean; comparisonKey?: string }>(
+    () => (initialDiffPath ? { type: 'diff', path: initialDiffPath, staged: initialDiffStaged } : { type: 'list' }),
   );
 
   // Allow the host (MobileApp) to push us into a specific diff when the surface
@@ -94,9 +97,9 @@ export const MobileChangesSurface: React.FC<MobileChangesSurfaceProps> = ({ onCl
   React.useEffect(() => {
     if (!initialDiffPath) return;
     setRoute((current) => (
-      current.type === 'diff' && !current.comparison && current.path === initialDiffPath && current.staged === initialDiffStaged
+      current.type === 'diff' && !current.comparisonKey && current.path === initialDiffPath && current.staged === initialDiffStaged
         ? current
-        : { type: 'diff', path: initialDiffPath, staged: initialDiffStaged, comparison: false }
+        : { type: 'diff', path: initialDiffPath, staged: initialDiffStaged }
     ));
   }, [initialDiffPath, initialDiffStaged]);
   const [syncAction, setSyncAction] = React.useState<SyncAction>(null);
@@ -121,16 +124,16 @@ export const MobileChangesSurface: React.FC<MobileChangesSurfaceProps> = ({ onCl
     return Array.from(unique.values()).sort((a, b) => a.path.localeCompare(b.path));
   }, [status?.files]);
 
-  const worktreeComparisonEntries = React.useMemo(
-    () => mapWorktreeComparisonEntries(worktreeComparison),
+  const worktreeComparisonGroups = React.useMemo(
+    () => mapWorktreeComparisonGroups(worktreeComparison),
     [worktreeComparison],
   );
-  const worktreeComparisonDiffStats = React.useMemo(
-    () => getWorktreeComparisonDiffStats(worktreeComparisonEntries),
-    [worktreeComparisonEntries],
+  const worktreeComparisonEntries = React.useMemo(
+    () => worktreeComparisonGroups.flatMap((group) => group.entries),
+    [worktreeComparisonGroups],
   );
   const worktreeComparisonAvailable = worktreeComparison?.available === true;
-  const worktreeComparisonBaseBranch = worktreeComparison?.available ? worktreeComparison.baseBranch : '';
+  const worktreeComparisonBaseBranch = worktreeComparison?.available ? worktreeComparison.baseBranch ?? '' : '';
 
   const stagedChangeEntries = React.useMemo(
     () => changeEntries.filter(isStagedStatusFile),
@@ -152,13 +155,13 @@ export const MobileChangesSurface: React.FC<MobileChangesSurfaceProps> = ({ onCl
   }, [remoteUrl, remotes, status?.tracking]);
 
   const selectedDiff = useGitStore(React.useCallback((state) => {
-    if (!currentDirectory || route.type !== 'diff' || route.comparison) return null;
+    if (!currentDirectory || route.type !== 'diff' || route.comparisonKey) return null;
     return state.directories.get(currentDirectory)?.diffCache.get(diffCacheKey(route.path, route.staged)) ?? null;
   }, [currentDirectory, route]));
 
   const selectedComparisonDiff = React.useMemo(() => {
-    if (route.type !== 'diff' || !route.comparison) return null;
-    const entry = worktreeComparisonEntries.find((candidate) => candidate.path === route.path);
+    if (route.type !== 'diff' || !route.comparisonKey) return null;
+    const entry = worktreeComparisonEntries.find((candidate) => candidate.comparisonKey === route.comparisonKey);
     if (!entry) return null;
     if (!entry.patch) return { original: '', modified: '', fileDiff: undefined, isBinary: false };
     const isBinary = /^Binary files .+ differ$/m.test(entry.patch) || /^GIT binary patch$/m.test(entry.patch);
@@ -172,8 +175,10 @@ export const MobileChangesSurface: React.FC<MobileChangesSurfaceProps> = ({ onCl
 
   const selectedFileEntry = React.useMemo(() => {
     if (route.type !== 'diff') return null;
-    const entries = route.comparison ? worktreeComparisonEntries : changeEntries;
-    return entries.find((entry) => entry.path === route.path) ?? null;
+    if (route.comparisonKey) {
+      return worktreeComparisonEntries.find((entry) => entry.comparisonKey === route.comparisonKey) ?? null;
+    }
+    return changeEntries.find((entry) => entry.path === route.path) ?? null;
   }, [changeEntries, route, worktreeComparisonEntries]);
 
   const refreshStatusAndBranches = React.useCallback(async (showErrors = true) => {
@@ -184,7 +189,7 @@ export const MobileChangesSurface: React.FC<MobileChangesSurfaceProps> = ({ onCl
         fetchBranches(currentDirectory, git),
       ];
       if (git.getWorktreeComparison) {
-        refreshes.push(fetchWorktreeComparison(currentDirectory, git, { includePatches: true }));
+        refreshes.push(fetchWorktreeComparison(currentDirectory, git, { mode: comparisonMode, includePatches: true }));
       }
       await Promise.all(refreshes);
     } catch (error) {
@@ -192,7 +197,7 @@ export const MobileChangesSurface: React.FC<MobileChangesSurfaceProps> = ({ onCl
         toast.error(error instanceof Error ? error.message : t('gitView.toast.refreshRepositoryFailed'));
       }
     }
-  }, [currentDirectory, fetchBranches, fetchStatus, fetchWorktreeComparison, git, t]);
+  }, [comparisonMode, currentDirectory, fetchBranches, fetchStatus, fetchWorktreeComparison, git, t]);
 
   const refreshRemotes = React.useCallback(async () => {
     if (!currentDirectory) {
@@ -220,9 +225,26 @@ export const MobileChangesSurface: React.FC<MobileChangesSurfaceProps> = ({ onCl
   }, [currentDirectory, ensureAll, git, setActiveDirectory]);
 
   React.useEffect(() => {
-    if (!currentDirectory || isGitRepo !== true || !git.getWorktreeComparison) return;
-    void fetchWorktreeComparison(currentDirectory, git, { includePatches: true });
-  }, [currentDirectory, fetchWorktreeComparison, git, isGitRepo]);
+    if (!active || !currentDirectory || isGitRepo !== true || !git.getWorktreeComparison) return;
+    void ensureWorktreeComparison(currentDirectory, git, { mode: comparisonMode, includePatches: true });
+  }, [active, comparisonMode, currentDirectory, ensureWorktreeComparison, git, isGitRepo]);
+
+  React.useEffect(() => {
+    if (!active || !currentDirectory || isGitRepo !== true || !git.getWorktreeComparison) return;
+    const refresh = () => {
+      if (document.visibilityState !== 'visible') return;
+      void ensureWorktreeComparison(currentDirectory, git, { mode: comparisonMode, includePatches: true });
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') refresh();
+    };
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [active, comparisonMode, currentDirectory, ensureWorktreeComparison, git, isGitRepo]);
 
   React.useEffect(() => {
     if (worktreeComparison?.available === false) {
@@ -233,13 +255,19 @@ export const MobileChangesSurface: React.FC<MobileChangesSurfaceProps> = ({ onCl
   React.useEffect(() => {
     if (!currentDirectory) return;
     return sessionEvents.onGitRefreshHint((hint) => {
-      if (normalizePath(hint.directory) !== currentDirectory) return;
-      void fetchStatus(currentDirectory, git, { silent: true });
+      const hintDirectory = normalizePath(hint.directory);
+      const primaryDirectory = worktreeComparison?.available
+        ? normalizePath(worktreeComparison.primaryWorktree)
+        : '';
+      if (hintDirectory !== currentDirectory && hintDirectory !== primaryDirectory) return;
+      if (hintDirectory === currentDirectory) {
+        void fetchStatus(currentDirectory, git, { silent: true });
+      }
       if (git.getWorktreeComparison) {
-        void fetchWorktreeComparison(currentDirectory, git, { includePatches: true });
+        void fetchWorktreeComparison(currentDirectory, git, { mode: comparisonMode, includePatches: true });
       }
     });
-  }, [currentDirectory, fetchStatus, fetchWorktreeComparison, git]);
+  }, [comparisonMode, currentDirectory, fetchStatus, fetchWorktreeComparison, git, worktreeComparison]);
 
   React.useEffect(() => {
     void refreshRemotes();
@@ -264,7 +292,7 @@ export const MobileChangesSurface: React.FC<MobileChangesSurfaceProps> = ({ onCl
       setDiffLoadError(null);
       return;
     }
-    if (route.comparison) {
+    if (route.comparisonKey) {
       setDiffLoadError(null);
       return;
     }
@@ -356,8 +384,8 @@ export const MobileChangesSurface: React.FC<MobileChangesSurfaceProps> = ({ onCl
     }
   }, [currentDirectory, refreshStatusAndBranches, t]);
 
-  const handleViewChangeDiff = React.useCallback((path: string, staged = false, comparison = false) => {
-    setRoute({ type: 'diff', path, staged, comparison });
+  const handleViewChangeDiff = React.useCallback((path: string, staged = false, comparisonKey?: string) => {
+    setRoute({ type: 'diff', path, staged, comparisonKey });
   }, []);
 
   const handleRevertFile = React.useCallback(async (filePath: string) => {
@@ -481,19 +509,37 @@ export const MobileChangesSurface: React.FC<MobileChangesSurfaceProps> = ({ onCl
 
   const changeGroups = React.useMemo<ChangesGroupConfig[]>(() => {
     if (scope === 'branch' && worktreeComparison?.available) {
-      return [{
-        id: 'branch',
-        title: t('diffView.scope.branchAgainst', { branch: worktreeComparison.baseBranch }),
-        entries: worktreeComparisonEntries,
-        actionSymbol: '+',
-        actionAllLabel: '',
-        getActionLabel: () => '',
-        onActionFile: () => undefined,
-        onActionAll: () => undefined,
-        onViewDiff: (path: string) => handleViewChangeDiff(path, false, true),
-        onRevertFile: () => undefined,
-        readOnly: true,
-      }];
+      return worktreeComparisonGroups.map((group) => {
+        const statsByPath = new Map(group.entries.map((entry) => [entry.path, {
+          insertions: entry.insertions,
+          deletions: entry.deletions,
+        }]));
+        return {
+          id: `branch-${group.kind}`,
+          title: group.kind === 'committed'
+            ? t('diffView.comparison.layer.committed')
+            : group.kind === 'staged'
+              ? t('diffView.comparison.layer.staged')
+              : group.kind === 'unstaged'
+                ? t('diffView.comparison.layer.unstaged')
+                : group.kind === 'untracked'
+                  ? t('diffView.comparison.layer.untracked')
+                  : t('diffView.comparison.layer.combined'),
+          entries: group.entries,
+          actionSymbol: '+' as const,
+          actionAllLabel: '',
+          getActionLabel: () => '',
+          onActionFile: () => undefined,
+          onActionAll: () => undefined,
+          onViewDiff: (path: string) => {
+            const entry = group.entries.find((candidate) => candidate.path === path);
+            if (entry) handleViewChangeDiff(path, false, entry.comparisonKey);
+          },
+          onRevertFile: () => undefined,
+          readOnly: true,
+          getStats: (file: ChangesGroupConfig['entries'][number]) => statsByPath.get(file.path),
+        };
+      });
     }
 
     const groups: ChangesGroupConfig[] = [];
@@ -531,11 +577,39 @@ export const MobileChangesSurface: React.FC<MobileChangesSurfaceProps> = ({ onCl
     }
 
     return groups;
-  }, [handleRevertFile, handleViewChangeDiff, moveChangePaths, scope, stagedChangeEntries, t, unstagedChangeEntries, worktreeComparison, worktreeComparisonEntries]);
-  const branchComparisonRequested = scope === 'branch' && Boolean(git.getWorktreeComparison);
+  }, [handleRevertFile, handleViewChangeDiff, moveChangePaths, scope, stagedChangeEntries, t, unstagedChangeEntries, worktreeComparison, worktreeComparisonGroups]);
+  const branchComparisonRequested = scope === 'branch' && isGitRepo === true && Boolean(git.getWorktreeComparison);
   const branchScopeActive = scope === 'branch' && worktreeComparisonAvailable;
   const visibleChangeCount = branchScopeActive ? worktreeComparisonEntries.length : changeEntries.length;
-  const visibleDiffStats = branchScopeActive ? worktreeComparisonDiffStats : status?.diffStats;
+  const visibleDiffStats = branchScopeActive ? undefined : status?.diffStats;
+  const comparisonModeSelector = (
+    <Select<GitWorktreeComparisonMode>
+      value={comparisonMode}
+      onValueChange={(mode) => {
+        setComparisonMode(mode);
+        setScope('branch');
+      }}
+    >
+      <SelectTrigger
+        size="sm"
+        className="max-w-44 min-w-0"
+        aria-label={t('diffView.comparison.mode.selectorAria')}
+      >
+        <SelectValue>
+          {comparisonMode === 'uncommitted'
+            ? t('diffView.comparison.mode.uncommitted')
+            : comparisonMode === 'committed'
+              ? t('diffView.comparison.mode.committed')
+              : t('diffView.comparison.mode.combined')}
+        </SelectValue>
+      </SelectTrigger>
+      <SelectContent align="start">
+        <SelectItem value="uncommitted">{t('diffView.comparison.mode.uncommitted')}</SelectItem>
+        <SelectItem value="committed">{t('diffView.comparison.mode.committed')}</SelectItem>
+        <SelectItem value="combined">{t('diffView.comparison.mode.combined')}</SelectItem>
+      </SelectContent>
+    </Select>
+  );
 
   const renderListState = (state: React.ReactNode) => (
     <div className="flex h-full flex-col overflow-hidden bg-background text-foreground">
@@ -558,6 +632,11 @@ export const MobileChangesSurface: React.FC<MobileChangesSurfaceProps> = ({ onCl
           </p>
         </div>
       </header>
+      {branchComparisonRequested && worktreeComparison?.available !== false ? (
+        <div className="flex shrink-0 items-center border-b border-border/50 px-3 pb-2">
+          {comparisonModeSelector}
+        </div>
+      ) : null}
       <div className="min-h-0 flex-1">{state}</div>
     </div>
   );
@@ -589,7 +668,7 @@ export const MobileChangesSurface: React.FC<MobileChangesSurfaceProps> = ({ onCl
             size="sm"
             variant="outline"
             disabled={isLoadingWorktreeComparison}
-            onClick={() => void fetchWorktreeComparison(currentDirectory, git, { includePatches: true })}
+            onClick={() => void fetchWorktreeComparison(currentDirectory, git, { mode: comparisonMode, includePatches: true })}
           >
             {t('diffView.actions.retry')}
           </Button>
@@ -602,13 +681,13 @@ export const MobileChangesSurface: React.FC<MobileChangesSurfaceProps> = ({ onCl
     return (
       <MobileDiffDetail
         path={route.path}
-        diff={route.comparison ? selectedComparisonDiff : selectedDiff}
+        diff={route.comparisonKey ? selectedComparisonDiff : selectedDiff}
         fileExists={Boolean(selectedFileEntry)}
-        error={route.comparison ? worktreeComparisonError : diffLoadError}
+        error={route.comparisonKey ? worktreeComparisonError : diffLoadError}
         onBack={() => setRoute({ type: 'list' })}
         onRetry={() => {
-          if (route.comparison) {
-            void fetchWorktreeComparison(currentDirectory, git, { includePatches: true });
+          if (route.comparisonKey) {
+            void fetchWorktreeComparison(currentDirectory, git, { mode: comparisonMode, includePatches: true });
           } else {
             setDiffRetryNonce((value) => value + 1);
           }
@@ -651,18 +730,7 @@ export const MobileChangesSurface: React.FC<MobileChangesSurfaceProps> = ({ onCl
       </header>
       {worktreeComparisonAvailable ? (
         <div className="flex shrink-0 items-center gap-1.5 border-b border-border/50 px-3 pb-2">
-          <Button
-            type="button"
-            size="xs"
-            variant={branchScopeActive ? 'chip' : 'ghost'}
-            aria-pressed={branchScopeActive}
-            onClick={() => {
-              setScope('branch');
-              void fetchWorktreeComparison(currentDirectory, git, { includePatches: true });
-            }}
-          >
-            {t('diffView.scope.branchAgainst', { branch: worktreeComparisonBaseBranch })}
-          </Button>
+          {comparisonModeSelector}
           <Button
             type="button"
             size="xs"
@@ -712,7 +780,11 @@ export const MobileChangesSurface: React.FC<MobileChangesSurfaceProps> = ({ onCl
           <MobileChangesState
             icon
             message={branchScopeActive
-              ? t('diffView.state.noBranchChanges', { branch: worktreeComparisonBaseBranch })
+              ? comparisonMode === 'uncommitted'
+                ? t('diffView.state.noUncommittedChanges')
+                : comparisonMode === 'committed'
+                  ? t('diffView.state.noCommittedChanges', { branch: worktreeComparisonBaseBranch })
+                  : t('diffView.state.noCombinedChanges', { branch: worktreeComparisonBaseBranch })
               : t('gitView.empty.cleanTitle')}
             description={branchScopeActive ? undefined : t('mobile.changes.cleanDescription')}
           />

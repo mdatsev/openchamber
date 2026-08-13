@@ -315,6 +315,16 @@ cheap as the data allows:
 On a working tree of 80 files and 138 hunks this took a panel open from ~800ms
 to ~340ms. Parsing and digest building are ~3ms of that; everything else is git.
 
+## Diff search
+
+Walkthrough search indexes every diff line once and remains an all-occurrence,
+case-insensitive substring search. Results stay as hunk, side, line, and UTF-16
+offset records so Pierre can reveal and highlight only mounted virtualized rows.
+Lowercasing can expand a Unicode character (for example U+0130), so folded
+match offsets are mapped back to the original line's UTF-16 spans before they
+reach the DOM Range API. Lines whose folded length is unchanged keep the direct
+offset path and avoid allocating an offset map.
+
 ## Generation outlives its request
 
 A dropped connection and a deliberate cancel are indistinguishable at the

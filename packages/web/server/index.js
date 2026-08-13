@@ -70,6 +70,10 @@ import { createStaticRoutesRuntime } from './lib/opencode/static-routes-runtime.
 import { createSettingsRuntime } from './lib/opencode/settings-runtime.js';
 import { createOpenCodeResolutionRuntime } from './lib/opencode/opencode-resolution-runtime.js';
 import { resolveOpenCodeUpgradeCapability } from './lib/opencode/upgrade-capability.js';
+import {
+  createOpenCodeTurnAdmissionBarrier,
+  createSupervisedOpenCodeUpgradeRuntime,
+} from './lib/opencode/supervised-upgrade-runtime.js';
 import { createBootstrapRuntime } from './lib/opencode/bootstrap-runtime.js';
 import { createSessionRuntime } from './lib/opencode/session-runtime.js';
 import { createOpenCodeWatcherRuntime } from './lib/opencode/watcher.js';
@@ -573,6 +577,9 @@ const ENV_SKIP_OPENCODE_START = process.env.OPENCODE_SKIP_START === 'true' ||
                                     process.env.OPENCHAMBER_SKIP_OPENCODE_START === 'true';
 const ENV_MANAGED_RESTART_SUPPORTED = isEnvFlagEnabled(process.env.OPENCHAMBER_MANAGED_RESTART)
   && ENV_SKIP_OPENCODE_START;
+const ENV_MANAGED_OPENCODE_SYSTEMD_UNIT = ENV_SKIP_OPENCODE_START
+  ? process.env.OPENCHAMBER_MANAGED_OPENCODE_SYSTEMD_UNIT
+  : undefined;
 const ENV_DESKTOP_NOTIFY = (() => {
   if (process.env.OPENCHAMBER_DESKTOP_NOTIFY === 'true') {
     return true;
@@ -737,10 +744,13 @@ const sessionAssistRuntime = createSessionAssistRuntime({
   getSmallModelService: async () => import('./lib/small-model/index.js'),
 });
 
+const openCodeTurnAdmissionBarrier = createOpenCodeTurnAdmissionBarrier();
+
 const sessionGoalRuntime = createSessionGoalRuntime({
   buildOpenCodeUrl,
   getOpenCodeAuthHeaders,
   getSmallModelService: async () => import('./lib/small-model/index.js'),
+  runWithTurnAdmission: (callback) => openCodeTurnAdmissionBarrier.runWhenOpen(callback),
   emitGoalNotification: async ({ sessionId, directory, status, goal }) => {
     // The goal settle notification replaces the per-turn ready notifications
     // (suppressed while the goal is active) — so it obeys the same toggle.
@@ -779,6 +789,7 @@ const sessionGoalRuntime = createSessionGoalRuntime({
 const contextObligatoryRuntime = createContextObligatoryRuntime({
   buildOpenCodeUrl,
   getOpenCodeAuthHeaders,
+  runWithTurnAdmission: (callback) => openCodeTurnAdmissionBarrier.runWhenOpen(callback),
 });
 
 const globalMessageStreamHub = createGlobalMessageStreamHub({
@@ -912,6 +923,7 @@ const serverUtilsRuntime = createServerUtilsRuntime({
   getUpstreamStallTimeoutMs,
   getUiNotificationClients: () => uiNotificationClients,
   getOpenCodePort: () => openCodePort,
+  openCodeTurnAdmissionBarrier,
   setOpenCodePortState: (value) => {
     openCodePort = value;
   },
@@ -1119,6 +1131,34 @@ const openCodeLifecycleRuntime = createOpenCodeLifecycleRuntime({
   },
 });
 
+const supervisedOpenCodeUpgradeRuntime = createSupervisedOpenCodeUpgradeRuntime({
+  unitName: ENV_MANAGED_OPENCODE_SYSTEMD_UNIT,
+  buildOpenCodeUrl,
+  getOpenCodeAuthHeaders,
+  waitForReady: (...args) => openCodeLifecycleRuntime.waitForOpenCodeReady(...args),
+  onRestartStarting: () => {
+    isRestartingOpenCode = true;
+    isOpenCodeReady = false;
+    openCodeNotReadySince = Date.now();
+  },
+  onRestartReady: () => {
+    isRestartingOpenCode = false;
+    isOpenCodeReady = true;
+    openCodeNotReadySince = 0;
+    lastOpenCodeError = null;
+    try {
+      messageStreamRuntime?.rebindUpstream();
+    } catch (error) {
+      console.warn('Failed to rebind message stream after supervised OpenCode restart:', error?.message ?? error);
+    }
+  },
+  onRestartFailed: (error) => {
+    isRestartingOpenCode = false;
+    isOpenCodeReady = false;
+    lastOpenCodeError = error instanceof Error ? error.message : String(error);
+  },
+});
+
 const getOpenCodeUpgradeCapability = () => {
   const activeBinary = lastOpenCodeLaunchDiagnostics?.sourceBinary
     || lastOpenCodeLaunchDiagnostics?.binary
@@ -1128,6 +1168,7 @@ const getOpenCodeUpgradeCapability = () => {
     hasManagedProcess: Boolean(openCodeProcess),
     activeBinary,
     isBundledBinary: isBundledOpenCodeCliPath,
+    supervisedSystemd: supervisedOpenCodeUpgradeRuntime.supported,
   });
 };
 
@@ -1146,6 +1187,7 @@ const scheduledTasksRuntime = createScheduledTasksRuntime({
   buildOpenCodeUrl,
   getOpenCodeAuthHeaders,
   waitForOpenCodeReady,
+  acquireTurnAdmission: () => openCodeTurnAdmissionBarrier.acquire(),
   setSessionAutoAccept: (sessionId, enabled, directory) => permissionAutoAcceptRuntime.setSessionPolicy(sessionId, enabled, directory),
   emitTaskRunEvent: (event) => {
     for (const client of uiOpenChamberEventClients) {
@@ -1200,6 +1242,7 @@ const openChamberSessionService = createOpenChamberSessionService({
   buildOpenCodeUrl,
   getOpenCodeAuthHeaders,
   waitForOpenCodeReady,
+  acquireTurnAdmission: () => openCodeTurnAdmissionBarrier.acquire(),
   emitSessionCreatedEvent,
 });
 const openChamberControlService = createOpenChamberControlService({
@@ -1694,6 +1737,9 @@ async function main(options = {}) {
     refreshOpenCodeAfterConfigChange,
     getOpenCodeResolutionSnapshot,
     getOpenCodeUpgradeCapability,
+    supervisedOpenCodeUpgradeRuntime,
+    openCodeTurnAdmissionBarrier,
+    waitForOpenCodeReady,
     formatSettingsResponse,
     readSettingsFromDisk,
     readSettingsFromDiskMigrated,

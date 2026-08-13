@@ -51,6 +51,7 @@ export const registerSideChatRoutes = (app, dependencies) => {
     fetch: fetchImpl = globalThis.fetch,
     requestTimeoutMs = 15_000,
     isRequestOriginAllowed,
+    acquireTurnAdmission,
     jsonParser,
   } = dependencies;
   const creationByParent = new Map();
@@ -64,7 +65,7 @@ export const registerSideChatRoutes = (app, dependencies) => {
     return resolved.directory;
   };
 
-  const upstreamFetch = (path, directory, { method, body }) => {
+  const upstreamFetch = (path, directory, { method, body, timeoutMs = requestTimeoutMs }) => {
     const url = new URL(buildOpenCodeUrl(path, ''));
     url.searchParams.set('directory', directory);
     return fetchImpl(url.toString(), {
@@ -75,24 +76,54 @@ export const registerSideChatRoutes = (app, dependencies) => {
         ...getOpenCodeAuthHeaders(),
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      signal: AbortSignal.timeout(requestTimeoutMs),
+      ...(timeoutMs === null ? {} : { signal: AbortSignal.timeout(timeoutMs) }),
     });
   };
 
   const handleFailure = (res, error, fallback) => {
     console.error('[side-chats] request failed', error);
+    if (Number.isInteger(error?.statusCode)) {
+      return res.status(error.statusCode).json({
+        success: false,
+        ...(error?.code ? { code: error.code } : {}),
+        error: requiredString(error?.message) ?? fallback,
+      });
+    }
     const timedOut = error?.name === 'TimeoutError' || error?.code === 'ABORT_ERR';
     return res.status(timedOut ? 504 : 502).json({ error: timedOut ? `${fallback} timed out` : fallback });
   };
 
-  const findExistingMarkedSession = async (directory, parentSessionID) => {
-    const response = await upstreamFetch('/session?roots=false&limit=500', directory, { method: 'GET' });
-    if (!response.ok) {
-      throw new Error(await responseError(response, 'Failed to inspect existing side chats'));
+  const listSessions = async (directory) => {
+    const sessions = [];
+    const seenCursors = new Set();
+    let cursor = null;
+    while (true) {
+      const query = new URLSearchParams({ archived: 'true', roots: 'false', limit: '500' });
+      if (cursor) query.set('cursor', cursor);
+      const response = await upstreamFetch(`/experimental/session?${query}`, directory, { method: 'GET' });
+      if (!response.ok) {
+        throw new Error(await responseError(response, 'Failed to inspect existing side chats'));
+      }
+      const page = await response.json().catch(() => null);
+      if (!Array.isArray(page)) throw new Error('OpenCode returned an invalid session list');
+      sessions.push(...page);
+
+      const nextCursor = requiredString(response.headers.get('x-next-cursor'));
+      if (!nextCursor) return sessions;
+      const nextCursorValue = Number(nextCursor);
+      if (!Number.isFinite(nextCursorValue)) throw new Error('OpenCode returned an invalid session cursor');
+      if (cursor !== null && nextCursorValue >= Number(cursor)) {
+        throw new Error('OpenCode returned a non-decreasing session cursor');
+      }
+      if (seenCursors.has(nextCursor)) throw new Error('OpenCode returned a repeated session cursor');
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
     }
-    const sessions = await response.json().catch(() => null);
-    if (!Array.isArray(sessions)) throw new Error('OpenCode returned an invalid session list');
-    const marked = sessions
+  };
+
+  const reconcileMarkedSessions = async (directory, parentSessionID) => {
+    const inspectedSessions = await listSessions(directory);
+    const marked = inspectedSessions
       .filter((session) => isMarkedSideChat(session, parentSessionID))
       .sort((left, right) => String(left.id).localeCompare(String(right.id)));
     const retained = marked[0] ?? null;
@@ -104,41 +135,37 @@ export const registerSideChatRoutes = (app, dependencies) => {
     return retained;
   };
 
-  const createSideChat = async (directory, parentSessionID) => {
-    const existing = await findExistingMarkedSession(directory, parentSessionID);
-    if (existing) return { status: 200, payload: existing };
+  const findExistingMarkedSession = (directory, parentSessionID) => (
+    reconcileMarkedSessions(directory, parentSessionID)
+  );
 
-    const forkResponse = await upstreamFetch(
-      `/session/${encodeURIComponent(parentSessionID)}/fork`,
-      directory,
-      { method: 'POST', body: {} },
-    );
-    if (!forkResponse.ok) {
-      return { status: forkResponse.status, payload: { error: await responseError(forkResponse, 'Failed to fork session') } };
-    }
-
-    const fork = await forkResponse.json().catch(() => null);
+  const markForkDisposable = async (directory, parentSessionID, fork) => {
     const forkSessionID = requiredString(fork?.id);
     if (!forkSessionID) {
-      return { status: 502, payload: { error: 'OpenCode returned an invalid fork session' } };
+      return { result: { status: 502, payload: { error: 'OpenCode returned an invalid fork session' } } };
     }
 
-    const markerResponse = await upstreamFetch(
-      `/session/${encodeURIComponent(forkSessionID)}`,
-      directory,
-      { method: 'PATCH', body: { metadata: withDisposableMarker(fork.metadata, parentSessionID) } },
-    );
+    if (isMarkedSideChat(fork, parentSessionID)) return { marked: fork };
+
+    let markerResponse;
     let markerError;
-    if (markerResponse.ok) {
-      const marked = await markerResponse.json().catch(() => null);
-      if (requiredString(marked?.id) === forkSessionID && isMarkedSideChat(marked, parentSessionID)) {
-        const retained = await findExistingMarkedSession(directory, parentSessionID);
-        if (!retained) throw new Error('Marked side chat was missing during duplicate reconciliation');
-        return { status: retained.id === forkSessionID ? 201 : 200, payload: retained };
+    try {
+      markerResponse = await upstreamFetch(
+        `/session/${encodeURIComponent(forkSessionID)}`,
+        directory,
+        { method: 'PATCH', body: { metadata: withDisposableMarker(fork.metadata, parentSessionID) } },
+      );
+      if (markerResponse.ok) {
+        const marked = await markerResponse.json().catch(() => null);
+        if (requiredString(marked?.id) === forkSessionID && isMarkedSideChat(marked, parentSessionID)) {
+          return { marked };
+        }
+        markerError = 'OpenCode returned an invalid marked side chat';
+      } else {
+        markerError = await responseError(markerResponse, 'Failed to mark disposable side chat');
       }
-      markerError = 'OpenCode returned an invalid marked side chat';
-    } else {
-      markerError = await responseError(markerResponse, 'Failed to mark disposable side chat');
+    } catch (error) {
+      markerError = error?.name === 'TimeoutError' ? 'Disposable marker update timed out' : 'Failed to mark disposable side chat';
     }
 
     let cleanupResponse;
@@ -150,34 +177,66 @@ export const registerSideChatRoutes = (app, dependencies) => {
       );
     } catch (error) {
       return {
-        status: 502,
-        payload: {
-          error: 'Failed to mark disposable side chat and delete the fork',
-          cleanupRequired: true,
-          forkSessionID,
-          markerError,
-          cleanupError: error?.name === 'TimeoutError' ? 'Fork deletion timed out' : 'Failed to delete fork',
+        result: {
+          status: 502,
+          payload: {
+            error: 'Failed to mark disposable side chat and delete the fork',
+            cleanupRequired: true,
+            forkSessionID,
+            markerError,
+            cleanupError: error?.name === 'TimeoutError' ? 'Fork deletion timed out' : 'Failed to delete fork',
+          },
         },
       };
     }
     const cleanupConfirmed = cleanupResponse.status === 404
       || (cleanupResponse.ok && await cleanupResponse.json().catch(() => false) === true);
     if (cleanupConfirmed) {
-      return { status: markerResponse.ok ? 502 : markerResponse.status, payload: { error: markerError } };
+      return { result: { status: markerResponse?.ok ? 502 : markerResponse?.status ?? 502, payload: { error: markerError } } };
     }
 
     return {
-      status: 502,
-      payload: {
-        error: 'Failed to mark disposable side chat and delete the fork',
-        cleanupRequired: true,
-        forkSessionID,
-        markerError,
-        cleanupError: cleanupResponse.ok
-          ? 'OpenCode did not confirm fork deletion'
-          : await responseError(cleanupResponse, 'Failed to delete fork'),
+      result: {
+        status: 502,
+        payload: {
+          error: 'Failed to mark disposable side chat and delete the fork',
+          cleanupRequired: true,
+          forkSessionID,
+          markerError,
+          cleanupError: cleanupResponse.ok
+            ? 'OpenCode did not confirm fork deletion'
+            : await responseError(cleanupResponse, 'Failed to delete fork'),
+        },
       },
     };
+  };
+
+  const createSideChat = async (directory, parentSessionID) => {
+    const releaseTurnAdmission = acquireTurnAdmission();
+    try {
+      const existing = await findExistingMarkedSession(directory, parentSessionID);
+      if (existing) return { status: 200, payload: existing };
+
+      // See docs/records/incident-side-chat-fork-timeout-orphans.md. OpenCode creates
+      // the session before copying but exposes its ID only in the completed response.
+      const forkResponse = await upstreamFetch(
+        `/session/${encodeURIComponent(parentSessionID)}/fork`,
+        directory,
+        { method: 'POST', body: {}, timeoutMs: null },
+      );
+      if (!forkResponse.ok) {
+        return { status: forkResponse.status, payload: { error: await responseError(forkResponse, 'Failed to fork session') } };
+      }
+
+      const fork = await forkResponse.json().catch(() => null);
+      const marker = await markForkDisposable(directory, parentSessionID, fork);
+      if (marker.result) return marker.result;
+      const retained = await findExistingMarkedSession(directory, parentSessionID);
+      if (!retained) throw new Error('Marked side chat was missing during duplicate reconciliation');
+      return { status: retained.id === fork.id ? 201 : 200, payload: retained };
+    } finally {
+      releaseTurnAdmission();
+    }
   };
 
   const runCreateForParent = (directory, parentSessionID) => {

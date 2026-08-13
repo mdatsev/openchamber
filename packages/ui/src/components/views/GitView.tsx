@@ -2239,6 +2239,7 @@ export const GitView: React.FC<GitViewProps> = ({ isActive }) => {
   const handleGraphActionSuccess = React.useCallback(() => {
     setGitLogDialogMode(null);
     if (currentDirectory) {
+      useGitStore.getState().invalidateWorktreeComparison(currentDirectory);
       fetchStatus(currentDirectory, git);
       fetchBranches(currentDirectory, git);
       fetchLog(currentDirectory, git, logMaxCountLocal);

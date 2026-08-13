@@ -17,6 +17,7 @@ import { useProjectsStore } from "@/stores/useProjectsStore";
 import { useSkillsCatalogStore } from "@/stores/useSkillsCatalogStore";
 import { invalidateSkillsLoadCache, useSkillsStore } from "@/stores/useSkillsStore";
 import { runtimeFetch } from "@/lib/runtime-fetch";
+import { getRuntimeKey } from "@/lib/runtime-switch";
 
 // Note: useDirectoryStore cannot be imported at top level to avoid circular dependency
 // useDirectoryStore -> useAgentsStore (for refreshAfterOpenCodeRestart)
@@ -790,6 +791,32 @@ export async function refreshAfterOpenCodeRestart(options?: {
   mode?: ConfigRefreshMode;
 }) {
   await performConfigRefresh(options);
+}
+
+let completedUpgradeRefreshKey: string | null = null;
+let upgradeRefreshInFlight: { key: string; promise: Promise<void> } | null = null;
+
+export function refreshAfterOpenCodeUpgrade(operationKey?: string | null): Promise<void> {
+  const runtimeKey = getRuntimeKey();
+  const normalizedOperationKey = operationKey?.trim() || "unknown";
+  const key = JSON.stringify([runtimeKey, normalizedOperationKey]);
+  const unknownKey = JSON.stringify([runtimeKey, "unknown"]);
+  if (completedUpgradeRefreshKey === key) return Promise.resolve();
+  if (normalizedOperationKey !== "unknown" && completedUpgradeRefreshKey === unknownKey) {
+    completedUpgradeRefreshKey = key;
+    return Promise.resolve();
+  }
+  if (upgradeRefreshInFlight?.key === key) return upgradeRefreshInFlight.promise;
+
+  const promise = refreshAfterOpenCodeRestart({ scopes: ["all"], mode: "projects" })
+    .then(() => {
+      completedUpgradeRefreshKey = key;
+    })
+    .finally(() => {
+      if (upgradeRefreshInFlight?.promise === promise) upgradeRefreshInFlight = null;
+    });
+  upgradeRefreshInFlight = { key, promise };
+  return promise;
 }
 
 export async function reloadOpenCodeConfiguration(options?: {

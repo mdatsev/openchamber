@@ -193,6 +193,7 @@ export const registerOpenCodeProxy = (app, deps) => {
     SSE_HEARTBEAT_INTERVAL_MS = DEFAULT_SSE_HEARTBEAT_INTERVAL_MS,
     SSE_UPSTREAM_STALL_TIMEOUT_MS = DEFAULT_UPSTREAM_STALL_TIMEOUT_MS,
     getSseUpstreamStallTimeoutMs = () => SSE_UPSTREAM_STALL_TIMEOUT_MS,
+    openCodeTurnAdmissionBarrier,
   } = deps;
 
   if (app.get('opencodeProxyConfigured')) {
@@ -836,6 +837,10 @@ export const registerOpenCodeProxy = (app, deps) => {
     }
     next();
   });
+
+  if (openCodeTurnAdmissionBarrier) {
+    app.use('/api', openCodeTurnAdmissionBarrier.middleware);
+  }
 
   app.use('/api', applyProxyResponseDeadline);
   app.post('/api/provider/:providerID/oauth/callback', interactiveOAuthProxy);

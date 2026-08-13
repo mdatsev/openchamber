@@ -3,6 +3,10 @@ import type { Session } from "@opencode-ai/sdk/v2"
 type BlockingRequest = { id: string }
 
 export const computeSubtreeIds = (sessions: Session[], rootId: string): Set<string> => {
+  return computeScopedSubtreeIds(sessions, [rootId])
+}
+
+export const computeScopedSubtreeIds = (sessions: Session[], rootIds: readonly string[]): Set<string> => {
   const childrenByParent = new Map<string, string[]>()
   for (const session of sessions) {
     if (!session.parentID) continue
@@ -11,8 +15,8 @@ export const computeSubtreeIds = (sessions: Session[], rootId: string): Set<stri
     childrenByParent.set(session.parentID, list)
   }
 
-  const ids = new Set<string>([rootId])
-  const queue = [rootId]
+  const ids = new Set(rootIds.filter(Boolean))
+  const queue = [...ids]
   for (const id of queue) {
     const children = childrenByParent.get(id)
     if (!children) continue

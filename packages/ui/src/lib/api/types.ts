@@ -165,26 +165,43 @@ export interface GitWorktreeComparisonFile {
   patch: string;
 }
 
+export type GitWorktreeComparisonMode = 'uncommitted' | 'committed' | 'combined';
+export type GitWorktreeComparisonLayerKind = 'committed' | 'staged' | 'unstaged' | 'untracked' | 'legacy-combined';
+
+export interface GitWorktreeComparisonLayer {
+  kind: GitWorktreeComparisonLayerKind;
+  base: string;
+  target: string;
+  fileCount: number;
+  files?: GitWorktreeComparisonFile[];
+}
+
 export type GitWorktreeComparison =
   | {
+      protocolVersion: 1 | 2;
       available: false;
       reason: 'primary-worktree';
+      mode: GitWorktreeComparisonMode;
     }
   | {
+      protocolVersion: 1 | 2;
       available: true;
-      baseBranch: string;
-      baseHead: string;
+      mode: GitWorktreeComparisonMode;
+      primaryWorktree?: string;
+      baseBranch: string | null;
+      baseHead: string | null;
       head: string;
-      mergeBase: string;
-      hasUnintegratedCommits: boolean;
-      unintegratedCommitCount: number;
+      mergeBase: string | null;
+      hasCommittedChanges: boolean;
+      committedCommitCount: number;
       isDirty: boolean;
       fileCount: number;
       hasChanges: boolean;
-      files?: GitWorktreeComparisonFile[];
+      layers: GitWorktreeComparisonLayer[];
     };
 
 export interface GetGitWorktreeComparisonOptions {
+  mode: GitWorktreeComparisonMode;
   includePatches?: boolean;
   contextLines?: number;
 }
@@ -498,7 +515,7 @@ export interface GitAPI {
   getGitDiff(directory: string, options: GetGitDiffOptions): Promise<GitDiffResponse>;
   getGitFileDiff(directory: string, options: GetGitFileDiffOptions): Promise<GitFileDiffResponse>;
   getGitRangeDiff?(directory: string, options: GetGitRangeDiffOptions): Promise<GitDiffResponse>;
-  getWorktreeComparison?(directory: string, options?: GetGitWorktreeComparisonOptions): Promise<GitWorktreeComparison>;
+  getWorktreeComparison?(directory: string, options: GetGitWorktreeComparisonOptions): Promise<GitWorktreeComparison>;
   revertGitFile(directory: string, filePath: string, options?: { scope?: 'all' | 'working' }): Promise<void>;
   stageGitFile(directory: string, filePath: string): Promise<void>;
   stageGitFiles?(directory: string, filePaths: string[]): Promise<void>;

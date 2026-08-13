@@ -25,40 +25,39 @@ import type { ChildSessionExport } from '@/lib/exportSession';
 import {
   buildSessionMessageRecordsSnapshot,
   useDirectoryStore,
-  useGlobalSessionInterrupted,
-  useGlobalSessionStatus,
-  useScopedBlockingPermissions,
-  useSessionQuestionCount,
 } from '@/sync/sync-context';
 import { useSync } from '@/sync/use-sync';
-import { useViewportStore, viewportSessionKey } from '@/sync/viewport-store';
 import { DraggableSessionRow } from './sessionFolderDnd';
-import { nodeContainsSessionId, nodeHasPinnedMembershipChange, selectQuestionBadgeSessionScopes } from './sessionNodeItemUtils';
+import { nodeContainsSessionId, nodeHasPinnedMembershipChange } from './sessionNodeItemUtils';
 import type { SessionNodeChildRenderExtras, SessionNodeRenderExtras } from './sessionNodeItemUtils';
 import type { SessionNode } from './types';
 import { formatProjectLabel, formatSessionCompactDateLabel, formatSessionDateLabel, normalizePath, renderHighlightedText } from './utils';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useSessionDisplayStore } from '@/stores/useSessionDisplayStore';
-import { getGitHubPrStatusKey, usePrVisualSummary } from '@/stores/useGitHubPrStatusStore';
-import { markSessionUnread, markSessionViewed, useSessionUnseenCount } from '@/sync/notification-store';
-import { useHasSessionActivityDuration } from '@/sync/session-activity-timing';
+import { markSessionUnread, markSessionViewed } from '@/sync/notification-store';
 import { SessionActivityDuration } from '@/components/session/SessionActivityDuration';
 import { useSessionMultiSelectStore } from '@/stores/useSessionMultiSelectStore';
 import { useI18n } from '@/lib/i18n';
 import { useShiftKeyHeld } from '@/hooks/useShiftKeyHeld';
-import { getSessionGoal } from '@/lib/sessionGoalMetadata';
-import { sessionGoalStatusColor, sessionGoalStatusLabelKey } from '@/lib/sessionGoalPresentation';
 import { getRuntimeBearerTokenSync } from '@/lib/runtime-auth';
 import { getRuntimeApiBaseUrl } from '@/lib/runtime-switch';
 import { parseMultiRunSessionTitle } from '@/lib/multirun/title';
 import { MultiRunFusionDialog } from '@/components/multirun/MultiRunFusionDialog';
 import { FusionIcon } from '@/components/icons/FusionIcon';
 import { RuntimeAPIContext } from '@/contexts/runtimeAPIContext';
-import { startSessionTreeWorktreeMove, useIsSessionWorktreeMovePending } from '@/lib/worktrees/sessionWorktreeMove';
+import { startSessionTreeWorktreeMove } from '@/lib/worktrees/sessionWorktreeMove';
 import { streamPerfCount } from '@/stores/utils/streamDebug';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { useResolvedWorktreeComparisonSummary } from '@/stores/useGitStore';
 import type { SortableDragHandleProps } from './sortableItems';
+import {
+  SessionBlockingRequestBadges,
+  SessionGoalIndicator,
+  SessionLeadingIndicatorGlyph,
+  SessionPersistentErrorIndicator,
+  SessionPrIndicator,
+  SessionCheckoutIndicators,
+} from './SessionRowIndicators';
+import { useSessionRowIndicatorModel } from './useSessionRowIndicatorModel';
 
 type Folder = { id: string; name: string; sessionIds: string[] };
 
@@ -368,16 +367,13 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
   const tooltipProjectLabel = secondaryMeta?.projectLabel
     ?? (projectLabelFromStore ? formatProjectLabel(projectLabelFromStore) : null);
   const tooltipBranchLabel = secondaryMeta?.branchLabel ?? node.worktree?.branch ?? null;
-  const worktreeDirectory = normalizePath(node.worktree?.path ?? null);
-  const worktreeComparison = useResolvedWorktreeComparisonSummary(worktreeDirectory);
-  const prLookupKey = React.useMemo(() => {
-    if (isVSCode) return null;
-    const branch = node.worktree?.branch?.trim();
-    const directory = normalizePath(node.worktree?.path ?? null);
-    return branch && directory ? getGitHubPrStatusKey(directory, branch) : null;
-  }, [isVSCode, node.worktree]);
-  const prSummary = usePrVisualSummary(prLookupKey);
-  const prIconColor = prSummary ? `var(--pr-${prSummary.visualState})` : undefined;
+  const projectRootDirectory = useProjectsStore(
+    React.useCallback((state) => {
+      if (!projectId) return null;
+      const project = state.projects.find((entry) => entry.id === projectId);
+      return normalizePath(project?.path ?? null);
+    }, [projectId]),
+  );
   const sessionGroupingMode = useSessionDisplayStore((state) => state.sessionGroupingMode);
   // In by-worktree grouping the project tree already shows the branch on the
   // group sub-header, so the per-row marker only appears in flat mode and in
@@ -388,27 +384,6 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
       || sessionGroupingMode === 'flat'
       || (!node.worktree && Boolean(secondaryMeta?.branchLabel))
     );
-  const prStatusLabel = React.useMemo(() => {
-    if (!prSummary) return null;
-    switch (prSummary.visualState) {
-      case 'merged':
-        return t('sessions.sidebar.group.pr.status.merged');
-      case 'open':
-        return (prSummary.canMerge === true || prSummary.mergeableState === 'clean' || prSummary.checks?.state === 'success')
-          ? t('sessions.sidebar.group.pr.status.readyToMerge')
-          : t('sessions.sidebar.group.pr.status.open');
-      case 'blocked':
-        return prSummary.mergeableState === 'dirty'
-          ? t('sessions.sidebar.group.pr.status.mergeConflicts')
-          : t('sessions.sidebar.group.pr.status.mergeBlocked');
-      case 'draft':
-        return t('sessions.sidebar.group.pr.status.draft');
-      case 'closed':
-        return t('sessions.sidebar.group.pr.status.closed');
-      default:
-        return null;
-    }
-  }, [prSummary, t]);
   const isActive = useSessionUIStore((state) => state.currentSessionId === session.id);
 
   const sessionDirectory =
@@ -458,65 +433,6 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
   const [exportIncludeSubtasks, setExportIncludeSubtasks] = React.useState(true);
 
   const menuInstanceKey = `${renderContext}:${archivedBucket ? 'archived' : 'active'}:${session.id}`;
-  const isZombie = useViewportStore(
-    React.useCallback((state) => Boolean(state.sessionMemoryState.get(viewportSessionKey(session.id))?.isZombie), [session.id]),
-  );
-  const sessionStatus = useGlobalSessionStatus(session.id);
-  const isInterrupted = useGlobalSessionInterrupted(session.id);
-  const isMovingToWorktree = useIsSessionWorktreeMovePending(session.id);
-  const sessionPermissions = useScopedBlockingPermissions(session.id, sessionDirectory ?? undefined, { bootstrap: false });
-  const sessionGoal = getSessionGoal(resolvedSession);
-  const sessionGoalGlyph = sessionGoal ? (
-    <span
-      className="inline-flex flex-shrink-0 items-center"
-      title={t(sessionGoalStatusLabelKey[sessionGoal.status] as never)}
-      aria-label={t(sessionGoalStatusLabelKey[sessionGoal.status] as never)}
-    >
-      <Icon name="target" className="h-3 w-3" style={{ color: sessionGoalStatusColor[sessionGoal.status] }} />
-    </span>
-  ) : null;
-  const worktreeComparisonGlyph = worktreeComparison?.available ? (
-    <span
-      className={cn(
-        'inline-flex',
-        worktreeComparison.hasChanges ? 'text-status-warning' : 'text-status-success',
-      )}
-      aria-label={worktreeComparison.hasChanges
-        ? t('sessions.sidebar.worktreeChanges', {
-            branch: worktreeComparison.baseBranch,
-            count: worktreeComparison.fileCount,
-          })
-        : t('sessions.sidebar.session.status.worktreeClean', {
-            branch: worktreeComparison.baseBranch,
-          })}
-      role="img"
-    >
-      <Icon
-        name={worktreeComparison.hasChanges ? 'git-commit' : 'check'}
-        className="h-3 w-3"
-      />
-    </span>
-  ) : null;
-  const worktreeStateGlyphs = worktreeDirectory ? (
-    <span
-      ref={worktreeDragHandleProps?.setActivatorNodeRef}
-      data-worktree-drag-handle={worktreeDragHandleProps ? 'true' : undefined}
-      className={cn(
-        'inline-flex flex-shrink-0 items-center gap-1',
-        worktreeDragHandleProps && 'cursor-grab active:cursor-grabbing',
-      )}
-      {...(worktreeDragHandleProps?.listeners ?? {})}
-    >
-      <span
-        className="inline-flex"
-        role="img"
-        aria-label={t('sessions.sidebar.session.status.linkedWorktree')}
-      >
-        <Icon name="node-tree" className="h-3 w-3 text-muted-foreground/60" />
-      </span>
-      {worktreeComparisonGlyph}
-    </span>
-  ) : null;
   const trailingMetadataVisibilityClass = worktreeDragHandleProps
     ? 'opacity-100'
     : hideOnHoverClass;
@@ -528,19 +444,20 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
   // expand the other. Matches the format of menuInstanceKey.
   const expansionKey = menuInstanceKey;
   const isExpanded = hasSessionSearchQuery ? true : expandedParents.has(expansionKey);
-  const questionBadgeSessionScopes = React.useMemo(
-    () => selectQuestionBadgeSessionScopes(node, isExpanded, sessionDirectory),
-    [isExpanded, node, sessionDirectory],
-  );
-  const pendingQuestionCount = useSessionQuestionCount(questionBadgeSessionScopes);
-  const statusType = sessionStatus?.type ?? 'idle';
-  const hasPendingQuestion = pendingQuestionCount > 0;
-  const isStreaming = !hasPendingQuestion && (statusType === 'busy' || statusType === 'retry');
-  // Read as a boolean, not as the value: the row must not re-render on every
-  // tick of the counter it only decides to mount.
-  const hasActivityDuration = useHasSessionActivityDuration(session.id, isStreaming);
+  const indicatorModel = useSessionRowIndicatorModel({
+    node,
+    directory: sessionDirectory,
+    active: isActive,
+    pinned: isPinnedSession,
+    includeDescendants: !isExpanded,
+    includeUnreadSubtasks: notifyOnSubtasks,
+    projectRootDirectory,
+    branch: isVSCode ? null : tooltipBranchLabel,
+  });
+  const prIconColor = indicatorModel.prSummary ? `var(--pr-${indicatorModel.prSummary.visualState})` : undefined;
+  const isStreaming = indicatorModel.isStreaming;
   const isSubtaskSession = Boolean((resolvedSession as Session & { parentID?: string | null }).parentID);
-  const unseenCount = useSessionUnseenCount(sessionDirectory, session.id);
+  const unseenCount = indicatorModel.unseenCount;
   const needsAttention = unseenCount > 0 && (!isSubtaskSession || notifyOnSubtasks);
   const sessionTimestamp = resolvedSession.time?.updated || resolvedSession.time?.created || Date.now();
   const sessionUpdatedLabel = formatSessionDateLabel(sessionTimestamp);
@@ -744,61 +661,9 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
     );
   }
 
-  const pendingPermissionCount = sessionPermissions.length;
-  const pendingQuestionLabel = pendingQuestionCount === 1
-    ? t('sessions.sidebar.session.status.questionPendingSingle')
-    : t('sessions.sidebar.session.status.questionPendingMany', { count: pendingQuestionCount });
-  const showQuestionStatus = !isMovingToWorktree && hasPendingQuestion;
-  const showInterruptedStatus = !isMovingToWorktree && !hasPendingQuestion && !isStreaming && isInterrupted;
-  const showUnreadStatus = !isMovingToWorktree
-    && !isStreaming
-    && !showQuestionStatus
-    && !showInterruptedStatus
-    && needsAttention
-    && !isActive;
-  const showStatusMarker = showQuestionStatus || isStreaming || showInterruptedStatus || showUnreadStatus;
-  const statusMarkerContent = showQuestionStatus
-    ? (
-        <Icon
-          name="question"
-          className="h-3 w-3 text-[var(--status-info)]"
-          aria-label={t('sessions.sidebar.session.status.inputNeeded')}
-        />
-      )
-    : isStreaming
-    ? (
-        <span
-          className="h-1.5 w-1.5 rounded-full bg-primary"
-          aria-label={t('sessions.sidebar.session.status.active')}
-          title={t('sessions.sidebar.session.status.active')}
-        />
-      )
-    : showInterruptedStatus
-      ? (
-          <Icon
-            name="error-warning"
-            className="h-3 w-3 text-status-warning"
-            aria-label={t('sessions.sidebar.session.status.interruptedUnexpectedly')}
-          />
-        )
-    : (
-        <span
-          className="h-1.5 w-1.5 rounded-full bg-[var(--status-info)]"
-          aria-label={t('sessions.sidebar.session.status.unread')}
-          title={t('sessions.sidebar.session.status.unread')}
-        />
-      );
-  const showActivityDuration = (isStreaming || showUnreadStatus) && hasActivityDuration;
-  const hideLeadingIndicatorOnHover = !alwaysShowActions && hasChildren && (isMovingToWorktree || showStatusMarker || isPinnedSession);
-  const showPinnedMarker = isPinnedSession && !isMovingToWorktree && !showStatusMarker;
-  const pinnedMarkerContent = (
-    <Icon
-      name="pushpin"
-      className="h-3 w-3 flex-shrink-0 text-primary"
-      aria-label={t('sessions.sidebar.session.status.pinned')}
-    />
-  );
-  const leadingIndicators = isMovingToWorktree || showStatusMarker || showPinnedMarker ? (
+  const showActivityDuration = indicatorModel.showActivityDuration;
+  const hideLeadingIndicatorOnHover = !alwaysShowActions && hasChildren && indicatorModel.leading !== null;
+  const leadingIndicators = indicatorModel.leading ? (
     <span
       style={{ left: ROW_GUTTER_LEFT_PX + depth * ROW_DEPTH_STEP_PX }}
       className={cn(
@@ -806,16 +671,10 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
         hideLeadingIndicatorOnHover ? 'opacity-100 group-hover:opacity-0 group-focus-within:opacity-0' : '',
       )}
     >
-      {isMovingToWorktree ? (
-        <Icon
-          name="loader-4"
-          className="h-3 w-3 animate-spin text-primary"
-          aria-label={t('sessions.sidebar.session.status.movingToWorktree')}
-        />
-      ) : showStatusMarker ? statusMarkerContent : showPinnedMarker ? pinnedMarkerContent : null}
+      <SessionLeadingIndicatorGlyph indicator={indicatorModel.leading} variant="sidebar" />
     </span>
   ) : null;
-  const hideChevronUntilHover = hasChildren && !alwaysShowActions && (isMovingToWorktree || showStatusMarker || isPinnedSession);
+  const hideChevronUntilHover = hasChildren && !alwaysShowActions && indicatorModel.leading !== null;
   const subsessionChevron = hasChildren ? (
     <span
       role="button"
@@ -848,10 +707,6 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
       {isExpanded ? <Icon name="arrow-down-s" className="h-3 w-3" /> : <Icon name="arrow-right-s" className="h-3 w-3" />}
     </span>
   ) : null;
-
-  const streamingIndicator = isZombie
-    ? <Icon name="error-warning" className="h-4 w-4 text-status-warning" />
-    : null;
 
   const handleMenuOpenChange = (open: boolean) => {
     if (open) {
@@ -1060,9 +915,9 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
           <TooltipTrigger asChild>
             <span className="block">
               <Item
-                disabled={!sessionDirectory || isStreaming || isMovingToWorktree}
+                disabled={!sessionDirectory || isStreaming || indicatorModel.leading === 'moving'}
                 onClick={() => {
-                  if (!sessionDirectory || isStreaming || isMovingToWorktree) return;
+                  if (!sessionDirectory || isStreaming || indicatorModel.leading === 'moving') return;
                   startSessionTreeWorktreeMove({
                     root: resolvedSession,
                     descendants: collectNodeDescendantSessions(node),
@@ -1079,7 +934,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
             </span>
           </TooltipTrigger>
           <TooltipContent side="right" className="max-w-72">
-            {isMovingToWorktree
+            {indicatorModel.leading === 'moving'
               ? t('sessions.sidebar.session.moveToWorktree.tooltipMoving')
               : isStreaming
                 ? t('sessions.sidebar.session.moveToWorktree.tooltipBusy')
@@ -1346,12 +1201,12 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
                         // Touch runtimes have no hover tooltip, so the compact
                         // date stays inline there.
                         <span className="ml-2 inline-flex flex-shrink-0 items-center gap-1 text-[0.72rem] text-muted-foreground/75">
-                          {worktreeStateGlyphs}
+                          <SessionCheckoutIndicators model={indicatorModel} variant="sidebar" dragHandleProps={worktreeDragHandleProps} />
                           {showActivityDuration ? (
                             <SessionActivityDuration sessionId={session.id} running={isStreaming} />
                           ) : (
                             <>
-                              {sessionGoalGlyph}
+                              <SessionGoalIndicator goal={indicatorModel.goal} variant="sidebar" />
                               {showInlineBranchMarker ? (
                                 <Icon
                                   name="git-branch"
@@ -1363,7 +1218,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
                             </>
                           )}
                         </span>
-                      ) : (worktreeStateGlyphs || showActivityDuration || sessionGoalGlyph || showInlineBranchMarker) ? (
+                      ) : (indicatorModel.worktreeDirectory || indicatorModel.rootDirectory || showActivityDuration || indicatorModel.goal || showInlineBranchMarker) ? (
                         <div className="relative ml-1 flex h-4 flex-shrink-0 items-center justify-end">
                           <span className={cn(
                             'inline-flex items-center gap-1 whitespace-nowrap text-right transition-opacity duration-150',
@@ -1371,7 +1226,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
                               ? 'opacity-0'
                               : trailingMetadataVisibilityClass,
                           )}>
-                            {worktreeStateGlyphs}
+                            <SessionCheckoutIndicators model={indicatorModel} variant="sidebar" dragHandleProps={worktreeDragHandleProps} />
                             {showActivityDuration ? (
                               <SessionActivityDuration
                                 sessionId={session.id}
@@ -1380,7 +1235,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
                               />
                             ) : (
                               <>
-                                {sessionGoalGlyph}
+                                <SessionGoalIndicator goal={indicatorModel.goal} variant="sidebar" />
                                 {showInlineBranchMarker ? (
                                   <Icon
                                     name="git-branch"
@@ -1393,18 +1248,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
                           </span>
                         </div>
                       ) : null}
-                      {pendingPermissionCount > 0 ? (
-                        <span className="inline-flex items-center gap-1 rounded bg-destructive/10 px-1 py-0.5 text-[0.7rem] text-destructive flex-shrink-0" title={t('sessions.sidebar.session.status.permissionRequired')} aria-label={t('sessions.sidebar.session.status.permissionRequired')}>
-                          <Icon name="shield" className="h-3 w-3" />
-                          <span className="leading-none">{pendingPermissionCount}</span>
-                        </span>
-                      ) : null}
-                      {pendingQuestionCount > 0 ? (
-                        <span className="inline-flex items-center gap-1 rounded bg-status-info/10 px-1 py-0.5 text-[0.7rem] text-status-info flex-shrink-0" title={pendingQuestionLabel} aria-label={pendingQuestionLabel}>
-                          <Icon name="question" className="h-3 w-3" />
-                          <span className="leading-none">{pendingQuestionCount}</span>
-                        </span>
-                      ) : null}
+                      <SessionBlockingRequestBadges model={indicatorModel} />
                     </div>
                   </button>
                 </TooltipTrigger>
@@ -1429,14 +1273,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
                         <span className="min-w-0 truncate">{tooltipBranchLabel}</span>
                       </div>
                     ) : null}
-                    {prSummary && prStatusLabel ? (
-                      <div className="flex min-w-0 items-center gap-1.5">
-                        <Icon name="git-pull-request" className="h-3 w-3 flex-shrink-0" style={prIconColor ? { color: prIconColor } : undefined} />
-                        <span className="min-w-0 truncate" style={prIconColor ? { color: prIconColor } : undefined}>
-                          #{prSummary.number} · {prStatusLabel}
-                        </span>
-                      </div>
-                    ) : null}
+                    <SessionPrIndicator model={indicatorModel} variant="sidebar" showDetails />
                   </div>
                 </TooltipContent>
                 ) : null}
@@ -1444,9 +1281,9 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
             )}
           </div>
 
-          {streamingIndicator && !mobileVariant ? (
+          {indicatorModel.hasPersistentError && !mobileVariant ? (
             <div className="absolute right-0 top-1/2 -translate-y-1/2 z-10">
-              {streamingIndicator}
+              <SessionPersistentErrorIndicator variant="sidebar" />
             </div>
           ) : null}
 

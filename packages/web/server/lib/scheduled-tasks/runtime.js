@@ -252,6 +252,7 @@ export const createScheduledTasksRuntime = (deps) => {
     buildOpenCodeUrl,
     getOpenCodeAuthHeaders,
     waitForOpenCodeReady,
+    acquireTurnAdmission,
     emitTaskRunEvent,
     setSessionAutoAccept,
     logger = console,
@@ -515,6 +516,10 @@ export const createScheduledTasksRuntime = (deps) => {
   };
 
   const runTaskWithWatchdog = async (projectID, task, reason) => {
+    const releaseTurnAdmission = typeof acquireTurnAdmission === 'function'
+      ? acquireTurnAdmission()
+      : () => {};
+    try {
     const startedAt = Date.now();
     const title = formatScheduledSessionTitle(task, startedAt);
     const projectPath = projectPathByID.get(projectID);
@@ -596,13 +601,16 @@ export const createScheduledTasksRuntime = (deps) => {
     }
 
     const finishedAt = Date.now();
-    return {
-      sessionID,
-      durationMs: Math.max(0, finishedAt - startedAt),
-      reason,
-      startedAt,
-      finishedAt,
-    };
+      return {
+        sessionID,
+        durationMs: Math.max(0, finishedAt - startedAt),
+        reason,
+        startedAt,
+        finishedAt,
+      };
+    } finally {
+      releaseTurnAdmission();
+    }
   };
 
   const runTask = async (projectID, taskID, reason) => {

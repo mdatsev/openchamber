@@ -102,6 +102,8 @@ export const createFeatureRoutesRuntime = (dependencies) => {
       refreshOpenCodeAfterConfigChange,
       getOpenCodeResolutionSnapshot,
       getOpenCodeUpgradeCapability,
+      supervisedOpenCodeUpgradeRuntime,
+      openCodeTurnAdmissionBarrier,
       formatSettingsResponse,
       readSettingsFromDisk,
       readSettingsFromDiskMigrated,
@@ -145,6 +147,8 @@ export const createFeatureRoutesRuntime = (dependencies) => {
       clientReloadDelayMs,
       getOpenCodeResolutionSnapshot,
       getOpenCodeUpgradeCapability,
+      supervisedOpenCodeUpgradeRuntime,
+      openCodeTurnAdmissionBarrier,
       formatSettingsResponse,
       readSettingsFromDisk,
       readSettingsFromDiskMigrated,
@@ -308,6 +312,7 @@ export const createFeatureRoutesRuntime = (dependencies) => {
       getOpenCodeAuthHeaders,
       resolveProjectDirectory,
       isRequestOriginAllowed,
+      acquireTurnAdmission: () => openCodeTurnAdmissionBarrier.acquire(),
       jsonParser: express.json({ limit: '16kb' }),
     });
     registerFsRoutes(app, {

@@ -58,6 +58,8 @@ export type State = {
   session_status: Record<string, SessionStatus>
   sessionStatusSnapshotAt?: number
   sessionStatusSnapshotActiveIds?: ReadonlySet<string>
+  sessionStatusReconciliationPendingIds?: ReadonlySet<string>
+  sessionStatusReconciliationAuthority?: symbol
   session_diff: Record<string, FileDiff[]>
   todo: Record<string, Todo[]>
   permission: Record<string, PermissionRequest[]>

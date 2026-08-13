@@ -1,28 +1,32 @@
 import React from 'react';
 import type { Session } from '@opencode-ai/sdk/v2';
 
-import { Icon } from '@/components/icon/Icon';
 import { SessionActivityDuration } from '@/components/session/SessionActivityDuration';
 import { formatSessionCompactDateLabel, normalizePath } from '@/components/session/sidebar/utils';
 import { useSwitcherItems } from '@/components/session/sidebar/hooks/useSwitcherItems';
+import { selectQuestionBadgeSessionScopes } from '@/components/session/sidebar/sessionNodeItemUtils';
+import type { SessionNode } from '@/components/session/sidebar/types';
+import {
+  SessionBlockingRequestBadges,
+  SessionGoalIndicator,
+  SessionLeadingIndicatorGlyph,
+  SessionPersistentErrorIndicator,
+  SessionPrIndicator,
+  SessionCheckoutIndicators,
+} from '@/components/session/sidebar/SessionRowIndicators';
+import { useSessionRowIndicatorModel } from '@/components/session/sidebar/useSessionRowIndicatorModel';
 import { useTabletLayout } from '@/lib/device';
 import { useI18n } from '@/lib/i18n';
 import { sessionEvents } from '@/lib/sessionEvents';
 import { cn } from '@/lib/utils';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
-import { useGitStore, useResolvedWorktreeComparisonSummary } from '@/stores/useGitStore';
+import { useGitStore } from '@/stores/useGitStore';
+import { useGitHubAuthStore } from '@/stores/useGitHubAuthStore';
+import { getGitHubPrStatusKey, useGitHubPrStatusStore } from '@/stores/useGitHubPrStatusStore';
 import { refreshGlobalSessions, resolveGlobalSessionDirectory } from '@/stores/useGlobalSessionsStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
-import { useSessionUnseenCount } from '@/sync/notification-store';
-import { useHasSessionActivityDuration } from '@/sync/session-activity-timing';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import {
-  useChildStoreManager,
-  useGlobalSessionInterrupted,
-  useGlobalSessionStatus,
-  useScopedBlockingPermissions,
-  useScopedBlockingQuestions,
-} from '@/sync/sync-context';
+import { useChildStoreManager } from '@/sync/sync-context';
 
 const RECENT_SESSIONS_LIMIT = 10;
 /** Matches the metadata popover's width so both header dropdowns read as a pair. */
@@ -35,74 +39,29 @@ const getSessionTitle = (session: Session, fallback: string): string =>
     title, "project · branch", and compact time. No subsession chevrons on
     mobile by design. */
 const SwitcherRow: React.FC<{
+  node: SessionNode;
   session: Session;
   directory: string | null;
-  worktreeDirectory: string | null;
+  projectRootDirectory: string | null;
+  branch: string | null;
   meta: string;
   active: boolean;
+  pinned: boolean;
   onSelect: () => void;
-}> = ({ session, directory, worktreeDirectory, meta, active, onSelect }) => {
+}> = ({ node, session, directory, projectRootDirectory, branch, meta, active, pinned, onSelect }) => {
   const { t } = useI18n();
-  const status = useGlobalSessionStatus(session.id);
   const sessionDirectory = directory ?? resolveGlobalSessionDirectory(session);
-  const unseenCount = useSessionUnseenCount(sessionDirectory, session.id);
-  const isInterrupted = useGlobalSessionInterrupted(session.id);
-  const permissions = useScopedBlockingPermissions(session.id, sessionDirectory ?? undefined, { bootstrap: false });
-  const questions = useScopedBlockingQuestions(session.id, sessionDirectory ?? undefined, { bootstrap: false });
-  const hasPendingQuestion = questions.length > 0;
-  const statusType = status?.type ?? 'idle';
-  const isStreaming = !hasPendingQuestion && (statusType === 'busy' || statusType === 'retry');
-  const showUnreadDot = !isStreaming && !hasPendingQuestion && !isInterrupted && unseenCount > 0 && !active;
-  const hasActivityDuration = useHasSessionActivityDuration(session.id, isStreaming);
-  const showActivityDuration = (isStreaming || showUnreadDot) && hasActivityDuration;
+  const indicatorModel = useSessionRowIndicatorModel({
+    node,
+    directory: sessionDirectory,
+    active,
+    pinned,
+    includeDescendants: true,
+    includeUnreadSubtasks: true,
+    projectRootDirectory,
+    branch,
+  });
   const timeLabel = formatSessionCompactDateLabel(session.time?.updated ?? session.time?.created ?? 0);
-  const normalizedWorktreeDirectory = normalizePath(worktreeDirectory);
-  const worktreeComparison = useResolvedWorktreeComparisonSummary(normalizedWorktreeDirectory);
-  const worktreeComparisonLabel = worktreeComparison?.available
-    ? worktreeComparison.hasChanges
-      ? t('sessions.sidebar.worktreeChanges', {
-          branch: worktreeComparison.baseBranch,
-          count: worktreeComparison.fileCount,
-        })
-      : t('sessions.sidebar.session.status.worktreeClean', {
-          branch: worktreeComparison.baseBranch,
-        })
-    : null;
-
-  let activityIndicator: React.ReactNode = null;
-  if (hasPendingQuestion) {
-    activityIndicator = (
-      <Icon
-        name="question"
-        className="size-3.5 text-[var(--status-info)]"
-        aria-label={t('sessions.sidebar.session.status.inputNeeded')}
-      />
-    );
-  } else if (isStreaming) {
-    activityIndicator = (
-      <span
-        className="size-1.5 rounded-full bg-primary"
-        aria-label={t('sessions.sidebar.session.status.active')}
-        title={t('sessions.sidebar.session.status.active')}
-      />
-    );
-  } else if (isInterrupted) {
-    activityIndicator = (
-      <Icon
-        name="error-warning"
-        className="size-3.5 text-status-warning"
-        aria-label={t('sessions.sidebar.session.status.interruptedUnexpectedly')}
-      />
-    );
-  } else if (showUnreadDot) {
-    activityIndicator = (
-      <span
-        className="size-1.5 rounded-full bg-[var(--status-info)]"
-        aria-label={t('sessions.sidebar.session.status.unread')}
-        title={t('sessions.sidebar.session.status.unread')}
-      />
-    );
-  }
 
   return (
     <button
@@ -122,56 +81,32 @@ const SwitcherRow: React.FC<{
           <span className="block truncate typography-micro text-muted-foreground">{meta}</span>
         ) : null}
       </span>
-      {worktreeDirectory ? (
-        <span className="inline-flex shrink-0 items-center gap-1">
-          <span
-            className="inline-flex"
-            role="img"
-            aria-label={t('sessions.sidebar.session.status.linkedWorktree')}
-          >
-            <Icon name="node-tree" className="size-3.5 text-muted-foreground/60" />
-          </span>
-          {worktreeComparison?.available && worktreeComparisonLabel ? (
-            <span
-              className={cn(
-                'inline-flex',
-                worktreeComparison.hasChanges ? 'text-status-warning' : 'text-status-success',
-              )}
-              role="img"
-              aria-label={worktreeComparisonLabel}
-            >
-              <Icon name={worktreeComparison.hasChanges ? 'git-commit' : 'check'} className="size-3.5" />
-            </span>
-          ) : null}
-        </span>
-      ) : null}
+      <SessionCheckoutIndicators model={indicatorModel} variant="mobile" />
+      <SessionPrIndicator model={indicatorModel} variant="mobile" />
       {/* Activity sits on the right, before permissions and time — no reserved left gutter. */}
-      {activityIndicator && (
+      {indicatorModel.leading && (
         <span className="flex size-3.5 shrink-0 items-center justify-center">
-          {activityIndicator}
+          <SessionLeadingIndicatorGlyph indicator={indicatorModel.leading} variant="mobile" />
         </span>
       )}
-      {permissions.length > 0 && (
-        <span
-          className="inline-flex shrink-0 items-center gap-1 rounded bg-destructive/10 px-1 py-0.5 text-[0.7rem] text-destructive"
-          title={t('sessions.sidebar.session.status.permissionRequired')}
-          aria-label={t('sessions.sidebar.session.status.permissionRequired')}
-        >
-          <Icon name="shield" className="size-3" />
-          <span className="leading-none">{permissions.length}</span>
-        </span>
-      )}
+      {indicatorModel.hasPersistentError ? <SessionPersistentErrorIndicator variant="mobile" /> : null}
+      <SessionBlockingRequestBadges model={indicatorModel} />
       {/* The elapsed turn takes the time slot while it matters, then hands it
           back to the relative timestamp. */}
-      {showActivityDuration ? (
+      {indicatorModel.showActivityDuration ? (
         <SessionActivityDuration
           sessionId={session.id}
-          running={isStreaming}
+          running={indicatorModel.isStreaming}
           className="typography-micro"
         />
-      ) : timeLabel ? (
-        <span className="shrink-0 typography-micro text-muted-foreground tabular-nums">{timeLabel}</span>
-      ) : null}
+      ) : (
+        <span className="inline-flex shrink-0 items-center gap-1">
+          <SessionGoalIndicator goal={indicatorModel.goal} variant="mobile" />
+          {timeLabel ? (
+            <span className="typography-micro text-muted-foreground tabular-nums">{timeLabel}</span>
+          ) : null}
+        </span>
+      )}
     </button>
   );
 };
@@ -226,8 +161,16 @@ export const MobileSessionSwitcher: React.FC<{
   const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
   const setCurrentSession = useSessionUIStore((state) => state.setCurrentSession);
   const setActiveProjectIdOnly = useProjectsStore((state) => state.setActiveProjectIdOnly);
-  const { git } = useRuntimeAPIs();
+  const { git, github } = useRuntimeAPIs();
   const fetchWorktreeComparison = useGitStore((state) => state.fetchWorktreeComparison);
+  const fetchStatus = useGitStore((state) => state.fetchStatus);
+  const ensureWorktreeComparison = useGitStore((state) => state.ensureWorktreeComparison);
+  const ensureStatus = useGitStore((state) => state.ensureStatus);
+  const githubAuthStatus = useGitHubAuthStore((state) => state.status);
+  const githubAuthChecked = useGitHubAuthStore((state) => state.hasChecked);
+  const ensurePrStatusEntry = useGitHubPrStatusStore((state) => state.ensureEntry);
+  const setPrStatusParams = useGitHubPrStatusStore((state) => state.setParams);
+  const refreshPrStatusTargets = useGitHubPrStatusStore((state) => state.refreshTargets);
   const childStores = useChildStoreManager();
   const bootstrapDemandOwner = `mobile-session-switcher:${React.useId()}`;
 
@@ -237,24 +180,92 @@ export const MobileSessionSwitcher: React.FC<{
       .map((item) => normalizePath(item.node.worktree?.path ?? null))
       .filter((directory): directory is string => Boolean(directory)),
   )), [items]);
+  const rootDirectories = React.useMemo(() => Array.from(new Set(
+    items
+      .filter((item) => (
+        !item.node.worktree
+        && normalizePath(item.groupDirectory) === normalizePath(item.projectRootDirectory)
+      ))
+      .map((item) => normalizePath(item.groupDirectory))
+      .filter((directory): directory is string => Boolean(directory)),
+  )), [items]);
+  const prTargets = React.useMemo(() => {
+    const targetsByKey = new Map<string, { directory: string; branch: string }>();
+    for (const item of items) {
+      const directory = normalizePath(item.node.worktree?.path ?? null);
+      const branch = item.secondaryMeta?.branchLabel?.trim() || item.node.worktree?.branch?.trim();
+      if (!directory || !branch) continue;
+      const key = getGitHubPrStatusKey(directory, branch);
+      if (!targetsByKey.has(key)) targetsByKey.set(key, { directory, branch });
+    }
+    return targetsByKey;
+  }, [items]);
 
   React.useEffect(() => {
-    if (!git.getWorktreeComparison || worktreeDirectories.length === 0) return;
-    for (const directory of worktreeDirectories) {
-      void fetchWorktreeComparison(directory, git);
+    if (worktreeDirectories.length === 0 && rootDirectories.length === 0) return;
+    if (git.getWorktreeComparison) {
+      for (const directory of worktreeDirectories) {
+        void ensureWorktreeComparison(directory, git, { mode: 'combined' });
+      }
     }
-    const directorySet = new Set(worktreeDirectories);
+    for (const directory of rootDirectories) {
+      void ensureStatus(directory, git);
+    }
+    const worktreeDirectorySet = new Set(worktreeDirectories);
+    const rootDirectorySet = new Set(rootDirectories);
+    const refreshVisibleWorktreeComparisons = () => {
+      if (!git.getWorktreeComparison) return;
+      for (const directory of worktreeDirectories) {
+        void fetchWorktreeComparison(directory, git, { mode: 'combined' });
+      }
+    };
     return sessionEvents.onGitRefreshHint((hint) => {
       const directory = normalizePath(hint.directory);
-      if (!directory || !directorySet.has(directory)) return;
-      void fetchWorktreeComparison(directory, git);
+      if (!directory) return;
+      if (git.getWorktreeComparison && worktreeDirectorySet.has(directory)) {
+        void fetchWorktreeComparison(directory, git, { mode: 'combined' });
+      }
+      if (rootDirectorySet.has(directory)) {
+        void fetchStatus(directory, git, { silent: true });
+        refreshVisibleWorktreeComparisons();
+      }
     });
-  }, [fetchWorktreeComparison, git, worktreeDirectories]);
+  }, [ensureStatus, ensureWorktreeComparison, fetchStatus, fetchWorktreeComparison, git, rootDirectories, worktreeDirectories]);
+
+  React.useEffect(() => {
+    if (!githubAuthChecked || !githubAuthStatus?.connected || !github || prTargets.size === 0) return;
+    prTargets.forEach((target, key) => {
+      ensurePrStatusEntry(key);
+      setPrStatusParams(key, {
+        directory: target.directory,
+        branch: target.branch,
+        remoteName: null,
+        canShow: true,
+        github,
+        githubAuthChecked,
+        githubConnected: githubAuthStatus.connected,
+      });
+    });
+    void refreshPrStatusTargets([...prTargets.values()], {
+      silent: true,
+      markInitialResolved: true,
+    });
+  }, [
+    ensurePrStatusEntry,
+    github,
+    githubAuthChecked,
+    githubAuthStatus?.connected,
+    prTargets,
+    refreshPrStatusTargets,
+    setPrStatusParams,
+  ]);
 
   React.useEffect(() => {
     const directories = new Set<string>();
     for (const item of items) {
-      if (item.groupDirectory) directories.add(item.groupDirectory);
+      for (const scope of selectQuestionBadgeSessionScopes(item.node, false, item.groupDirectory)) {
+        directories.add(scope.directory);
+      }
     }
     childStores.setBootstrapDemand(
       bootstrapDemandOwner,
@@ -357,11 +368,14 @@ export const MobileSessionSwitcher: React.FC<{
               return (
                 <SwitcherRow
                   key={session.id}
+                  node={item.node}
                   session={session}
                   directory={item.groupDirectory}
-                  worktreeDirectory={normalizePath(item.node.worktree?.path ?? null)}
+                  projectRootDirectory={item.projectRootDirectory}
+                  branch={item.secondaryMeta?.branchLabel ?? item.node.worktree?.branch ?? null}
                   meta={meta}
                   active={session.id === currentSessionId}
+                  pinned={item.pinned}
                   onSelect={() => {
                     if (item.projectId) setActiveProjectIdOnly(item.projectId);
                     handleSelect(session);

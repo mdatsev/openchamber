@@ -12,6 +12,8 @@ export const registerOpenCodeRoutes = (app, dependencies) => {
     crypto,
     getOpenCodeResolutionSnapshot,
     getOpenCodeUpgradeCapability,
+    supervisedOpenCodeUpgradeRuntime,
+    openCodeTurnAdmissionBarrier,
     formatSettingsResponse,
     readSettingsFromDisk,
     readSettingsFromDiskMigrated,
@@ -194,6 +196,151 @@ ${desktopReturn ? `<a class="return" href="openchamber://focus/mcp-auth">Return 
   });
 
   let openCodeUpgradePromise = null;
+  let openCodeUpgradeAbortController = null;
+  let openCodeUpgradeOperation = { phase: 'idle' };
+  const SUPERVISED_DRAIN_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+
+  const wait = (duration, signal) => new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      const error = new Error('OpenCode upgrade was cancelled');
+      error.name = 'AbortError';
+      reject(error);
+      return;
+    }
+    const onAbort = () => {
+      signal.removeEventListener('abort', onAbort);
+      clearTimeout(timeout);
+      const error = new Error('OpenCode upgrade was cancelled');
+      error.name = 'AbortError';
+      reject(error);
+    };
+    const timeout = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, duration);
+    timeout.unref?.();
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+
+  const waitForSupervisedIdle = async (signal) => {
+    const deadline = Date.now() + SUPERVISED_DRAIN_TIMEOUT_MS;
+    await openCodeTurnAdmissionBarrier.waitForDrained({
+      signal,
+      timeoutMs: SUPERVISED_DRAIN_TIMEOUT_MS,
+    });
+    while (true) {
+      if (Date.now() >= deadline) {
+        throw new Error('Timed out waiting for active OpenCode turns to finish');
+      }
+      let activity = await supervisedOpenCodeUpgradeRuntime.getActivity({ signal });
+      if (activity.activeSessionCount > 0) {
+        openCodeUpgradeOperation = {
+          phase: 'queued',
+          activeSessionCount: activity.activeSessionCount,
+        };
+        await wait(Math.min(5_000, deadline - Date.now()), signal);
+        continue;
+      }
+
+      await wait(Math.min(2_000, deadline - Date.now()), signal);
+      activity = await supervisedOpenCodeUpgradeRuntime.getActivity({ signal });
+      if (activity.activeSessionCount === 0) return;
+      openCodeUpgradeOperation = {
+        phase: 'queued',
+        activeSessionCount: activity.activeSessionCount,
+      };
+    }
+  };
+
+  const performOpenCodeUpgrade = async ({ target, capability, signal }) => {
+    if (capability.manager === 'systemd') {
+      await waitForSupervisedIdle(signal);
+    }
+
+    openCodeUpgradeOperation = { phase: 'upgrading' };
+    const response = await fetch(buildOpenCodeUrl('/global/upgrade', ''), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        ...getOpenCodeAuthHeaders(),
+      },
+      body: JSON.stringify(target ? { target } : {}),
+      signal,
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || payload?.success === false) {
+      return {
+        status: response.status,
+        body: {
+          success: false,
+          error: payload?.error || response.statusText || 'Failed to upgrade OpenCode',
+        },
+      };
+    }
+
+    try {
+      if (capability.manager === 'systemd') {
+        openCodeUpgradeOperation = { phase: 'restarting' };
+        await supervisedOpenCodeUpgradeRuntime.restart();
+      } else {
+        await refreshOpenCodeAfterConfigChange('OpenCode upgrade');
+      }
+    } catch (restartError) {
+      return {
+        status: 500,
+        body: {
+          success: false,
+          upgraded: true,
+          error: restartError instanceof Error
+            ? `OpenCode upgraded, but restart failed: ${restartError.message}`
+            : 'OpenCode upgraded, but restart failed',
+        },
+      };
+    }
+
+    return {
+      status: 200,
+      body: { ...(payload ?? { success: true }), restarted: true },
+    };
+  };
+
+  const startOpenCodeUpgrade = ({ target, capability }) => {
+    const abortController = new AbortController();
+    openCodeUpgradeAbortController = abortController;
+    const upgradeOperation = performOpenCodeUpgrade({
+      target,
+      capability,
+      signal: abortController.signal,
+    });
+    openCodeUpgradePromise = upgradeOperation;
+    void upgradeOperation.then((result) => {
+      if (result.status >= 200 && result.status < 300) {
+        openCodeUpgradeOperation = capability.manager === 'systemd'
+          ? { phase: 'updated', version: result.body?.version ?? null, completedAt: Date.now() }
+          : { phase: 'idle' };
+        return;
+      }
+      openCodeUpgradeOperation = { phase: 'failed', error: result.body?.error ?? 'OpenCode upgrade failed' };
+    }).catch((error) => {
+      const cancelled = error?.name === 'AbortError';
+      openCodeUpgradeOperation = {
+        phase: cancelled ? 'idle' : 'failed',
+        ...(cancelled
+          ? {}
+          : { error: error instanceof Error ? error.message : 'OpenCode upgrade failed' }),
+      };
+    }).finally(() => {
+      if (capability.manager === 'systemd') {
+        openCodeTurnAdmissionBarrier.open();
+      }
+      if (openCodeUpgradePromise === upgradeOperation) {
+        openCodeUpgradePromise = null;
+        openCodeUpgradeAbortController = null;
+      }
+    });
+    return upgradeOperation;
+  };
 
   app.post('/api/opencode/upgrade', async (req, res) => {
     try {
@@ -217,60 +364,29 @@ ${desktopReturn ? `<a class="return" href="openchamber://focus/mcp-auth">Return 
         });
       }
 
+      if (capability.manager === 'systemd' && (
+        !openCodeTurnAdmissionBarrier
+        || !supervisedOpenCodeUpgradeRuntime?.supported
+      )) {
+        return res.status(409).json({
+          success: false,
+          code: 'OPENCODE_UPGRADE_UNSUPPORTED',
+          error: 'Supervised OpenCode upgrades are not configured.',
+        });
+      }
+
       const target = typeof req.body?.target === 'string' && req.body.target.trim().length > 0
         ? req.body.target.trim()
         : undefined;
-      const upgradeOperation = (async () => {
-        const response = await fetch(buildOpenCodeUrl('/global/upgrade', ''), {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Accept: 'application/json',
-            ...getOpenCodeAuthHeaders(),
-          },
-          body: JSON.stringify(target ? { target } : {}),
-        });
-        const payload = await response.json().catch(() => null);
-        if (!response.ok) {
-          return {
-            status: response.status,
-            body: {
-              success: false,
-              error: payload?.error || response.statusText || 'Failed to upgrade OpenCode',
-            },
-          };
-        }
-
-        try {
-          await refreshOpenCodeAfterConfigChange('OpenCode upgrade');
-        } catch (restartError) {
-          return {
-            status: 500,
-            body: {
-              success: false,
-              upgraded: true,
-              error: restartError instanceof Error
-                ? `OpenCode upgraded, but restart failed: ${restartError.message}`
-                : 'OpenCode upgraded, but restart failed',
-            },
-          };
-        }
-
-        return {
-          status: 200,
-          body: { ...(payload ?? { success: true }), restarted: true },
-        };
-      })();
-      openCodeUpgradePromise = upgradeOperation;
-
-      try {
-        const result = await upgradeOperation;
-        return res.status(result.status).json(result.body);
-      } finally {
-        if (openCodeUpgradePromise === upgradeOperation) {
-          openCodeUpgradePromise = null;
-        }
+      if (capability.manager === 'systemd') {
+        openCodeTurnAdmissionBarrier.close();
+        openCodeUpgradeOperation = { phase: 'queued', activeSessionCount: 0 };
+        startOpenCodeUpgrade({ target, capability });
+        return res.status(202).json({ success: true, queued: true });
       }
+
+      const result = await startOpenCodeUpgrade({ target, capability });
+      return res.status(result.status).json(result.body);
     } catch (error) {
       console.error('Failed to upgrade OpenCode:', error);
       return res.status(500).json({
@@ -280,9 +396,49 @@ ${desktopReturn ? `<a class="return" href="openchamber://focus/mcp-auth">Return 
     }
   });
 
+  app.post('/api/opencode/upgrade/cancel', (_req, res) => {
+    if (openCodeUpgradeOperation.phase !== 'queued' || !openCodeUpgradeAbortController) {
+      return res.status(409).json({
+        success: false,
+        code: 'OPENCODE_UPGRADE_NOT_CANCELLABLE',
+        error: 'The OpenCode upgrade can only be cancelled while it is waiting for active turns.',
+      });
+    }
+    openCodeUpgradeOperation = { phase: 'idle' };
+    openCodeTurnAdmissionBarrier.open();
+    openCodeUpgradeAbortController.abort();
+    return res.json({ success: true });
+  });
+
   app.get('/api/opencode/upgrade-status', async (_req, res) => {
     try {
       const capability = getOpenCodeUpgradeCapability();
+      if (
+        openCodeUpgradeOperation.phase === 'updated'
+        && Date.now() - openCodeUpgradeOperation.completedAt >= 5 * 60 * 1000
+      ) {
+        openCodeUpgradeOperation = { phase: 'idle' };
+      }
+      if (['queued', 'upgrading', 'restarting'].includes(openCodeUpgradeOperation.phase)) {
+        const current = await readOpenCodeCurrentVersion().catch(() => ({ ok: false, currentVersion: null }));
+        return res.json({
+          available: null,
+          currentVersion: current.ok ? current.currentVersion : null,
+          latestVersion: null,
+          upgrade: capability,
+          operation: openCodeUpgradeOperation,
+        });
+      }
+      if (openCodeUpgradeOperation.phase === 'failed') {
+        const current = await readOpenCodeCurrentVersion().catch(() => ({ ok: false, currentVersion: null }));
+        return res.json({
+          available: null,
+          currentVersion: current.ok ? current.currentVersion : null,
+          latestVersion: null,
+          upgrade: capability,
+          operation: openCodeUpgradeOperation,
+        });
+      }
       if (!capability.supported) {
         const current = await readOpenCodeCurrentVersion().catch(() => ({ ok: false, currentVersion: null }));
         return res.json({
@@ -290,6 +446,7 @@ ${desktopReturn ? `<a class="return" href="openchamber://focus/mcp-auth">Return 
           currentVersion: current.ok ? current.currentVersion : null,
           latestVersion: null,
           upgrade: capability,
+          ...(openCodeUpgradeOperation.phase === 'idle' ? {} : { operation: openCodeUpgradeOperation }),
         });
       }
 
@@ -309,7 +466,13 @@ ${desktopReturn ? `<a class="return" href="openchamber://focus/mcp-auth">Return 
       }
       const currentVersion = typeof health?.version === 'string' ? health.version.replace(/^v/, '') : null;
       if (!currentVersion || !latestVersion) {
-        return res.json({ available: null, currentVersion, latestVersion: latestVersion || null });
+        return res.json({
+          available: null,
+          currentVersion,
+          latestVersion: latestVersion || null,
+          upgrade: capability,
+          ...(openCodeUpgradeOperation.phase === 'idle' ? {} : { operation: openCodeUpgradeOperation }),
+        });
       }
       const available = compareVersions(latestVersion, currentVersion) > 0;
       return res.json({
@@ -317,6 +480,7 @@ ${desktopReturn ? `<a class="return" href="openchamber://focus/mcp-auth">Return 
         currentVersion,
         latestVersion,
         upgrade: capability,
+        ...(openCodeUpgradeOperation.phase === 'idle' ? {} : { operation: openCodeUpgradeOperation }),
       });
     } catch (error) {
       return res.status(500).json({

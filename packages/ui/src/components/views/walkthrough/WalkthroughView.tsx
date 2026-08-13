@@ -152,6 +152,23 @@ const getSearchLinesForHunk = (hunk: WalkthroughHunk, stopId: string | null) => 
   return lines;
 };
 
+const getFoldedOffsetMap = (text: string) => {
+  const originalStarts: number[] = [];
+  const originalEnds: number[] = [];
+  let originalOffset = 0;
+
+  for (const character of text) {
+    const nextOriginalOffset = originalOffset + character.length;
+    for (let index = 0; index < character.toLowerCase().length; index += 1) {
+      originalStarts.push(originalOffset);
+      originalEnds.push(nextOriginalOffset);
+    }
+    originalOffset = nextOriginalOffset;
+  }
+
+  return { originalStarts, originalEnds };
+};
+
 export const WalkthroughView = ({ directory }: WalkthroughViewProps) => {
   const { t, locale, locales, label } = useI18n();
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -442,8 +459,12 @@ export const WalkthroughView = ({ directory }: WalkthroughViewProps) => {
     const matches: WalkthroughSearchMatch[] = [];
     for (const line of searchableDiffLines) {
       const normalizedLine = line.text.toLowerCase();
-      let matchStart = normalizedLine.indexOf(normalizedQuery);
-      while (matchStart !== -1) {
+      const offsetMap = normalizedLine.length === line.text.length ? null : getFoldedOffsetMap(line.text);
+      let foldedMatchStart = normalizedLine.indexOf(normalizedQuery);
+      while (foldedMatchStart !== -1) {
+        const foldedMatchEnd = foldedMatchStart + normalizedQuery.length;
+        const matchStart = offsetMap?.originalStarts[foldedMatchStart] ?? foldedMatchStart;
+        const matchEnd = offsetMap?.originalEnds[foldedMatchEnd - 1] ?? foldedMatchEnd;
         matches.push({
           stopId: line.stopId,
           hunkId: line.hunkId,
@@ -451,10 +472,10 @@ export const WalkthroughView = ({ directory }: WalkthroughViewProps) => {
           lineNumber: line.lineNumber,
           side: line.side,
           matchStart,
-          matchLength: deferredSearchQuery.length,
+          matchLength: matchEnd - matchStart,
           id: `${line.hunkId}:${line.side}:${line.lineNumber}:${matchStart}`,
         });
-        matchStart = normalizedLine.indexOf(normalizedQuery, matchStart + normalizedQuery.length);
+        foldedMatchStart = normalizedLine.indexOf(normalizedQuery, foldedMatchStart + normalizedQuery.length);
       }
     }
     return matches;

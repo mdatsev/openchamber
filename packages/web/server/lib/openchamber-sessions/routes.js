@@ -355,6 +355,7 @@ export const createOpenChamberSessionService = (dependencies) => {
     buildOpenCodeUrl,
     getOpenCodeAuthHeaders,
     waitForOpenCodeReady,
+    acquireTurnAdmission,
     emitSessionCreatedEvent,
     createSessionGoal: createSessionGoalOverride,
   } = dependencies;
@@ -572,6 +573,10 @@ export const createOpenChamberSessionService = (dependencies) => {
     const model = resolveRequestedModel(payload);
     const agent = asNonEmptyString(payload.agent);
     const variant = asNonEmptyString(payload.variant);
+    const releaseTurnAdmission = prompt && typeof acquireTurnAdmission === 'function'
+      ? acquireTurnAdmission()
+      : () => {};
+    try {
 
     const resolvedDirectory = await resolveRequestedDirectory({
       payload,
@@ -669,7 +674,10 @@ export const createOpenChamberSessionService = (dependencies) => {
     } catch {
     }
 
-    return result;
+      return result;
+    } finally {
+      releaseTurnAdmission();
+    }
   };
 
   const runExisting = async (action, sourceSessionId, payload = {}) => {
@@ -680,6 +688,9 @@ export const createOpenChamberSessionService = (dependencies) => {
     const goalInput = resolveGoalInput(payload, prompt);
     if (!goalInput.ok) throw new OpenChamberControlError(goalInput.error, 400);
     const requestedModel = resolveRequestedModel(payload);
+    const releaseTurnAdmission = typeof acquireTurnAdmission === 'function'
+      ? acquireTurnAdmission()
+      : () => {};
 
     let targetSessionID = sourceSessionID;
     let targetSession = null;
@@ -791,6 +802,8 @@ export const createOpenChamberSessionService = (dependencies) => {
           : {}),
         },
       );
+    } finally {
+      releaseTurnAdmission();
     }
   };
 

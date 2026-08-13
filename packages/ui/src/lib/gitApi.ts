@@ -146,7 +146,7 @@ export async function getGitRangeDiff(
 
 export async function getWorktreeComparison(
   directory: string,
-  options?: import('./api/types').GetGitWorktreeComparisonOptions
+  options: import('./api/types').GetGitWorktreeComparisonOptions
 ): Promise<import('./api/types').GitWorktreeComparison> {
   const runtime = getRuntimeGit();
   if (runtime?.getWorktreeComparison) return runtime.getWorktreeComparison(directory, options);

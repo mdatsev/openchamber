@@ -1652,6 +1652,22 @@ export async function respondToPermission(
   }
 }
 
+export async function respondToPermissionInCapturedRuntime(
+  sessionId: string,
+  requestId: string,
+  response: "once" | "always" | "reject",
+  directory: string | undefined,
+  operation: SideChatRuntimeOperation,
+): Promise<void> {
+  if (!operation.isCurrent()) throw new Error("Permission reply runtime changed")
+  const result = await operation.client.permission.reply({
+    requestID: requestId,
+    reply: response,
+    ...(directory ? { directory } : {}),
+  })
+  if (assertSdkData(result, "permission.reply") !== true) throw new Error("Permission reply failed")
+}
+
 export async function dismissPermission(
   sessionId: string,
   requestId: string,

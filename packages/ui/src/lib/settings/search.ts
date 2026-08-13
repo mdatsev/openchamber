@@ -475,9 +475,9 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
   },
   {
     id: 'sessions.opencode-update',
-    page: 'general',
-    titleKey: 'settings.openchamber.opencodeCli.field.update',
-    descriptionKey: 'settings.openchamber.opencodeCli.field.updateInfo',
+    page: 'fork',
+    titleKey: 'settings.fork.opencodeUpdate.label',
+    descriptionKey: 'settings.fork.opencodeUpdate.info',
     keywords: ['opencode', 'cli', 'update', 'upgrade', 'version'],
     isAvailable: (ctx) => !ctx.isVSCode,
   },

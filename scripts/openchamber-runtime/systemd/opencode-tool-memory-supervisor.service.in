@@ -1,0 +1,17 @@
+[Unit]
+Description=OpenCode tool aggregate memory supervisor
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+Environment="PATH=@SERVICE_PATH@"
+ExecStart=@RUNTIME_DIR@/opencode-tool-memory-supervisor
+Restart=always
+RestartSec=100ms
+Slice=app.slice
+KillMode=control-group
+TimeoutStopSec=5
+OOMPolicy=continue
+
+[Install]
+WantedBy=default.target

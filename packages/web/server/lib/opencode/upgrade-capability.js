@@ -9,6 +9,7 @@ export const resolveOpenCodeUpgradeCapability = ({
   hasManagedProcess,
   activeBinary,
   isBundledBinary,
+  supervisedSystemd,
 }) => {
   if (isWindowsArm64()) {
     return {
@@ -19,6 +20,13 @@ export const resolveOpenCodeUpgradeCapability = ({
   }
 
   if (isExternal) {
+    if (supervisedSystemd) {
+      return {
+        supported: true,
+        manager: 'systemd',
+        reason: null,
+      };
+    }
     return {
       supported: false,
       manager: 'external',

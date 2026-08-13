@@ -229,6 +229,7 @@ export const MobileWorkspaceDrawer: React.FC<{
           >
             <ErrorBoundary>
               <MobileChangesSurface
+                active={open && tab === 'changes'}
                 initialDiffPath={pendingChangesDiff?.path ?? null}
                 initialDiffStaged={pendingChangesDiff?.staged === true}
               />

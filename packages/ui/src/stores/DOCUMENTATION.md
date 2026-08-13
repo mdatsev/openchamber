@@ -132,6 +132,7 @@ Core model:
   - identity
   - diff cache
   - linked-worktree comparison summary and full-patch caches
+  - linked-worktree comparison fetch timestamps used by visible refresh owners
   - per-directory loading flags
   - freshness timestamps
 
@@ -139,9 +140,10 @@ Important properties:
 
 - `directories: Map<string, DirectoryGitState>` is the source of truth
 - loading state is per-directory, not global
-- `ensureStatus()` and `ensureAll()` are the preferred entry points for consumers
+- `ensureStatus()`, `ensureAll()`, and `ensureWorktreeComparison()` are the preferred freshness-gated entry points for consumers
 - in-flight dedupe exists for status and `ensureAll()`
-- linked-worktree comparison requests dedupe independently for summary and full-patch payloads
+- linked-worktree comparison requests dedupe by directory, summary/full-patch tier, explicit comparison mode, and context-line count; a mode or patch-context switch cannot reuse another request
+- failed comparison requests bypass freshness reuse; confirmed Git mutations cancel older in-flight comparison authority, invalidate related linked-worktree caches when their primary checkout changes, and clear comparison timestamps before the next read
 - runtime reset replaces all live entries with that runtime's persisted branch seeds and invalidates old completions
 - status, branches, log, identity, repository probes, and prefetch diffs commit through runtime and per-channel generations
 - status mutations advance a revision so older refreshes cannot undo optimistic or confirmed index changes
@@ -240,7 +242,7 @@ Example already in use:
 
 - successful mutating tools emit a centralized Git refresh hint through `sessionEvents`
 - visible `GitView` / `DiffView` consume the hint and refresh current-directory status
-- linked-worktree headers consume summary comparisons, while visible desktop/mobile diff surfaces request full patches; both react to the same one-shot hints and never poll
+- linked-worktree headers consume summary comparisons, while visible desktop/mobile diff surfaces request full patches; primary-root and linked-worktree hints refresh affected comparisons, and visible consumers use a bounded 30-second refresh plus focus/visibility refresh so a primary checkout or externally-created commit cannot remain cached indefinitely
 
 This is preferred over background polling.
 
@@ -266,8 +268,9 @@ Do not raise limits casually.
 Expected model:
 
 - `GitView` / `DiffView` ensure current-directory Git state when visible
-- `DiffView` and the mobile Changes surface request full linked-worktree comparisons only after repository detection succeeds; the branch scope is read-only and falls back to ordinary working-tree changes when the runtime or directory cannot provide a comparison
-- mounted visible worktree headers request the cheaper summary comparison for their indicators
+- `DiffView` and every mobile Changes host use the same full linked-worktree comparison surface after repository detection succeeds; their read-only branch scope lets the user select uncommitted, committed, or combined mode and renders committed, staged, unstaged, and untracked layers independently
+- mounted visible worktree headers request the cheaper combined-mode summary comparison for their indicators
+- full comparison loading, results, and errors are associated with their requested mode; selectors hide results from other modes, and a failed authoritative request remains an error rather than becoming a clean comparison
 - explicit Git actions refresh status/branches/log as needed
 - a mounted file-mutating tool issues a one-shot Git refresh hint when it transitions from active to successfully finalized; remounting historical completed tools does not replay the hint
 - a successful dirty save from the in-app file editor issues a path-scoped Git refresh hint; clean autosave checks remain no-ops

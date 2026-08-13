@@ -3,6 +3,8 @@ import { opencodeClient } from "@/lib/opencode/client"
 import { usePermissionStore } from "@/stores/permissionStore"
 import { getAllSyncSessionMap, getDirectoryState } from "./sync-refs"
 import * as sessionActions from "./session-actions"
+import { getRuntimeKey } from "@/lib/runtime-switch"
+import { captureSideChatRuntimeOperation } from "@/lib/sideChats/runtimeOperation"
 
 const RETRY_DELAYS_MS = [0, 250, 1000]
 
@@ -52,7 +54,7 @@ export function createVSCodePermissionAutoAcceptRuntime(dependencies: Dependenci
   const processPermission = (
     permission: PermissionRequest,
     directory?: string,
-    options?: { verifyPending?: boolean },
+    options?: { verifyPending?: boolean; isCurrent?: () => boolean },
   ) => {
     const recent = recentOutcomes.get(permission.id)
     if (recent !== undefined) return Promise.resolve(recent)
@@ -60,15 +62,19 @@ export function createVSCodePermissionAutoAcceptRuntime(dependencies: Dependenci
     if (existing) return existing
 
     const task = (async () => {
+      if (options?.isCurrent && !options.isCurrent()) return false
       if (!(await isEnabled(permission.sessionID, directory))) return false
+      if (options?.isCurrent && !options.isCurrent()) return false
 
       if (options?.verifyPending !== false) {
         const permissionState = await dependencies.getPermissionState(permission.sessionID, permission.id, directory)
+        if (options?.isCurrent && !options.isCurrent()) return false
         if (permissionState === "resolved") return true
       }
 
       for (const delay of RETRY_DELAYS_MS) {
         if (delay > 0) await dependencies.wait(delay)
+        if (options?.isCurrent && !options.isCurrent()) return false
         try {
           await dependencies.reply(permission.sessionID, permission.id, directory)
           return true
@@ -127,13 +133,29 @@ const runtime = createVSCodePermissionAutoAcceptRuntime({
   getKnownPendingPermissions: (directory) => Object.values(getDirectoryState(directory)?.permission ?? {}).flat(),
   listPendingPermissions: (directory) => opencodeClient.listPendingPermissions({ directories: [directory] }),
   getPermissionState: async (sessionId, requestId, directory) => (await opencodeClient.fetchPermission(sessionId, requestId, directory)).state,
-  reply: (sessionId, requestId, directory) => sessionActions.respondToPermission(sessionId, requestId, "once", directory),
+  reply: (sessionId, requestId, directory) => {
+    const operation = captureSideChatRuntimeOperation()
+    return sessionActions.respondToPermissionInCapturedRuntime(sessionId, requestId, "once", directory, operation)
+  },
   wait: (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
 })
 
 export const processVSCodePermissionAutoAccept = (
   permission: PermissionRequest,
   directory?: string,
-) => runtime.processPermission(permission, directory, { verifyPending: false })
-export const processVSCodeReconciledPermissionAutoAccept = runtime.processPermission
+  expectedRuntimeKey = getRuntimeKey(),
+) => {
+  const operation = captureSideChatRuntimeOperation()
+  return runtime.processPermission(permission, directory, {
+    verifyPending: false,
+    isCurrent: () => operation.runtimeKey === expectedRuntimeKey && operation.isCurrent(),
+  })
+}
+export const processVSCodeReconciledPermissionAutoAccept = (
+  permission: PermissionRequest,
+  directory?: string,
+  expectedRuntimeKey = getRuntimeKey(),
+) => runtime.processPermission(permission, directory, {
+  isCurrent: () => getRuntimeKey() === expectedRuntimeKey,
+})
 export const reconcileVSCodePendingPermissions = runtime.reconcilePending

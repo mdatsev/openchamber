@@ -8,6 +8,7 @@ import { runtimeFetch } from '@/lib/runtime-fetch';
 import { getRuntimeKey, subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
 import { useForkSettingsStore } from '@/stores/useForkSettingsStore';
 import { SettingsPageLayout } from '@/components/sections/shared/SettingsPageLayout';
+import { OpenCodeUpdateSettings } from './OpenCodeUpdateSettings';
 import {
   SETTINGS_OPTION_STACK_CLASS,
   SettingsCheckboxRow,
@@ -168,6 +169,7 @@ export const ForkSettingsPage: React.FC = () => {
         </div>
       </SettingsSection>
       <SettingsSection title={t('settings.fork.section.runtime')}>
+        <OpenCodeUpdateSettings />
         <SettingsFieldRow
           settingsItem="fork.restart-openchamber"
           label={t('settings.fork.restart.label')}

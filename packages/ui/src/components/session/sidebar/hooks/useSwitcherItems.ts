@@ -3,7 +3,7 @@ import type { Session } from '@opencode-ai/sdk/v2';
 
 import { useGlobalSessionsStore, resolveGlobalSessionDirectory } from '@/stores/useGlobalSessionsStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
-import { useSessionPinnedStore } from '@/stores/useSessionPinnedStore';
+import { isSessionPinned, useSessionPinnedStore } from '@/stores/useSessionPinnedStore';
 import { useGitAllBranches } from '@/stores/useGitStore';
 import type { SessionNode } from '../types';
 import { isPathWithinProject } from '../utils';
@@ -15,11 +15,13 @@ import type { WorktreeMetadata } from '@/types/worktree';
 export type SwitcherItem = {
   node: SessionNode;
   projectId: string | null;
+  projectRootDirectory: string | null;
   groupDirectory: string | null;
   secondaryMeta: {
     projectLabel?: string | null;
     branchLabel?: string | null;
   } | null;
+  pinned: boolean;
 };
 
 const MAX_PARENT_SESSIONS = 7;
@@ -155,7 +157,9 @@ export const useSwitcherItems = (enabled: boolean, options: SwitcherItemsOptions
       return {
         node: buildNode(session),
         projectId: matchedProject?.id ?? null,
+        projectRootDirectory: matchedProject?.normalizedPath ?? null,
         groupDirectory: directory,
+        pinned: isSessionPinned(pinnedSessionIds, directory, session.id),
         secondaryMeta: {
           projectLabel,
           branchLabel: branchLabel && branchLabel !== projectLabel ? branchLabel : null,
