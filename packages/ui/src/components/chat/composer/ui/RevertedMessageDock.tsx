@@ -93,7 +93,9 @@ export const RevertedMessageDock: React.FC<RevertedMessageDockProps> = React.mem
         if (!sessionId || restoringId) return;
         setRestoringId(messageId);
         try {
-            const nextMessage = userMessages.find((message) => message.id > messageId);
+            const messageIndex = userMessages.findIndex((message) => message.id === messageId);
+            if (messageIndex < 0) return;
+            const nextMessage = userMessages[messageIndex + 1];
             if (nextMessage) {
                 await revertToMessage(sessionId, nextMessage.id, { skipRedoPush: true });
             } else {

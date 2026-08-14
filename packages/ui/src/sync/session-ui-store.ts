@@ -1503,7 +1503,9 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     const revertToId = currentSession?.revert?.messageID
     let targetMessage: typeof messages[number] | undefined
     if (revertToId) {
-      targetMessage = [...userMessages].reverse().find((m) => m.id < revertToId)
+      const revertMessageIndex = messages.findIndex((message) => message.id === revertToId)
+      if (revertMessageIndex < 0) return
+      targetMessage = messages.slice(0, revertMessageIndex).reverse().find((message) => message.role === "user")
     } else {
       targetMessage = userMessages[userMessages.length - 1]
     }
@@ -1549,8 +1551,9 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
 
     await refetchSessionMessages(sessionId)
     const messages = getSyncMessages(sessionId)
-    const userMessages = messages.filter((m) => m.role === "user")
-    const targetMessage = userMessages.find((m) => m.id > revertToId)
+    const revertMessageIndex = messages.findIndex((message) => message.id === revertToId)
+    if (revertMessageIndex < 0) return
+    const targetMessage = messages.slice(revertMessageIndex + 1).find((message) => message.role === "user")
 
     if (targetMessage) {
       await get().revertToMessage(sessionId, targetMessage.id, { skipRedoPush: true })
