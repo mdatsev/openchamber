@@ -101,9 +101,3 @@
 
 - Put fork-only preferences in a dedicated Custom Fork settings page.
 - Let users choose whether New Chat actions inherit the current worktree.
-
-### FC-020: Show sessions from descendant project directories
-
-- On web and Desktop, show sessions whose directory is a descendant of a configured project root.
-- Continue excluding unrelated directories and undiscovered external worktrees.
-- Keep VS Code restricted to exact open-workspace directories.
