@@ -74,13 +74,13 @@ render_unit "$script_dir/systemd/opencode-tool-memory-supervisor.service.in" "$s
 render_unit "$script_dir/systemd/openchamber.service.in" "$staging_dir/openchamber.service"
 render_unit "$script_dir/systemd/openchamber-custom.service.in" "$staging_dir/openchamber-custom.service"
 
+install -m 0755 "$script_dir/opencode-tool-memory-supervisor" "$runtime_dir/opencode-tool-memory-supervisor"
 systemd-analyze --user verify \
   "$staging_dir/opencode.service" \
   "$staging_dir/opencode-tool-memory-supervisor.service" \
   "$staging_dir/opencode-tools.slice" \
   "$staging_dir/openchamber.service" \
   "$staging_dir/openchamber-custom.service"
-install -m 0755 "$script_dir/opencode-tool-memory-supervisor" "$runtime_dir/opencode-tool-memory-supervisor"
 install -m 0755 "$script_dir/openchamber-switch" "$bin_dir/openchamber-switch"
 install -m 0644 "$staging_dir/opencode.service" "$unit_dir/opencode.service"
 install -m 0644 "$staging_dir/opencode-tool-memory-supervisor.service" "$unit_dir/opencode-tool-memory-supervisor.service"
