@@ -1,5 +1,6 @@
 import type { Message, Part } from "@opencode-ai/sdk/v2/client"
 import { Binary } from "./binary"
+import { compareMessages, findMessageInsertionIndex } from "./message-ordering"
 
 const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0)
 
@@ -46,9 +47,8 @@ export function mergeOptimisticPage(page: MessagePage, items: OptimisticItem[]) 
   const confirmed: string[] = []
 
   for (const item of items) {
-    const result = Binary.search(session, item.message.id, (message) => message.id)
-    const found = result.found
-    if (!found) session.splice(result.index, 0, item.message)
+    const found = session.some((message) => message.id === item.message.id)
+    if (!found) session.splice(findMessageInsertionIndex(session, item.message), 0, item.message)
 
     const current = part.get(item.message.id)
     if (found && hasParts(current, item.parts)) {
@@ -70,10 +70,10 @@ export function mergeOptimisticPage(page: MessagePage, items: OptimisticItem[]) 
   }
 }
 
-/** Merge two sorted message arrays by id, deduplicating.
+/** Merge two chronologically sorted message arrays, deduplicating.
  *  Preserves references from `a` for items that already exist — avoids
  *  unnecessary React re-renders when prepending older history. */
-export function mergeMessages<T extends { id: string }>(a: readonly T[], b: readonly T[]) {
+export function mergeMessages<T extends Message>(a: readonly T[], b: readonly T[]) {
   const existing = new Map(a.map((item) => [item.id, item] as const))
   let changed = false
   for (const item of b) {
@@ -82,6 +82,8 @@ export function mergeMessages<T extends { id: string }>(a: readonly T[], b: read
       changed = true
     }
   }
-  if (!changed) return a as T[]
-  return [...existing.values()].sort((x, y) => cmp(x.id, y.id))
+  if (!changed && a.every((message, index) => index === 0 || compareMessages(a[index - 1], message) <= 0)) {
+    return a as T[]
+  }
+  return [...existing.values()].sort(compareMessages) as T[]
 }

@@ -50,9 +50,15 @@ export const buildRevertedMessageDockState = (
     }
 
     const messages = state.message[sessionId] ?? [];
+    const revertMessageIndex = messages.findIndex((message) => message.id === revertMessageID);
+    if (revertMessageIndex < 0) {
+        return EMPTY_REVERTED_MESSAGE_DOCK_STATE;
+    }
     const records: RevertedMessageRecord[] = [];
-    for (const message of messages) {
-        if (!isUserMessage(message) || message.id < revertMessageID) {
+    for (let index = 0; index < messages.length; index += 1) {
+        const message = messages[index];
+        const isReverted = index >= revertMessageIndex;
+        if (!isUserMessage(message) || !isReverted) {
             continue;
         }
         records.push({

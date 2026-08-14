@@ -3434,6 +3434,9 @@ function getVisibleMessagesForSession(state: State, sessionID: string, previous?
   const sourceMessages = state.message[sessionID] ?? EMPTY_MESSAGES
   const session = state.session.find((candidate) => candidate.id === sessionID)
   const revertMessageID = (session as { revert?: { messageID?: string } } | undefined)?.revert?.messageID
+  const revertMessageIndex = revertMessageID
+    ? sourceMessages.findIndex((message) => message.id === revertMessageID)
+    : -1
 
   if (
     previous
@@ -3449,7 +3452,11 @@ function getVisibleMessagesForSession(state: State, sessionID: string, previous?
 
   return {
     sourceMessages,
-    visibleMessages: revertMessageID ? sourceMessages.filter((message) => message.id < revertMessageID) : sourceMessages,
+    visibleMessages: revertMessageID
+      ? revertMessageIndex >= 0
+        ? sourceMessages.slice(0, revertMessageIndex)
+        : EMPTY_MESSAGES
+      : sourceMessages,
     revertMessageID,
   }
 }
