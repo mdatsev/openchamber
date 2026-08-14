@@ -16,7 +16,6 @@ import { registerSessionDirectory } from "./sync-refs"
 import { recordSendFailure } from "./send-failure-log"
 import { isSyntheticPart } from "@/lib/messages/synthetic"
 import { materializeSessionSnapshots } from "./materialization"
-import { compareMessages } from "./message-ordering"
 import { stripMessageDiffSnapshots, stripSessionDiffSnapshots } from "./sanitize"
 import { sessionEvents } from "@/lib/sessionEvents"
 import {
@@ -35,6 +34,8 @@ import { isAmbiguousTransportFailure } from "@/lib/relay/transport-error"
 import type { SideChatRuntimeOperation } from "@/lib/sideChats/runtimeOperation"
 import { getStaleRunningToolMessageID } from "./materialization"
 import { normalizePath } from "@/lib/pathNormalization"
+import { mergeMessages } from "./optimistic"
+import { messagesBefore, messagesFrom } from "./message-ordering"
 
 const MESSAGE_REFETCH_LIMIT = 100
 const SEND_CONFIRMATION_REFETCH_LIMIT = 30
@@ -725,7 +726,14 @@ export async function createSession(
   directoryOverride?: string | null,
   parentID?: string | null,
   metadata?: Record<string, unknown>,
+  options?: { expectedRuntimeKey: string; select: boolean },
 ): Promise<Session | null> {
+  const assertRuntimeUnchanged = () => {
+    if (isStaleRuntime(options?.expectedRuntimeKey)) {
+      throw new Error("Session was not created because the runtime changed.")
+    }
+  }
+  assertRuntimeUnchanged()
   try {
     // Capture the effective directory used for session creation so we can fall
     // back to it when the server response omits the `directory` field.
@@ -738,6 +746,7 @@ export async function createSession(
       parentID: parentID ?? undefined,
       metadata,
     }, effectiveDirectory)
+    assertRuntimeUnchanged()
 
     const sessionDirectory = (session as { directory?: string | null }).directory ?? effectiveDirectory ?? null
     // Pre-populate routing index so SSE events arriving before session.created
@@ -745,11 +754,14 @@ export async function createSession(
     if (sessionDirectory) {
       registerSessionDirectory(session.id, sessionDirectory)
     }
-    useSessionUIStore.getState().setCurrentSession(session.id, sessionDirectory)
+    if (options?.select !== false) {
+      useSessionUIStore.getState().setCurrentSession(session.id, sessionDirectory)
+    }
     useSessionUIStore.getState().markSessionAsOpenChamberCreated(session.id)
     useGlobalSessionsStore.getState().upsertSession(session)
     return session
   } catch (error) {
+    assertRuntimeUnchanged()
     console.error("[session-actions] createSession failed", error)
     return null
   }
@@ -799,9 +811,10 @@ export async function setLinkedIssue(
   directory: string | null | undefined,
   issue: LinkedIssue,
   linked: boolean,
+  expectedRuntimeKey?: string,
 ): Promise<Session> {
   const updated = await patchSessionMetadata(sessionId, directory, (metadata) =>
-    withLinkedIssue(metadata, issue, linked))
+    withLinkedIssue(metadata, issue, linked), expectedRuntimeKey)
   const sessionDirectory = (updated as Session & { directory?: string | null }).directory ?? directory ?? undefined
   mirrorSessionIntoLiveStores(updated, sessionDirectory ?? undefined)
   return updated
@@ -1296,9 +1309,10 @@ export async function unshareSession(sessionId: string): Promise<Session | null>
 // Optimistic message send — insert user message before API call, rollback on error
 // ---------------------------------------------------------------------------
 
-// ID generator matching OpenCode's Identifier.ascending format.
+// ID generator matching OpenCode's Identifier.ascending wire format.
 // Uses BigInt(timestamp) * 0x1000 + counter, encoded as 6 hex bytes + random base62.
-// This ensures client-generated IDs sort correctly with server-generated ones.
+// The 6-byte prefix rolls over, so this value is identity only; transcript
+// chronology is always derived from message.time.created.
 let lastIdTimestamp = 0
 let idCounter = 0
 
@@ -1375,14 +1389,7 @@ export async function optimisticSend(input: {
   const sessionBeforeSend = stateBeforeSend.session.find((session) => session.id === input.sessionId)
   const revertMessageID = sessionBeforeSend?.revert?.messageID
   const messagesBeforeSend = stateBeforeSend.message[input.sessionId] ?? []
-  const revertMessageIndex = revertMessageID
-    ? messagesBeforeSend.findIndex((message) => message.id === revertMessageID)
-    : -1
-  const revertedMessages = revertMessageID
-    ? revertMessageIndex >= 0
-      ? messagesBeforeSend.slice(revertMessageIndex)
-      : messagesBeforeSend
-    : []
+  const revertedMessages = messagesFrom(messagesBeforeSend, revertMessageID)
   const revertedParts = new Map(
     revertedMessages.map((message) => [message.id, stateBeforeSend.part[message.id] ?? []] as const),
   )
@@ -1393,9 +1400,7 @@ export async function optimisticSend(input: {
     ))
     const message = {
       ...stateBeforeSend.message,
-      [input.sessionId]: revertMessageIndex >= 0
-        ? messagesBeforeSend.slice(0, revertMessageIndex)
-        : [],
+      [input.sessionId]: messagesBefore(messagesBeforeSend, revertMessageID),
     }
     const part = { ...stateBeforeSend.part }
     for (const revertedMessage of revertedMessages) delete part[revertedMessage.id]
@@ -1465,10 +1470,11 @@ export async function optimisticSend(input: {
     const status = getErrorStatus(error)
     const ambiguousFailure = isAmbiguousSendFailure(error)
     const acceptedRecords = ambiguousFailure
-      ? await fetchRecentSendConfirmationRecords(input.sessionId, messageID, targetDirectory)
+      ? await fetchRecentSendConfirmationRecords(input.sessionId, messageID, targetDirectory, input.runtimeKey)
       : null
+    const runtimeChanged = isStaleRuntime(input.runtimeKey)
 
-    if (acceptedRecords) {
+    if (acceptedRecords && !runtimeChanged) {
       materializeConfirmedSendRecords(store, input.sessionId, messageID, acceptedRecords)
       optimisticConfirm?.({
         sessionID: input.sessionId,
@@ -1477,6 +1483,10 @@ export async function optimisticSend(input: {
       })
       return
     }
+
+    const sendError = runtimeChanged
+      ? new Error("Message send stopped because runtime changed.")
+      : error
 
     // The rollback below makes the user's message disappear with no other
     // trace, and the composer intentionally stays silent for transport-level
@@ -1491,7 +1501,7 @@ export async function optimisticSend(input: {
       status,
       ambiguous: ambiguousFailure,
       confirmationChecked: ambiguousFailure,
-      reason: error instanceof Error ? error.message : String(error),
+      reason: sendError instanceof Error ? sendError.message : String(sendError),
     }
     recordSendFailure(failureRecord)
     console.warn("[session-actions] prompt send rejected; rolling back optimistic message", failureRecord)
@@ -1513,8 +1523,7 @@ export async function optimisticSend(input: {
       ))
       message = {
         ...rollbackState.message,
-        [input.sessionId]: [...(rollbackState.message[input.sessionId] ?? []), ...revertedMessages]
-          .sort(compareMessages),
+        [input.sessionId]: mergeMessages(rollbackState.message[input.sessionId] ?? [], revertedMessages),
       }
       part = { ...rollbackState.part }
       for (const [revertedMessageID, parts] of revertedParts) {
@@ -1531,7 +1540,7 @@ export async function optimisticSend(input: {
         [input.sessionId]: { type: "idle" as const },
       },
     })
-    throw error
+    throw sendError
   }
 }
 
@@ -1539,28 +1548,33 @@ async function fetchRecentSendConfirmationRecords(
   sessionId: string,
   messageID: string,
   directory?: string | null,
+  expectedRuntimeKey?: string,
 ): Promise<Array<{ info: Message; parts?: Part[] }> | null> {
   // Bounded: a connection that never returns must still let the send fail
   // rather than hang the composer.
   const reconnectDeadline = Date.now() + SEND_CONFIRMATION_RECONNECT_TIMEOUT_MS
   while (!useConfigStore.getState().isConnected && Date.now() < reconnectDeadline) {
+    if (isStaleRuntime(expectedRuntimeKey)) return null
     await wait(SEND_CONFIRMATION_RECONNECT_POLL_MS)
   }
 
   for (let attempt = 0; attempt < SEND_CONFIRMATION_REFETCH_ATTEMPTS; attempt += 1) {
     if (attempt > 0) await wait(SEND_CONFIRMATION_REFETCH_BASE_RETRY_MS * 2 ** (attempt - 1))
+    if (isStaleRuntime(expectedRuntimeKey)) return null
     try {
       const result = await sdk().session.messages({
         sessionID: sessionId,
         directory: directory ?? undefined,
         limit: SEND_CONFIRMATION_REFETCH_LIMIT,
       })
+      if (isStaleRuntime(expectedRuntimeKey)) return null
       const records = (assertSdkSuccess(result, "session.messages") ?? [])
         .filter((record: { info?: { id?: string } }) => !!record?.info?.id) as Array<{ info: Message; parts?: Part[] }>
       if (records.some((record) => record.info.id === messageID)) {
         return records
       }
     } catch {
+      if (isStaleRuntime(expectedRuntimeKey)) return null
       // Confirmation is best-effort; if it fails, keep the original send error path.
     }
   }

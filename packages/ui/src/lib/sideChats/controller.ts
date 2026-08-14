@@ -51,6 +51,7 @@ const sendSideChatPrompt = async (
 ): Promise<void> => {
   if (!input.prompt) return;
   await serializeDisposableSideChatSend(identity, () => optimisticSend({
+    runtimeKey: identity.runtimeKey,
     sessionId: identity.sideSessionId,
     directory: input.directory,
     content: input.prompt,
@@ -72,6 +73,9 @@ const sendSideChatPrompt = async (
       }
     },
   }));
+  if (!operation.isCurrent()) {
+    throw new Error('Side chat send stopped because the runtime changed');
+  }
 };
 
 export async function openDisposableSideChat(input: OpenDisposableSideChatInput): Promise<{ sessionId: string; created: boolean }> {

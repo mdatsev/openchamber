@@ -3,6 +3,7 @@ import { distillGoalObjective } from '@/lib/smallModel';
 import { formatMessage, useI18nStore } from '@/lib/i18n';
 import { toast } from '@/components/ui';
 import { runtimeFetch } from '@/lib/runtime-fetch';
+import { getRuntimeKey } from '@/lib/runtime-switch';
 import {
   SESSION_GOAL_OBJECTIVE_CHAR_LIMIT,
   type SessionGoalPayload,
@@ -15,10 +16,17 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const createGoalId = (): string =>
   `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 
+const assertRuntimeUnchanged = (expectedRuntimeKey?: string): void => {
+  if (expectedRuntimeKey && getRuntimeKey() !== expectedRuntimeKey) {
+    throw new Error('Goal was not set because the runtime changed.');
+  }
+};
+
 const writeGoal = (
   sessionId: string,
   directory: string | undefined,
   update: (currentGoal: Record<string, unknown> | null) => Record<string, unknown> | null,
+  expectedRuntimeKey?: string,
 ) =>
   patchSessionMetadata(sessionId, directory, (metadata) => {
     const namespace = isRecord(metadata.openchamber) ? metadata.openchamber : {};
@@ -31,24 +39,28 @@ const writeGoal = (
       delete nextNamespace.goal;
     }
     return { ...metadata, openchamber: nextNamespace };
-  });
+  }, expectedRuntimeKey);
 
 // File-backed objectives: the text lives in a server-side file keyed by the
 // session id (one goal per session — a new goal overwrites the old file);
 // the metadata only carries an `objectiveFile: true` flag so it stays light
 // for session.updated fanout. If the file write fails (offline blip, VS
 // Code without the route), the objective falls back to inline metadata.
-const writeObjectiveFile = async (sessionId: string, content: string): Promise<boolean> => {
+const writeObjectiveFile = async (sessionId: string, content: string, expectedRuntimeKey?: string): Promise<boolean> => {
+  assertRuntimeUnchanged(expectedRuntimeKey);
+  let response: Response;
   try {
-    const response = await runtimeFetch(`/api/goals/objective/${encodeURIComponent(sessionId)}`, {
+    response = await runtimeFetch(`/api/goals/objective/${encodeURIComponent(sessionId)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content }),
     });
-    return response.ok;
   } catch {
+    assertRuntimeUnchanged(expectedRuntimeKey);
     return false;
   }
+  assertRuntimeUnchanged(expectedRuntimeKey);
+  return response.ok;
 };
 
 const deleteObjectiveFile = (sessionId: string): void => {
@@ -85,11 +97,13 @@ export interface SetSessionGoalInput {
 // acceptance criteria (bottom), sacrificing the middle.
 const TRIM_MARKER = '\n\n[… objective trimmed for the auditor — the full text was delivered in the chat message …]\n\n';
 
-const fitObjective = async (raw: string): Promise<string> => {
+const fitObjective = async (raw: string, expectedRuntimeKey?: string): Promise<string> => {
+  assertRuntimeUnchanged(expectedRuntimeKey);
   if (raw.length <= SESSION_GOAL_OBJECTIVE_CHAR_LIMIT) {
     return raw;
   }
   const distilled = await distillGoalObjective(raw);
+  assertRuntimeUnchanged(expectedRuntimeKey);
   if (distilled) {
     return distilled.slice(0, SESSION_GOAL_OBJECTIVE_CHAR_LIMIT);
   }
@@ -104,16 +118,18 @@ export async function setSessionGoal(
   directory: string | undefined,
   input: SetSessionGoalInput,
   existing: SessionGoalPayload | null,
+  expectedRuntimeKey?: string,
 ): Promise<void> {
+  assertRuntimeUnchanged(expectedRuntimeKey);
   const rawObjective = input.objective.trim();
   if (!rawObjective) {
     throw new Error('Goal objective must not be empty');
   }
-  const objective = await fitObjective(rawObjective);
+  const objective = await fitObjective(rawObjective, expectedRuntimeKey);
   const tokenBudget = typeof input.tokenBudget === 'number' && Number.isFinite(input.tokenBudget) && input.tokenBudget > 0
     ? Math.floor(input.tokenBudget)
     : null;
-  const objectiveFile = await writeObjectiveFile(sessionId, objective);
+  const objectiveFile = await writeObjectiveFile(sessionId, objective, expectedRuntimeKey);
   const now = Date.now();
   await writeGoal(sessionId, directory, (currentGoal) => {
     if (existing && currentGoal && currentGoal.id === existing.id && existing.status !== 'complete') {
@@ -144,7 +160,8 @@ export async function setSessionGoal(
       createdAt: now,
       updatedAt: now,
     };
-  });
+  }, expectedRuntimeKey);
+  assertRuntimeUnchanged(expectedRuntimeKey);
 }
 
 export async function setSessionGoalStatus(

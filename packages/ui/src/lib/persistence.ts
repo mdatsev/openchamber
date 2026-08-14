@@ -553,6 +553,7 @@ const materializeAuthoritativeUiSettings = (settings: DesktopSettings): DesktopS
     inputSpellcheckEnabled: defaults.inputSpellcheckEnabled,
     showOpenCodeUpdateNotifications: defaults.showOpenCodeUpdateNotifications,
     agentControlToolEnabled: defaults.agentControlToolEnabled,
+    agentWebToolEnabled: defaults.agentWebToolEnabled,
     showToolFileIcons: defaults.showToolFileIcons,
     codeBlockLineWrap: defaults.codeBlockLineWrap,
     showTurnChangedFiles: defaults.showTurnChangedFiles,
@@ -728,6 +729,12 @@ const applyDesktopUiPreferences = (settings: DesktopSettings) => {
     && settings.agentControlToolEnabled !== store.agentControlToolEnabled
   ) {
     store.setAgentControlToolEnabled(settings.agentControlToolEnabled);
+  }
+  if (
+    typeof settings.agentWebToolEnabled === 'boolean'
+    && settings.agentWebToolEnabled !== store.agentWebToolEnabled
+  ) {
+    store.setAgentWebToolEnabled(settings.agentWebToolEnabled);
   }
   if (typeof settings.showToolFileIcons === 'boolean' && settings.showToolFileIcons !== store.showToolFileIcons) {
     store.setShowToolFileIcons(settings.showToolFileIcons);
@@ -1260,17 +1267,8 @@ const sanitizeWebSettings = (payload: unknown): DesktopSettings | null => {
   if (typeof candidate.maxLastMessageLength === 'number' && Number.isFinite(candidate.maxLastMessageLength)) {
     result.maxLastMessageLength = Math.max(10, Math.round(candidate.maxLastMessageLength));
   }
-  if (typeof candidate.usageAutoRefresh === 'boolean') {
-    result.usageAutoRefresh = candidate.usageAutoRefresh;
-  }
-  if (typeof candidate.usageRefreshIntervalMs === 'number' && Number.isFinite(candidate.usageRefreshIntervalMs)) {
-    result.usageRefreshIntervalMs = candidate.usageRefreshIntervalMs;
-  }
   if (candidate.usageDisplayMode === 'usage' || candidate.usageDisplayMode === 'remaining') {
     result.usageDisplayMode = candidate.usageDisplayMode;
-  }
-  if (typeof candidate.usageShowPredValues === 'boolean') {
-    result.usageShowPredValues = candidate.usageShowPredValues;
   }
   if (Array.isArray(candidate.usageDropdownProviders)) {
     result.usageDropdownProviders = candidate.usageDropdownProviders.filter(
@@ -1383,6 +1381,9 @@ const sanitizeWebSettings = (payload: unknown): DesktopSettings | null => {
   }
   if (typeof candidate.agentControlToolEnabled === 'boolean') {
     result.agentControlToolEnabled = candidate.agentControlToolEnabled;
+  }
+  if (typeof candidate.agentWebToolEnabled === 'boolean') {
+    result.agentWebToolEnabled = candidate.agentWebToolEnabled;
   }
   if (typeof candidate.openCodeUpdateToastDismissedVersion === 'string') {
     result.openCodeUpdateToastDismissedVersion = candidate.openCodeUpdateToastDismissedVersion.trim().slice(0, 128);

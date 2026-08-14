@@ -7,14 +7,20 @@ type ChatViewProps = {
     active?: boolean;
     autoOpenDraft?: boolean;
     readOnly?: boolean;
+    initialAllowPromptingSubagentSessions?: boolean;
 };
 
-export const ChatView: React.FC<ChatViewProps> = ({ active = true, autoOpenDraft = true, readOnly = false }) => {
+export const ChatView: React.FC<ChatViewProps> = ({ active = true, autoOpenDraft = true, readOnly = false, initialAllowPromptingSubagentSessions }) => {
     const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
 
     return (
         <ChatErrorBoundary sessionId={currentSessionId || undefined}>
-            <ChatContainer active={active} autoOpenDraft={autoOpenDraft} readOnly={readOnly} />
+            <ChatContainer
+                active={active}
+                autoOpenDraft={autoOpenDraft}
+                readOnly={readOnly}
+                initialAllowPromptingSubagentSessions={initialAllowPromptingSubagentSessions}
+            />
         </ChatErrorBoundary>
     );
 };
