@@ -836,7 +836,7 @@ export const createForkRuntime = ({
     };
   };
 
-  const performUpdate = async () => {
+  const resolveUpdateTarget = async ({ rebuildCurrent = false } = {}) => {
     const source = await getInitialization();
     const staticCapability = getStaticUpdateCapability(source);
     if (!staticCapability.supported) {
@@ -852,7 +852,18 @@ export const createForkRuntime = ({
     const from = checkout.commit;
     const target = custom.latestCommit;
     transitionOperation('checking', { from, target }, 'Verified the live checkout and update target.');
-    if (from === target) {
+    if (rebuildCurrent && from !== target) {
+      throw new ForkRuntimeError(
+        'CURRENT_CHECKOUT_REQUIRED',
+        'Building the current checkout requires it to match the canonical custom branch.',
+      );
+    }
+    return { from, target };
+  };
+
+  const performUpdate = async ({ rebuildCurrent = false, updateTarget = null } = {}) => {
+    const { from, target } = updateTarget ?? await resolveUpdateTarget({ rebuildCurrent });
+    if (from === target && !rebuildCurrent) {
       transitionOperation('ready', {
         changed: false,
         alreadyCurrent: true,
@@ -866,7 +877,13 @@ export const createForkRuntime = ({
     let worktreeAdded = false;
     let prepared = false;
     try {
-      transitionOperation('preparing', {}, 'Creating a detached staging worktree beside the live checkout.');
+      transitionOperation(
+        'preparing',
+        {},
+        rebuildCurrent
+          ? 'Creating a detached staging worktree to rebuild the current checkout.'
+          : 'Creating a detached staging worktree beside the live checkout.',
+      );
       tempRoot = await fsPromises.mkdtemp(path.join(path.dirname(repoPath), '.openchamber-update-'));
       stagingPath = path.join(tempRoot, 'checkout');
       await runGit(['worktree', 'add', '--detach', stagingPath, target], {
@@ -1029,9 +1046,11 @@ export const createForkRuntime = ({
       transitionOperation('ready', {
         changed: true,
         prepared: true,
-        alreadyCurrent: false,
+        alreadyCurrent: from === target,
         completedAt: preparedAt,
-      }, 'The custom update is prepared and will be applied before the next managed start.');
+      }, rebuildCurrent
+        ? 'The current checkout build is prepared and will be applied before the next managed start.'
+        : 'The custom update is prepared and will be applied before the next managed start.');
     } finally {
       if (!prepared) {
         await cleanupUpdate({ stagingPath, tempRoot, worktreeAdded });
@@ -1039,7 +1058,7 @@ export const createForkRuntime = ({
     }
   };
 
-  const startUpdate = async () => {
+  const startUpdate = async ({ rebuildCurrent = false } = {}) => {
     if (operationPromise) {
       return {
         accepted: false,
@@ -1111,7 +1130,33 @@ export const createForkRuntime = ({
       };
     }
 
-    const activeOperation = performUpdate();
+    let updateTarget = null;
+    if (rebuildCurrent) {
+      try {
+        updateTarget = await resolveUpdateTarget({ rebuildCurrent: true });
+      } catch (error) {
+        const safeError = error instanceof ForkRuntimeError
+          ? errorPayload(error.code, error.message)
+          : errorPayload('FORK_UPDATE_START_FAILED', 'Failed to validate the current checkout rebuild.');
+        transitionOperation('failed', {
+          error: safeError,
+          completedAt: nowIso(),
+        }, safeError.message);
+        releaseInitializationClaim();
+        return {
+          accepted: false,
+          status: 409,
+          body: {
+            accepted: false,
+            code: safeError.code,
+            error: safeError.message,
+            operation,
+          },
+        };
+      }
+    }
+
+    const activeOperation = performUpdate({ rebuildCurrent, updateTarget });
     operationPromise = activeOperation;
     void activeOperation.catch((error) => {
       if (Array.isArray(error?.output)) {
@@ -1148,9 +1193,17 @@ export const createForkRuntime = ({
       }
     });
 
-    app.post('/api/openchamber/fork/update', async (_req, res) => {
+    app.post('/api/openchamber/fork/update', async (req, res) => {
       try {
-        const result = await startUpdate();
+        const mode = req.body?.mode;
+        if (mode !== undefined && mode !== 'update' && mode !== 'rebuild-current') {
+          return res.status(400).json({
+            accepted: false,
+            code: 'FORK_UPDATE_MODE_INVALID',
+            error: 'The requested fork update mode is invalid.',
+          });
+        }
+        const result = await startUpdate({ rebuildCurrent: mode === 'rebuild-current' });
         return res.status(result.status).json(result.body);
       } catch {
         return res.status(500).json({

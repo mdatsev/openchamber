@@ -194,12 +194,13 @@ export const OpenChamberRuntimeSettings: React.FC = () => {
     };
   }, [loadStatus, operation?.phase, updateActive]);
 
-  const startUpdate = async () => {
+  const startUpdate = async (rebuildCurrent: boolean) => {
     setActionError(null);
     try {
       const response = await runtimeFetch('/api/openchamber/fork/update', {
         method: 'POST',
-        headers: { Accept: 'application/json' },
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: rebuildCurrent ? 'rebuild-current' : 'update' }),
       });
       const parsed = updateResultSchema.safeParse(await response.json().catch(() => null));
       if (!response.ok || !parsed.success || !parsed.data.accepted) {
@@ -284,12 +285,37 @@ export const OpenChamberRuntimeSettings: React.FC = () => {
   const hasCustomUpdate = status?.custom.checkoutComparison.state === 'behind'
     && status.custom.checkoutComparison.ahead === 0
     && (status.custom.checkoutComparison.behind ?? 0) > 0;
+  const checkoutIsCanonicalCurrent = status?.custom.checkoutComparison.state === 'current';
+  const canRebuildCurrent = checkoutIsCanonicalCurrent
+    && loadedUiMismatch
+    && !restartAppliesChanges;
   const canUpdate = status?.capabilities.update.canUpdate === true
-    && hasCustomUpdate
+    && (hasCustomUpdate || canRebuildCurrent)
     && !updateActive
     && !preparedUpdate;
   const updateBlock = status?.capabilities.update.unsupportedReason
     || status?.capabilities.update.blockReason;
+  let updateActionLabel: string;
+  if (canRebuildCurrent) {
+    updateActionLabel = t('settings.fork.runtime.openchamber.rebuildAction');
+  } else if (checkoutIsCanonicalCurrent) {
+    updateActionLabel = t('settings.openchamber.about.state.upToDate');
+  } else {
+    updateActionLabel = t('settings.fork.runtime.openchamber.updateAction');
+  }
+
+  let updateDescription: string;
+  if (updateBlock) {
+    updateDescription = `${updateBlock.code}: ${updateBlock.message}`;
+  } else if (canRebuildCurrent) {
+    updateDescription = t('settings.fork.runtime.openchamber.rebuildDescription');
+  } else if (hasCustomUpdate) {
+    updateDescription = t('settings.fork.runtime.openchamber.updateDescription');
+  } else if (checkoutIsCanonicalCurrent) {
+    updateDescription = t('settings.fork.runtime.openchamber.sourceCurrent');
+  } else {
+    updateDescription = t('settings.fork.runtime.openchamber.noUpdate');
+  }
 
   let operationLabel = t('settings.fork.runtime.operation.idle');
   let operationTone: 'default' | 'success' | 'warning' | 'error' = 'default';
@@ -449,22 +475,21 @@ export const OpenChamberRuntimeSettings: React.FC = () => {
       />
       <SettingsFieldRow
         settingsItem="fork.update-openchamber"
-        label={t('settings.fork.runtime.openchamber.updateAction')}
-        description={updateBlock
-          ? `${updateBlock.code}: ${updateBlock.message}`
-          : hasCustomUpdate
-            ? t('settings.fork.runtime.openchamber.updateDescription')
-            : t('settings.fork.runtime.openchamber.noUpdate')}
+        label={t('settings.fork.runtime.openchamber.deployment')}
+        description={updateDescription}
         alignEnd={false}
       >
         <Button
           type="button"
           size="sm"
           disabled={!canUpdate || isChecking || isRestarting}
-          onClick={() => void startUpdate()}
+          onClick={() => void startUpdate(canRebuildCurrent)}
         >
-          <Icon name={updateActive ? 'loader-4' : 'download'} className={updateActive ? 'size-4 animate-spin' : 'size-4'} />
-          {updateActive ? operationLabel : t('settings.fork.runtime.openchamber.updateAction')}
+          <Icon
+            name={updateActive ? 'loader-4' : canRebuildCurrent ? 'tools' : checkoutIsCanonicalCurrent ? 'check' : 'download'}
+            className={updateActive ? 'size-4 animate-spin' : 'size-4'}
+          />
+          {updateActive ? operationLabel : updateActionLabel}
         </Button>
       </SettingsFieldRow>
       <SettingsFieldRow
