@@ -4,7 +4,9 @@ set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/../.." && pwd)"
-custom_repo="${OPENCHAMBER_CUSTOM_REPO:-$repo_root}"
+custom_repo="${OPENCHAMBER_CUSTOM_FORK_REPO:-$repo_root}"
+custom_remote="${OPENCHAMBER_CUSTOM_FORK_REMOTE:-https://github.com/mdatsev/openchamber.git}"
+custom_branch="${OPENCHAMBER_CUSTOM_FORK_BRANCH:-custom}"
 runtime_dir="${XDG_DATA_HOME:-$HOME/.local/share}/openchamber-runtime"
 bin_dir="$HOME/.local/bin"
 unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
@@ -12,6 +14,8 @@ service_path="${PATH:-$HOME/.bun/bin:$HOME/.local/bin:$HOME/.npm-global/bin:/usr
 opencode_bin="${OPENCODE_BINARY:-$HOME/.local/bin/opencode}"
 openchamber_bin="${OPENCHAMBER_BINARY:-$HOME/.npm-global/bin/openchamber}"
 node_bin="${NODE_BINARY:-$(command -v node)}"
+bun_candidate="${BUN_BINARY:-bun}"
+bun_bin="$(command -v "$bun_candidate" || true)"
 activate=''
 
 usage() {
@@ -39,13 +43,14 @@ if [[ -n "$activate" && "$activate" != 'regular' && "$activate" != 'custom' ]]; 
   usage
 fi
 
-for command in systemctl systemd-analyze systemd-run curl flock; do
+for command in systemctl systemd-analyze systemd-run curl flock git; do
   command -v "$command" >/dev/null 2>&1 || fail "Required command is unavailable: $command"
 done
 
 [[ -x "$opencode_bin" ]] || fail "OpenCode binary is not executable: $opencode_bin"
 [[ -x "$openchamber_bin" ]] || fail "OpenChamber binary is not executable: $openchamber_bin"
 [[ -x "$node_bin" ]] || fail "Node binary is not executable: $node_bin"
+[[ -n "$bun_bin" && -x "$bun_bin" ]] || fail "Bun binary is not executable: $bun_candidate"
 [[ -f "$custom_repo/packages/web/bin/cli.js" ]] || fail "Custom OpenChamber checkout is invalid: $custom_repo"
 
 mkdir -p "$runtime_dir" "$bin_dir" "$unit_dir"
@@ -60,11 +65,14 @@ render_unit() {
   content="$(<"$source")"
   content="${content//@HOME@/$HOME}"
   content="${content//@CUSTOM_REPO@/$custom_repo}"
+  content="${content//@CUSTOM_FORK_REMOTE@/$custom_remote}"
+  content="${content//@CUSTOM_FORK_BRANCH@/$custom_branch}"
   content="${content//@RUNTIME_DIR@/$runtime_dir}"
   content="${content//@SERVICE_PATH@/$service_path}"
   content="${content//@OPENCODE_BIN@/$opencode_bin}"
   content="${content//@OPENCHAMBER_BIN@/$openchamber_bin}"
   content="${content//@NODE_BIN@/$node_bin}"
+  content="${content//@BUN_BIN@/$bun_bin}"
   printf '%s\n' "$content" > "$target"
   chmod 0644 "$target"
 }
@@ -73,15 +81,17 @@ render_unit "$script_dir/systemd/opencode.service.in" "$staging_dir/opencode.ser
 render_unit "$script_dir/systemd/opencode-tool-memory-supervisor.service.in" "$staging_dir/opencode-tool-memory-supervisor.service"
 render_unit "$script_dir/systemd/openchamber.service.in" "$staging_dir/openchamber.service"
 render_unit "$script_dir/systemd/openchamber-custom.service.in" "$staging_dir/openchamber-custom.service"
+render_unit "$script_dir/openchamber-switch" "$staging_dir/openchamber-switch"
 
 install -m 0755 "$script_dir/opencode-tool-memory-supervisor" "$runtime_dir/opencode-tool-memory-supervisor"
+install -m 0644 "$script_dir/apply-custom-update.mjs" "$runtime_dir/apply-custom-update.mjs"
 systemd-analyze --user verify \
   "$staging_dir/opencode.service" \
   "$staging_dir/opencode-tool-memory-supervisor.service" \
   "$staging_dir/opencode-tools.slice" \
   "$staging_dir/openchamber.service" \
   "$staging_dir/openchamber-custom.service"
-install -m 0755 "$script_dir/openchamber-switch" "$bin_dir/openchamber-switch"
+install -m 0755 "$staging_dir/openchamber-switch" "$bin_dir/openchamber-switch"
 install -m 0644 "$staging_dir/opencode.service" "$unit_dir/opencode.service"
 install -m 0644 "$staging_dir/opencode-tool-memory-supervisor.service" "$unit_dir/opencode-tool-memory-supervisor.service"
 install -m 0644 "$staging_dir/opencode-tools.slice" "$unit_dir/opencode-tools.slice"

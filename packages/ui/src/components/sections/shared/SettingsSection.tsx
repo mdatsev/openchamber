@@ -331,6 +331,60 @@ export const SettingsFieldRow: React.FC<SettingsFieldRowProps> = ({
   );
 };
 
+interface SettingsReadOnlyRowProps {
+  label: React.ReactNode;
+  value: React.ReactNode;
+  details?: React.ReactNode;
+  settingsItem?: string;
+  mono?: boolean;
+  tone?: 'default' | 'success' | 'warning' | 'error';
+  live?: boolean;
+}
+
+/** Read-only Settings value with always-visible operational detail. */
+export const SettingsReadOnlyRow: React.FC<SettingsReadOnlyRowProps> = ({
+  label,
+  value,
+  details,
+  settingsItem,
+  mono = true,
+  tone = 'default',
+  live = false,
+}) => {
+  let toneClass = 'text-foreground';
+  if (tone === 'success') {
+    toneClass = 'text-[var(--status-success)]';
+  } else if (tone === 'warning') {
+    toneClass = 'text-[var(--status-warning)]';
+  } else if (tone === 'error') {
+    toneClass = 'text-[var(--status-error)]';
+  }
+
+  return (
+    <SettingsFieldRow
+      label={label}
+      settingsItem={settingsItem}
+      alignEnd={false}
+      controlClassName="w-full @xl:!flex-1 @xl:max-w-[24rem]"
+    >
+      <div
+        className="min-w-0 space-y-0.5"
+        role={live ? 'status' : undefined}
+        aria-live={live ? 'polite' : undefined}
+      >
+        <div className={cn('break-words typography-meta', mono && 'font-mono', toneClass)}>
+          {value}
+        </div>
+        {details != null ? (
+          <div className={cn(SETTINGS_HELPER_CLASS, 'space-y-0.5 break-words')}>
+            {details}
+          </div>
+        ) : null}
+      </div>
+    </SettingsFieldRow>
+  );
+};
+
 interface SettingsInsetProps {
   children: React.ReactNode;
   className?: string;

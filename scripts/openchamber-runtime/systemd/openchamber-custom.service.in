@@ -12,6 +12,16 @@ Environment="OPENCODE_HOST=http://127.0.0.1:4096"
 Environment="OPENCODE_SKIP_START=true"
 Environment="OPENCHAMBER_MANAGED_RESTART=true"
 Environment="OPENCHAMBER_MANAGED_OPENCODE_SYSTEMD_UNIT=opencode.service"
+Environment="OPENCHAMBER_MANAGED_OPENCODE_BINARY=@OPENCODE_BIN@"
+Environment="OPENCHAMBER_CUSTOM_FORK_REPO=@CUSTOM_REPO@"
+Environment="OPENCHAMBER_CUSTOM_FORK_REMOTE=@CUSTOM_FORK_REMOTE@"
+Environment="OPENCHAMBER_CUSTOM_FORK_BRANCH=@CUSTOM_FORK_BRANCH@"
+Environment="OPENCHAMBER_BUN_BINARY=@BUN_BIN@"
+Environment="OPENCHAMBER_CUSTOM_FORK_UPDATE_STATE=@RUNTIME_DIR@/custom-update.json"
+Environment="OPENCHAMBER_CUSTOM_FORK_UPDATE_HELPER=@RUNTIME_DIR@/apply-custom-update.mjs"
+Environment="OPENCHAMBER_CUSTOM_FORK_UPDATE_PROTOCOL=1"
+ExecStartPre=@NODE_BIN@ @RUNTIME_DIR@/apply-custom-update.mjs
+ExecStartPre=@NODE_BIN@ @RUNTIME_DIR@/apply-custom-update.mjs --validate-dist
 ExecStart=@NODE_BIN@ @CUSTOM_REPO@/packages/web/bin/cli.js serve --foreground --host 127.0.0.1 --port 8795
 Restart=on-failure
 RestartSec=5

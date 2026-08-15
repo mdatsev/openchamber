@@ -3,6 +3,7 @@ import { createProjectIdFromPath } from '../projects/project-id.js';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { execFile } from 'node:child_process';
 import {
   buildDeferredRestartResponse,
 } from './config-mutation-response.js';
@@ -28,6 +29,8 @@ export const registerOpenCodeRoutes = (app, dependencies) => {
     buildOpenCodeUrl,
     getOpenCodeAuthHeaders,
     fsPromises = fs.promises,
+    execFileImpl = execFile,
+    environment = process.env,
   } = dependencies;
 
   let authLibrary = null;
@@ -165,6 +168,58 @@ ${desktopReturn ? `<a class="return" href="openchamber://focus/mcp-auth">Return 
     return versions.sort((left, right) => compareVersions(right, left))[0];
   };
 
+  const managedOpenCodeBinary = typeof environment.OPENCHAMBER_MANAGED_OPENCODE_BINARY === 'string'
+    ? environment.OPENCHAMBER_MANAGED_OPENCODE_BINARY.trim()
+    : '';
+  let installedVersionCache = null;
+  let installedVersionPromise = null;
+  let installedVersionGeneration = 0;
+  const readInstalledVersionFields = async () => {
+    if (!managedOpenCodeBinary) return {};
+    if (installedVersionCache && Date.now() - installedVersionCache.checkedAt < 30_000) {
+      return installedVersionCache.fields;
+    }
+    if (installedVersionPromise) return installedVersionPromise;
+
+    const generation = installedVersionGeneration;
+    const probe = new Promise((resolve) => {
+      execFileImpl(managedOpenCodeBinary, ['--version'], {
+        encoding: 'utf8',
+        maxBuffer: 64 * 1024,
+        timeout: 10_000,
+        windowsHide: true,
+      }, (error, stdout, stderr) => {
+        if (error) {
+          resolve({
+            installedVersion: null,
+            installedVersionError: 'Failed to probe the configured managed OpenCode executable.',
+          });
+          return;
+        }
+        const output = `${typeof stdout === 'string' ? stdout : ''}\n${typeof stderr === 'string' ? stderr : ''}`.trim();
+        const version = output.match(/\bv?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)/)?.[1] ?? null;
+        resolve(version
+          ? { installedVersion: version }
+          : {
+              installedVersion: null,
+              installedVersionError: 'The configured managed OpenCode executable returned no recognizable version.',
+            });
+      });
+    });
+    installedVersionPromise = probe;
+    const fields = await probe;
+    if (generation === installedVersionGeneration) {
+      installedVersionCache = { checkedAt: Date.now(), fields };
+    }
+    if (installedVersionPromise === probe) installedVersionPromise = null;
+    return fields;
+  };
+  const clearInstalledVersionCache = () => {
+    installedVersionGeneration += 1;
+    installedVersionCache = null;
+    installedVersionPromise = null;
+  };
+
   const pruneExpiredPendingMcpAuthContexts = () => {
     const now = Date.now();
     for (const [state, entry] of pendingMcpAuthContextByState.entries()) {
@@ -222,7 +277,7 @@ ${desktopReturn ? `<a class="return" href="openchamber://focus/mcp-auth">Return 
     signal.addEventListener('abort', onAbort, { once: true });
   });
 
-  const waitForSupervisedIdle = async (signal) => {
+  const waitForSupervisedIdle = async (signal, kind, statusPhase = 'queued') => {
     const deadline = Date.now() + SUPERVISED_DRAIN_TIMEOUT_MS;
     await openCodeTurnAdmissionBarrier.waitForDrained({
       signal,
@@ -235,7 +290,8 @@ ${desktopReturn ? `<a class="return" href="openchamber://focus/mcp-auth">Return 
       let activity = await supervisedOpenCodeUpgradeRuntime.getActivity({ signal });
       if (activity.activeSessionCount > 0) {
         openCodeUpgradeOperation = {
-          phase: 'queued',
+          kind,
+          phase: statusPhase,
           activeSessionCount: activity.activeSessionCount,
         };
         await wait(Math.min(5_000, deadline - Date.now()), signal);
@@ -246,7 +302,8 @@ ${desktopReturn ? `<a class="return" href="openchamber://focus/mcp-auth">Return 
       activity = await supervisedOpenCodeUpgradeRuntime.getActivity({ signal });
       if (activity.activeSessionCount === 0) return;
       openCodeUpgradeOperation = {
-        phase: 'queued',
+        kind,
+        phase: statusPhase,
         activeSessionCount: activity.activeSessionCount,
       };
     }
@@ -254,10 +311,10 @@ ${desktopReturn ? `<a class="return" href="openchamber://focus/mcp-auth">Return 
 
   const performOpenCodeUpgrade = async ({ target, capability, signal }) => {
     if (capability.manager === 'systemd') {
-      await waitForSupervisedIdle(signal);
+      await waitForSupervisedIdle(signal, 'upgrade');
     }
 
-    openCodeUpgradeOperation = { phase: 'upgrading' };
+    openCodeUpgradeOperation = { kind: 'upgrade', phase: 'upgrading' };
     const response = await fetch(buildOpenCodeUrl('/global/upgrade', ''), {
       method: 'POST',
       headers: {
@@ -278,10 +335,14 @@ ${desktopReturn ? `<a class="return" href="openchamber://focus/mcp-auth">Return 
         },
       };
     }
+    clearInstalledVersionCache();
 
     try {
       if (capability.manager === 'systemd') {
-        openCodeUpgradeOperation = { phase: 'restarting' };
+        // A direct OpenCode client can start work while the binary upgrade runs.
+        // Re-establish an authoritative quiet window before restarting it.
+        await waitForSupervisedIdle(signal, 'upgrade', 'upgrading');
+        openCodeUpgradeOperation = { kind: 'upgrade', phase: 'restarting' };
         await supervisedOpenCodeUpgradeRuntime.restart();
       } else {
         await refreshOpenCodeAfterConfigChange('OpenCode upgrade');
@@ -305,10 +366,18 @@ ${desktopReturn ? `<a class="return" href="openchamber://focus/mcp-auth">Return 
     };
   };
 
-  const startOpenCodeUpgrade = ({ target, capability }) => {
+  const performOpenCodeRestart = async ({ signal }) => {
+    await waitForSupervisedIdle(signal, 'restart');
+    openCodeUpgradeOperation = { kind: 'restart', phase: 'restarting' };
+    await supervisedOpenCodeUpgradeRuntime.restart();
+    clearInstalledVersionCache();
+    return { status: 200, body: { success: true, restarted: true } };
+  };
+
+  const startOpenCodeOperation = ({ kind, target, capability, perform }) => {
     const abortController = new AbortController();
     openCodeUpgradeAbortController = abortController;
-    const upgradeOperation = performOpenCodeUpgrade({
+    const upgradeOperation = perform({
       target,
       capability,
       signal: abortController.signal,
@@ -316,19 +385,32 @@ ${desktopReturn ? `<a class="return" href="openchamber://focus/mcp-auth">Return 
     openCodeUpgradePromise = upgradeOperation;
     void upgradeOperation.then((result) => {
       if (result.status >= 200 && result.status < 300) {
-        openCodeUpgradeOperation = capability.manager === 'systemd'
-          ? { phase: 'updated', version: result.body?.version ?? null, completedAt: Date.now() }
-          : { phase: 'idle' };
+        if (capability.manager !== 'systemd') {
+          openCodeUpgradeOperation = { phase: 'idle' };
+          return;
+        }
+        openCodeUpgradeOperation = {
+          kind,
+          phase: 'updated',
+          ...(kind === 'upgrade' ? { version: result.body?.version ?? null } : {}),
+          completedAt: Date.now(),
+        };
         return;
       }
-      openCodeUpgradeOperation = { phase: 'failed', error: result.body?.error ?? 'OpenCode upgrade failed' };
-    }).catch((error) => {
-      const cancelled = error?.name === 'AbortError';
       openCodeUpgradeOperation = {
-        phase: cancelled ? 'idle' : 'failed',
-        ...(cancelled
-          ? {}
-          : { error: error instanceof Error ? error.message : 'OpenCode upgrade failed' }),
+        kind,
+        phase: 'failed',
+        error: result.body?.error ?? `OpenCode ${kind} failed`,
+      };
+    }).catch((error) => {
+      if (error?.name === 'AbortError') {
+        openCodeUpgradeOperation = { phase: 'idle' };
+        return;
+      }
+      openCodeUpgradeOperation = {
+        kind,
+        phase: 'failed',
+        error: error instanceof Error ? error.message : `OpenCode ${kind} failed`,
       };
     }).finally(() => {
       if (capability.manager === 'systemd') {
@@ -341,6 +423,20 @@ ${desktopReturn ? `<a class="return" href="openchamber://focus/mcp-auth">Return 
     });
     return upgradeOperation;
   };
+
+  const startOpenCodeUpgrade = ({ target, capability }) => startOpenCodeOperation({
+    kind: 'upgrade',
+    target,
+    capability,
+    perform: performOpenCodeUpgrade,
+  });
+
+  const startOpenCodeRestart = () => startOpenCodeOperation({
+    kind: 'restart',
+    target: undefined,
+    capability: { manager: 'systemd' },
+    perform: performOpenCodeRestart,
+  });
 
   app.post('/api/opencode/upgrade', async (req, res) => {
     try {
@@ -380,7 +476,7 @@ ${desktopReturn ? `<a class="return" href="openchamber://focus/mcp-auth">Return 
         : undefined;
       if (capability.manager === 'systemd') {
         openCodeTurnAdmissionBarrier.close();
-        openCodeUpgradeOperation = { phase: 'queued', activeSessionCount: 0 };
+        openCodeUpgradeOperation = { kind: 'upgrade', phase: 'queued', activeSessionCount: 0 };
         startOpenCodeUpgrade({ target, capability });
         return res.status(202).json({ success: true, queued: true });
       }
@@ -396,12 +492,40 @@ ${desktopReturn ? `<a class="return" href="openchamber://focus/mcp-auth">Return 
     }
   });
 
+  app.post('/api/opencode/restart', (_req, res) => {
+    const capability = getOpenCodeUpgradeCapability();
+    if (
+      !capability.supported
+      || capability.manager !== 'systemd'
+      || !supervisedOpenCodeUpgradeRuntime?.supported
+      || !openCodeTurnAdmissionBarrier
+    ) {
+      return res.status(409).json({
+        success: false,
+        code: 'OPENCODE_RESTART_UNSUPPORTED',
+        error: 'Supervised OpenCode restart is not configured.',
+      });
+    }
+    if (openCodeUpgradePromise) {
+      return res.status(409).json({
+        success: false,
+        code: 'OPENCODE_OPERATION_IN_PROGRESS',
+        error: 'An OpenCode upgrade or restart is already in progress.',
+      });
+    }
+
+    openCodeTurnAdmissionBarrier.close();
+    openCodeUpgradeOperation = { kind: 'restart', phase: 'queued', activeSessionCount: 0 };
+    startOpenCodeRestart();
+    return res.status(202).json({ success: true, queued: true });
+  });
+
   app.post('/api/opencode/upgrade/cancel', (_req, res) => {
     if (openCodeUpgradeOperation.phase !== 'queued' || !openCodeUpgradeAbortController) {
       return res.status(409).json({
         success: false,
         code: 'OPENCODE_UPGRADE_NOT_CANCELLABLE',
-        error: 'The OpenCode upgrade can only be cancelled while it is waiting for active turns.',
+        error: 'The OpenCode operation can only be cancelled while it is waiting for active turns.',
       });
     }
     openCodeUpgradeOperation = { phase: 'idle' };
@@ -411,15 +535,17 @@ ${desktopReturn ? `<a class="return" href="openchamber://focus/mcp-auth">Return 
   });
 
   app.get('/api/opencode/upgrade-status', async (_req, res) => {
+    let installedVersionFields = {};
     try {
       const capability = getOpenCodeUpgradeCapability();
+      installedVersionFields = await readInstalledVersionFields();
       if (
         openCodeUpgradeOperation.phase === 'updated'
         && Date.now() - openCodeUpgradeOperation.completedAt >= 5 * 60 * 1000
       ) {
         openCodeUpgradeOperation = { phase: 'idle' };
       }
-      if (['queued', 'upgrading', 'restarting'].includes(openCodeUpgradeOperation.phase)) {
+      if (['queued', 'upgrading', 'restarting', 'failed'].includes(openCodeUpgradeOperation.phase)) {
         const current = await readOpenCodeCurrentVersion().catch(() => ({ ok: false, currentVersion: null }));
         return res.json({
           available: null,
@@ -427,16 +553,7 @@ ${desktopReturn ? `<a class="return" href="openchamber://focus/mcp-auth">Return 
           latestVersion: null,
           upgrade: capability,
           operation: openCodeUpgradeOperation,
-        });
-      }
-      if (openCodeUpgradeOperation.phase === 'failed') {
-        const current = await readOpenCodeCurrentVersion().catch(() => ({ ok: false, currentVersion: null }));
-        return res.json({
-          available: null,
-          currentVersion: current.ok ? current.currentVersion : null,
-          latestVersion: null,
-          upgrade: capability,
-          operation: openCodeUpgradeOperation,
+          ...installedVersionFields,
         });
       }
       if (!capability.supported) {
@@ -446,6 +563,7 @@ ${desktopReturn ? `<a class="return" href="openchamber://focus/mcp-auth">Return 
           currentVersion: current.ok ? current.currentVersion : null,
           latestVersion: null,
           upgrade: capability,
+          ...installedVersionFields,
           ...(openCodeUpgradeOperation.phase === 'idle' ? {} : { operation: openCodeUpgradeOperation }),
         });
       }
@@ -462,6 +580,7 @@ ${desktopReturn ? `<a class="return" href="openchamber://focus/mcp-auth">Return 
         return res.status(healthResponse.status).json({
           available: null,
           error: health?.error || healthResponse.statusText || 'Failed to read OpenCode version',
+          ...installedVersionFields,
         });
       }
       const currentVersion = typeof health?.version === 'string' ? health.version.replace(/^v/, '') : null;
@@ -471,6 +590,7 @@ ${desktopReturn ? `<a class="return" href="openchamber://focus/mcp-auth">Return 
           currentVersion,
           latestVersion: latestVersion || null,
           upgrade: capability,
+          ...installedVersionFields,
           ...(openCodeUpgradeOperation.phase === 'idle' ? {} : { operation: openCodeUpgradeOperation }),
         });
       }
@@ -480,12 +600,14 @@ ${desktopReturn ? `<a class="return" href="openchamber://focus/mcp-auth">Return 
         currentVersion,
         latestVersion,
         upgrade: capability,
+        ...installedVersionFields,
         ...(openCodeUpgradeOperation.phase === 'idle' ? {} : { operation: openCodeUpgradeOperation }),
       });
     } catch (error) {
       return res.status(500).json({
         available: null,
         error: error instanceof Error ? error.message : 'Failed to check OpenCode upgrade status',
+        ...installedVersionFields,
       });
     }
   });

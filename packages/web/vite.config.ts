@@ -3,11 +3,38 @@ import react from '@vitejs/plugin-react';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { VitePWA } from 'vite-plugin-pwa';
 import { themeStoragePlugin } from '../../vite-theme-plugin';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const packageJson = JSON.parse(readFileSync(path.resolve(__dirname, 'package.json'), 'utf-8'));
+const sourceRoot = path.resolve(__dirname, '../..');
+const configuredBuildCommit = process.env.OPENCHAMBER_BUILD_COMMIT?.trim() ?? '';
+let buildCommit = /^[0-9a-f]{7,64}$/i.test(configuredBuildCommit) ? configuredBuildCommit : '';
+if (!buildCommit) {
+  try {
+    buildCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: sourceRoot,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 5_000,
+    }).trim();
+  } catch {
+    buildCommit = 'unknown';
+  }
+}
+let buildDirty = false;
+try {
+  buildDirty = execFileSync('git', ['status', '--porcelain=v1', '--untracked-files=all'], {
+    cwd: sourceRoot,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+    timeout: 5_000,
+  }).trim().length > 0;
+} catch {
+  buildDirty = true;
+}
 const pwaDevEnabled = process.env.OPENCHAMBER_DISABLE_PWA_DEV !== '1';
 const reactScanToggle = (process.env.VITE_ENABLE_REACT_SCAN ?? '').toLowerCase();
 const enableReactScan = reactScanToggle === '1' || reactScanToggle === 'true' || reactScanToggle === 'on' || reactScanToggle === 'yes';
@@ -100,6 +127,8 @@ export default defineConfig({
     'process.env': {},
     global: 'globalThis',
     __APP_VERSION__: JSON.stringify(packageJson.version),
+    __APP_COMMIT__: JSON.stringify(buildCommit),
+    __APP_DIRTY__: JSON.stringify(buildDirty),
   },
   optimizeDeps: {
     include: ['@opencode-ai/sdk/v2'],

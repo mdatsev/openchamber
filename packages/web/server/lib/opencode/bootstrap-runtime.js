@@ -155,6 +155,9 @@ export const createBootstrapRuntime = (dependencies) => {
       readSettingsFromDiskMigrated,
       fetchFreeZenModels,
       getCachedZenModels,
+      openchamberVersion,
+      serverStartedAt,
+      managedRestartSupported,
     });
 
     return {

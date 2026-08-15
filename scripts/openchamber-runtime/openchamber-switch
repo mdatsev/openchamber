@@ -10,6 +10,14 @@ custom_health='http://127.0.0.1:8795/api/opencode/health'
 opencode_health='http://127.0.0.1:4096/global/health'
 wait_seconds="${OPENCHAMBER_SWITCH_TIMEOUT_SECONDS:-45}"
 runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+managed_runtime_dir="${OPENCHAMBER_RUNTIME_DIR:-@RUNTIME_DIR@}"
+node_bin="${OPENCHAMBER_NODE_BINARY:-@NODE_BIN@}"
+if [[ "$managed_runtime_dir" == @* ]]; then
+  managed_runtime_dir="${XDG_DATA_HOME:-$HOME/.local/share}/openchamber-runtime"
+fi
+if [[ "$node_bin" == @* ]]; then
+  node_bin="$(command -v node || true)"
+fi
 healthy_pattern='"healthy"[[:space:]]*:[[:space:]]*true'
 
 usage() {
@@ -33,6 +41,18 @@ wait_for_health() {
     sleep 0.25
   done
   return 1
+}
+
+validate_custom_ui() {
+  local custom_repo
+  custom_repo="$(systemctl --user show --property=WorkingDirectory --value "$custom_unit" 2>/dev/null || true)"
+  [[ -n "$custom_repo" && -f "$custom_repo/scripts/openchamber-runtime/apply-custom-update.mjs" ]] || return 1
+  if [[ -f "$managed_runtime_dir/custom-update.json" ]]; then
+    [[ -f "$managed_runtime_dir/apply-custom-update.mjs" ]]
+    return
+  fi
+  OPENCHAMBER_CUSTOM_FORK_REPO="$custom_repo" \
+    "$node_bin" "$custom_repo/scripts/openchamber-runtime/apply-custom-update.mjs" --validate-dist
 }
 
 print_status() {
@@ -79,10 +99,19 @@ esac
   printf 'OPENCHAMBER_SWITCH_TIMEOUT_SECONDS must be a positive integer.\n' >&2
   exit 2
 }
+[[ -x "$node_bin" ]] || {
+  printf 'Configured Node binary is unavailable: %s\n' "$node_bin" >&2
+  exit 1
+}
 
 mkdir -p "$runtime_dir"
 exec 9>"$runtime_dir/openchamber-switch.lock"
 flock 9
+
+if [[ "$target" == 'custom' ]] && ! validate_custom_ui; then
+  printf 'Custom OpenChamber web assets are missing or incomplete; build the configured checkout before switching.\n' >&2
+  exit 1
+fi
 
 other_was_active=false
 target_was_active=false

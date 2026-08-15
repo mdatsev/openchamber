@@ -1,4 +1,5 @@
 import { buildExternalManualRestartResponse } from './config-mutation-response.js';
+import { isForkUpdateOperationActive } from './fork-runtime.js';
 
 const parseLoopbackUrl = (rawUrl) => {
   if (typeof rawUrl !== 'string') {
@@ -256,6 +257,9 @@ export const registerServerStatusRoutes = (app, dependencies) => {
   app.post('/api/system/shutdown', async (req, res, next) => {
     try {
       await requireLifecycleAuth(req, res, () => {
+        if (isForkUpdateOperationActive()) {
+          return res.status(409).json({ ok: false, error: 'A custom fork update is in progress' });
+        }
         res.json({ ok: true });
         gracefulShutdown({ exitProcess: true }).catch((error) => {
           console.error('Shutdown request failed:', error?.message || error);
@@ -271,6 +275,9 @@ export const registerServerStatusRoutes = (app, dependencies) => {
       await requireLifecycleAuth(req, res, () => {
         if (!restartSupported) {
           return res.status(501).json({ ok: false, error: 'Managed restart is not available' });
+        }
+        if (isForkUpdateOperationActive()) {
+          return res.status(409).json({ ok: false, error: 'A custom fork update is in progress' });
         }
 
         res.json({ ok: true });
