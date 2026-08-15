@@ -260,6 +260,7 @@ Rules:
 5. Composer and queued sends carry their captured runtime, directory, session, and new-session draft identity through asynchronous preparation. A runtime change cancels the send instead of re-resolving it against the new runtime. Pending-worktree normalization preserves the same draft identity, while a user retarget advances its revision so stale completion cannot close the newer draft, select its created session, replace active configuration, restore failed input into another composer, or attach metadata to another session.
 6. After session creation, the directory returned by the server is authoritative over the requested draft directory. The server may canonicalize a worktree path, and the first prompt must use the same directory identity as the created session.
 7. A prompt send that fails **after** the request left the client is ambiguous, never a definite failure: the server may already be answering it. Transports tag those errors (`markAmbiguousTransportFailure` in `@/lib/relay/transport-error`; the relay tunnel tags every stream that dies with a request in flight), and `isAmbiguousSendFailure` reads the tag before falling back to status/text heuristics. An ambiguous failure waits for the connection to return, refetches recent messages, and confirms the optimistic message in place instead of rolling it back — rolling it back lets the message queue re-send a prompt the engine is already running, producing two independent AI responses for one user message.
+8. Before routing a prompt, slash command, or shell input to an existing session that the global cache authoritatively classifies as archived, restore it and wait for server confirmation. A failed or stale-runtime restore cancels the send before optimistic insertion or dispatch; never write `time.archived = 0` speculatively for active sessions because the server's active-only list filter excludes every row where that field is present.
 
 Examples of global-store updates performed in `session-actions.ts`:
 
@@ -306,6 +307,10 @@ captured runtime is returned in `failedIds` so existing partial-failure
 feedback stays truthful.
 Callers whose confirmation can span a runtime switch may pass an
 `expectedRuntimeKey` captured earlier; ordinary callers are guarded by default.
+Shared chat routing also uses this guarded restore before sending to an archived
+session. The send proceeds only after the restored record has moved into the
+global active projection; the authoritative `session.updated` event remains
+responsible for repopulating the directory-scoped live store.
 
 Deletion needs this guard more than archiving does. Session IDs are not unique
 across runtimes, and a committed deletion does more than hide a row: it evicts

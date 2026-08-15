@@ -122,7 +122,14 @@ export function expandSlashCommandGoalObjective(content: string, commands: GoalC
 // Send routing — shell mode, slash commands, or normal prompt
 // ---------------------------------------------------------------------------
 
-export function routeMessage(params: {
+export class ArchivedSessionRestoreError extends Error {
+  constructor() {
+    super("Failed to restore archived session before sending")
+    this.name = "ArchivedSessionRestoreError"
+  }
+}
+
+export async function routeMessage(params: {
   runtimeKey?: string
   sessionId: string
   directory?: string | null
@@ -138,6 +145,17 @@ export function routeMessage(params: {
   delivery?: 'steer'
 }): Promise<void> {
   const requestDirectory = params.directory ?? undefined
+  const targetSession = useGlobalSessionsStore.getState().getSessionById(params.sessionId)
+  if (targetSession?.time?.archived) {
+    const restored = await unarchiveSessionAction(params.sessionId, params.runtimeKey)
+    if (!restored) {
+      if (params.runtimeKey && params.runtimeKey !== getRuntimeKey()) {
+        throw new Error("Message was not sent because the runtime changed.")
+      }
+      throw new ArchivedSessionRestoreError()
+    }
+  }
+
   if (params.inputMode === "shell") {
     return opencodeClient.shellSession({
       runtimeKey: params.runtimeKey,

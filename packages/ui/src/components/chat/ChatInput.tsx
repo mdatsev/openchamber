@@ -5,7 +5,7 @@ import { useConfigStore } from '@/stores/useConfigStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { createMessageQueueTarget, getMessageQueueKey, useMessageQueueStore, type QueuedMessage } from '@/stores/messageQueueStore';
 import { useAutoReviewStore } from '@/stores/useAutoReviewStore';
-import { useSessionUIStore } from '@/sync/session-ui-store';
+import { ArchivedSessionRestoreError, useSessionUIStore } from '@/sync/session-ui-store';
 import { useSelectionStore } from '@/sync/selection-store';
 import { useInputStore } from '@/sync/input-store';
 import {
@@ -971,7 +971,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
 
     const getSubmitErrorMessage = (error: unknown, fallback: string) => {
         const message = error instanceof Error ? error.message : '';
-        return message.toLowerCase().includes('runtime changed')
+        return error instanceof ArchivedSessionRestoreError || message.toLowerCase().includes('runtime changed')
             ? t('chat.chatInput.toast.messageSendFailed')
             : message || fallback;
     };
@@ -1408,7 +1408,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                 return;
             }
 
-            if (normalized.includes('runtime changed')) {
+            if (error instanceof ArchivedSessionRestoreError || normalized.includes('runtime changed')) {
                 restoreAttachments();
                 toast.error(t('chat.chatInput.toast.messageSendFailed'));
                 return;
