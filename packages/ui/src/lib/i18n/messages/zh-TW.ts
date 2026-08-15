@@ -513,6 +513,7 @@ export const dict: Record<I18nKey, string> = {
   'sessions.sidebar.project.actions.edit': '編輯',
   'sessions.sidebar.project.actions.newDraftSession': '新增草稿會話',
   'sessions.sidebar.project.status.uncommittedChanges': '未提交的變更',
+  'sessions.sidebar.project.status.worktreeChanges': '工作樹變更',
   'sessions.sidebar.session.menu.rename': '重新命名',
   'sessions.sidebar.session.menu.copyId': '複製工作階段 ID',
   'sessions.sidebar.session.copyId.success': '已複製工作階段 ID',

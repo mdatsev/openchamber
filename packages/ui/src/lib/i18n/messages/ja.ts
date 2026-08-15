@@ -500,6 +500,7 @@ export const dict: Record<I18nKey, string> = {
   'sessions.sidebar.project.actions.edit': '編集',
   'sessions.sidebar.project.actions.newDraftSession': '新しい下書きセッション',
   'sessions.sidebar.project.status.uncommittedChanges': '未コミットの変更',
+  'sessions.sidebar.project.status.worktreeChanges': 'ワークツリーの変更',
   'sessions.sidebar.session.menu.rename': '名前の変更',
   'sessions.sidebar.session.menu.copyId': 'セッションIDをコピー',
   'sessions.sidebar.session.copyId.success': 'セッションIDをコピーしました',

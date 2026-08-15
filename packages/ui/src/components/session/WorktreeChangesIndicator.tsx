@@ -42,8 +42,9 @@ export const WorktreeChangesIndicator: React.FC<{
     <span
       className={cn('inline-flex size-4 shrink-0 items-center justify-center text-[var(--status-warning)]', className)}
       aria-label={label}
+      role="img"
     >
-      <Icon name="git-commit" className="size-3.5" />
+      <Icon name="node-tree" className="size-3.5" />
     </span>
   );
 

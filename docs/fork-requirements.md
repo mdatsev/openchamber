@@ -72,8 +72,11 @@
 - Be able to see changes not merged to the root branch for each worktree.
 - Not merged changes include both committed and uncommited changes.
 - Let the user view committed changes, uncommitted changes, or both together. Cherry-pick equivalence is not supported.
-- Show indicator on unmerged worktrees in the sidebar.
-- Show indicator on sessions in the sidebar differentiating between root and worktree sessions, and clean/dirty root and merged/unmerged worktrees.
+- Show an orange repository icon on a project when its root checkout has uncommitted changes.
+- Show an orange worktree icon on a worktree entry when it has committed or uncommitted changes relative to the root branch.
+- When a project is collapsed, show the repository icon, worktree icon, or both according to changes in its root checkout and worktrees.
+- Do not repeat checkout status on ordinary session rows inside an expanded project. A compact single-conversation worktree row acts as the worktree entry and shows its changed indicator there.
+- In the mixed-project Recent list, show one repository or worktree icon per session: neutral when authoritatively clean and orange when dirty or unmerged. Show no checkout icon for confirmed non-repositories or unresolved state.
 - Use compact sidebar rows for worktrees with zero or one conversation.
 
 ### FC-015: Update OpenCode in settings

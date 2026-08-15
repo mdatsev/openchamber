@@ -500,6 +500,7 @@ export const dict: Record<I18nKey, string> = {
   "sessions.sidebar.project.actions.edit": "Editar",
   "sessions.sidebar.project.actions.newDraftSession": "Nueva sesión de borrador",
   "sessions.sidebar.project.status.uncommittedChanges": "Cambios sin commit",
+  "sessions.sidebar.project.status.worktreeChanges": "Cambios en árboles de trabajo",
   "sessions.sidebar.session.menu.rename": "Cambiar nombre",
   "sessions.sidebar.session.menu.copyId": "Copiar ID de sesión",
   "sessions.sidebar.session.copyId.success": "ID de sesión copiado",

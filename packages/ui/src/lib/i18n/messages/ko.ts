@@ -500,6 +500,7 @@ export const dict: Record<I18nKey, string> = {
   'sessions.sidebar.project.actions.edit': '편집',
   'sessions.sidebar.project.actions.newDraftSession': '새 드래프트 세션',
   'sessions.sidebar.project.status.uncommittedChanges': '커밋되지 않은 변경 사항',
+  'sessions.sidebar.project.status.worktreeChanges': '워크트리 변경 사항',
   'sessions.sidebar.session.menu.rename': '이름 변경',
   'sessions.sidebar.session.menu.copyId': '세션 ID 복사',
   'sessions.sidebar.session.copyId.success': '세션 ID가 복사되었습니다',

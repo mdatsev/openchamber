@@ -293,6 +293,7 @@ export const dict: Record<I18nKey, string> = {
   'sessions.sidebar.project.actions.edit': 'Edytuj',
   'sessions.sidebar.project.actions.newDraftSession': 'Nowa sesja robocza',
   'sessions.sidebar.project.status.uncommittedChanges': 'Niezacommitowane zmiany',
+  'sessions.sidebar.project.status.worktreeChanges': 'Zmiany w drzewach roboczych',
   'sessions.sidebar.session.menu.rename': 'Zmień nazwę',
   'sessions.sidebar.session.menu.copyId': 'Kopiuj ID sesji',
   'sessions.sidebar.session.copyId.success': 'Skopiowano ID sesji',

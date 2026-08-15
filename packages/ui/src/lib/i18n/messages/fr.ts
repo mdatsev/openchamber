@@ -330,6 +330,7 @@ export const dict = {
   'sessions.sidebar.project.actions.edit': 'Modifier',
   'sessions.sidebar.project.actions.newDraftSession': 'Nouveau brouillon de session',
   'sessions.sidebar.project.status.uncommittedChanges': 'Modifications non validées',
+  'sessions.sidebar.project.status.worktreeChanges': 'Modifications des worktrees',
   'sessions.sidebar.session.menu.rename': 'Rebaptiser',
   'sessions.sidebar.session.menu.copyId': 'Copier l’ID de session',
   'sessions.sidebar.session.copyId.success': 'ID de session copié',

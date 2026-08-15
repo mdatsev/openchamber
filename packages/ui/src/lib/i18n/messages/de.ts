@@ -454,6 +454,7 @@ export const dict = {
   'sessions.sidebar.project.actions.closeProject': 'Projekt schließen',
   'sessions.sidebar.project.actions.newDraftSession': 'Neue Entwurfs-Sitzung',
   'sessions.sidebar.project.status.uncommittedChanges': 'Nicht committete Änderungen',
+  'sessions.sidebar.project.status.worktreeChanges': 'Worktree-Änderungen',
   'sessions.sidebar.session.menu.rename': 'Umbenennen',
   'sessions.sidebar.session.rename.save': 'Sitzungsnamen speichern',
   'sessions.sidebar.session.rename.cancel': 'Umbenennung abbrechen',

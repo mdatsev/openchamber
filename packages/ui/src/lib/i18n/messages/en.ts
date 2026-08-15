@@ -499,6 +499,7 @@ export const dict = {
   'sessions.sidebar.project.actions.closeProject': 'Close project',
   'sessions.sidebar.project.actions.newDraftSession': 'New draft session',
   'sessions.sidebar.project.status.uncommittedChanges': 'Uncommitted changes',
+  'sessions.sidebar.project.status.worktreeChanges': 'Worktree changes',
   'sessions.sidebar.session.menu.rename': 'Rename',
   'sessions.sidebar.session.menu.copyId': 'Copy session ID',
   'sessions.sidebar.session.copyId.success': 'Session ID copied',

@@ -123,6 +123,7 @@ export interface SortableProjectItemProps extends ProjectIdentityProps {
   statusIndicator?: React.ReactNode;
   /** Whether the project root's authoritative Git status contains changes. */
   rootHasChanges?: boolean;
+  worktreeChangesIndicator?: React.ReactNode;
 }
 
 export const SortableProjectItem: React.FC<SortableProjectItemProps> = ({
@@ -153,6 +154,7 @@ export const SortableProjectItem: React.FC<SortableProjectItemProps> = ({
   setOpenSidebarMenuKey,
   statusIndicator = null,
   rootHasChanges = false,
+  worktreeChangesIndicator,
 }) => {
   const { t } = useI18n();
   const stickyZoneHeaders = useSessionDisplayStore((state) => state.stickyZoneHeaders);
@@ -312,13 +314,18 @@ export const SortableProjectItem: React.FC<SortableProjectItemProps> = ({
                               role="img"
                               aria-label={t('sessions.sidebar.project.status.uncommittedChanges')}
                             >
-                              <Icon name="file-edit" className="size-3.5" />
+                              <Icon name="git-repository" className="size-3.5" />
                             </span>
                           </TooltipTrigger>
                           <TooltipContent side="right" sideOffset={8}>
                             {t('sessions.sidebar.project.status.uncommittedChanges')}
                           </TooltipContent>
                         </Tooltip>
+                      </span>
+                    ) : null}
+                    {worktreeChangesIndicator ? (
+                      <span className="ml-1 inline-flex flex-shrink-0 items-center">
+                        {worktreeChangesIndicator}
                       </span>
                     ) : null}
                   </button>

@@ -14,12 +14,14 @@ import { formatDirectoryName, formatPathForDisplay, cn } from '@/lib/utils';
 import type { SessionGroup } from './types';
 import type { SortableDragHandleProps } from './sortableItems';
 import { ProjectHeaderIdentity, SortableGroupItem, SortableProjectItem } from './sortableItems';
-import { formatProjectLabel } from './utils';
+import { formatProjectLabel, normalizePath } from './utils';
 import { useI18n } from '@/lib/i18n';
 import type { MainTab } from '@/stores/useUIStore';
 import type { ProjectSortOrder } from '@/stores/useSessionDisplayStore';
 import { streamPerfCount } from '@/stores/utils/streamDebug';
 import { Icon } from '@/components/icon/Icon';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { useGitStore } from '@/stores/useGitStore';
 
 type ProjectSection = {
   project: {
@@ -45,6 +47,39 @@ const getProjectLabel = (project: ProjectSection['project'], homeDirectory: stri
     || project.normalizedPath,
   )
 );
+
+const ProjectWorktreeChangesIndicator = React.memo(function ProjectWorktreeChangesIndicator({
+  groups,
+  showTooltip = true,
+}: {
+  groups: SessionGroup[];
+  showTooltip?: boolean;
+}) {
+  const { t } = useI18n();
+  const directories = React.useMemo(() => groups
+    .filter((group) => !group.isMain && !group.isArchivedBucket)
+    .map((group) => normalizePath(group.directory ?? null))
+    .filter((directory): directory is string => Boolean(directory)), [groups]);
+  const hasWorktreeChanges = useGitStore(React.useCallback((state) => directories.some((directory) => {
+    const comparison = state.directories.get(directory)?.worktreeComparisonSummary;
+    return Boolean(comparison?.available && (comparison.hasCommittedChanges || comparison.isDirty));
+  }), [directories]));
+  if (!hasWorktreeChanges) return null;
+
+  const label = t('sessions.sidebar.project.status.worktreeChanges');
+  const indicator = (
+    <span className="inline-flex size-4 shrink-0 items-center justify-center text-status-warning" role="img" aria-label={label}>
+      <Icon name="node-tree" className="size-3.5" />
+    </span>
+  );
+  if (!showTooltip) return indicator;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{indicator}</TooltipTrigger>
+      <TooltipContent side="right" sideOffset={8}>{label}</TooltipContent>
+    </Tooltip>
+  );
+});
 
 type Props = {
   topContent?: React.ReactNode;
@@ -107,6 +142,10 @@ function SidebarProjectsListComponent(props: Props): React.ReactNode {
   const groupSensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
   );
+  const structuralGroupsByProjectId = React.useMemo(
+    () => new Map(props.projectSections.map((section) => [section.project.id, section.groups])),
+    [props.projectSections],
+  );
 
   // Memoize getOrderedGroups per project so downstream consumers see a stable
   // array reference while inputs are unchanged (avoids O(P) fresh arrays per
@@ -168,10 +207,10 @@ function SidebarProjectsListComponent(props: Props): React.ReactNode {
       syncTopFade(scrollContainerRef.current);
     }
   }, [enableStickyFade, hasProjectScroller, syncTopFade]);
-  let stuckProject: ProjectSection['project'] | null = null;
+  let stuckProjectSection: ProjectSection | null = null;
   for (const section of props.projectSections) {
     if (props.stuckProjectHeaders.has(section.project.id)) {
-      stuckProject = section.project;
+      stuckProjectSection = section;
     }
   }
   // The IntersectionObserver reports the stuck header asynchronously, a frame or
@@ -180,8 +219,12 @@ function SidebarProjectsListComponent(props: Props): React.ReactNode {
   // replacement. Seed the overlay with the topmost rendered project so it is
   // ready in the same frame; the observer then corrects it. When shared sessions
   // lead the list, the Recent fallback below owns the top instead of a project.
-  const leadingProject =
-    stuckProject ?? (props.hasSharedSessions ? null : props.sectionsForRender[0]?.project ?? null);
+  const leadingProjectSection =
+    stuckProjectSection ?? (props.hasSharedSessions ? null : props.sectionsForRender[0] ?? null);
+  const leadingProject = leadingProjectSection?.project ?? null;
+  const leadingProjectGroups = leadingProject
+    ? structuralGroupsByProjectId.get(leadingProject.id) ?? leadingProjectSection?.groups ?? []
+    : [];
   const leadingProjectLabel = leadingProject ? getProjectLabel(leadingProject, props.homeDirectory) : null;
   const leadingProjectHasRootChanges = leadingProject
     ? props.projectRootDirtyStatus.get(leadingProject.id) === true
@@ -284,6 +327,7 @@ function SidebarProjectsListComponent(props: Props): React.ReactNode {
               const isCollapsed = props.collapsedProjects.has(projectKey);
               const isRepo = props.projectRepoStatus.get(projectKey);
               const rootHasChanges = props.projectRootDirtyStatus.get(projectKey) === true;
+              const structuralGroups = structuralGroupsByProjectId.get(projectKey) ?? section.groups;
 
               return (
                 <SortableProjectItem
@@ -304,6 +348,7 @@ function SidebarProjectsListComponent(props: Props): React.ReactNode {
                   alwaysShowActions={props.alwaysShowActions}
                   statusIndicator={isCollapsed ? props.renderProjectStatusIndicator?.(projectKey, section.groups) : null}
                   rootHasChanges={rootHasChanges}
+                  worktreeChangesIndicator={isCollapsed ? <ProjectWorktreeChangesIndicator groups={structuralGroups} /> : null}
                   onToggle={() => props.toggleProject(projectKey)}
                   onNewSession={() => {
                     if (projectKey !== props.activeProjectId) props.setActiveProjectIdOnly(projectKey);
@@ -399,7 +444,10 @@ function SidebarProjectsListComponent(props: Props): React.ReactNode {
                 projectIconBackground={leadingProject.iconBackground}
               />
               {leadingProjectHasRootChanges ? (
-                <Icon name="file-edit" className="size-3.5 shrink-0 text-status-warning" />
+                <Icon name="git-repository" className="size-3.5 shrink-0 text-status-warning" />
+              ) : null}
+              {leadingProjectSection && props.collapsedProjects.has(leadingProject.id) ? (
+                <ProjectWorktreeChangesIndicator groups={leadingProjectGroups} showTooltip={false} />
               ) : null}
             </>
           ) : (

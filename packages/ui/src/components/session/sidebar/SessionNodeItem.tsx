@@ -33,7 +33,6 @@ import type { SessionNodeChildRenderExtras, SessionNodeRenderExtras } from './se
 import type { SessionNode } from './types';
 import { formatProjectLabel, formatSessionCompactDateLabel, formatSessionDateLabel, normalizePath, renderHighlightedText } from './utils';
 import { useProjectsStore } from '@/stores/useProjectsStore';
-import { useSessionDisplayStore } from '@/stores/useSessionDisplayStore';
 import { markSessionUnread, markSessionViewed } from '@/sync/notification-store';
 import { SessionActivityDuration } from '@/components/session/SessionActivityDuration';
 import { useSessionMultiSelectStore } from '@/stores/useSessionMultiSelectStore';
@@ -374,16 +373,6 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
       return normalizePath(project?.path ?? null);
     }, [projectId]),
   );
-  const sessionGroupingMode = useSessionDisplayStore((state) => state.sessionGroupingMode);
-  // In by-worktree grouping the project tree already shows the branch on the
-  // group sub-header, so the per-row marker only appears in flat mode and in
-  // the mixed-context recent list.
-  const showInlineBranchMarker = Boolean(tooltipBranchLabel)
-    && (
-      renderContext === 'recent'
-      || sessionGroupingMode === 'flat'
-      || (!node.worktree && Boolean(secondaryMeta?.branchLabel))
-    );
   const isActive = useSessionUIStore((state) => state.currentSessionId === session.id);
 
   const sessionDirectory =
@@ -433,9 +422,6 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
   const [exportIncludeSubtasks, setExportIncludeSubtasks] = React.useState(true);
 
   const menuInstanceKey = `${renderContext}:${archivedBucket ? 'archived' : 'active'}:${session.id}`;
-  const trailingMetadataVisibilityClass = worktreeDragHandleProps
-    ? 'opacity-100'
-    : hideOnHoverClass;
   const sessionTitle = resolvedSession.title || t('sessions.sidebar.session.untitled');
   const hasChildren = node.children.length > 0;
   const isPinnedSession = isSessionPinned(pinnedSessionIds, sessionDirectory, session.id);
@@ -662,6 +648,12 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
   }
 
   const showActivityDuration = indicatorModel.showActivityDuration;
+  const worktreeHasChanges = Boolean(
+    indicatorModel.worktreeComparison?.available
+    && (indicatorModel.worktreeComparison.hasCommittedChanges || indicatorModel.worktreeComparison.isDirty),
+  );
+  const showCheckoutIndicator = renderContext === 'recent'
+    || Boolean(worktreeDragHandleProps && worktreeHasChanges);
   const hideLeadingIndicatorOnHover = !alwaysShowActions && hasChildren && indicatorModel.leading !== null;
   const leadingIndicators = indicatorModel.leading ? (
     <span
@@ -1144,9 +1136,12 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
           <ContextMenu.Trigger
             render={
               <div
+                ref={worktreeDragHandleProps?.setActivatorNodeRef}
                 data-session-row={session.id}
                 data-session-scope={selectionScopeKey ?? ''}
                 data-session-archived={archivedBucket ? '1' : '0'}
+                data-worktree-drag-handle={worktreeDragHandleProps ? 'true' : undefined}
+                {...(worktreeDragHandleProps?.listeners ?? {})}
                 onClick={handleRowBackgroundClick}
                 // Row geometry mirrors the zone-header band: full container
                 // width, px-1.5 inner edge, a 14px icon-wide gutter (status
@@ -1155,6 +1150,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
                 style={{ paddingLeft: ROW_TEXT_LEFT_PX + depth * ROW_DEPTH_STEP_PX }}
                 className={cn(
                   'group relative my-0.5 flex cursor-pointer items-center rounded-md py-1 pr-1.5',
+                  worktreeDragHandleProps && 'cursor-grab active:cursor-grabbing',
                   // Active (currently open) session gets a subtle primary tint;
                   // multi-select highlight takes precedence when both apply.
                   isActive && !isRowSelected && 'bg-primary/10',
@@ -1195,38 +1191,32 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
                       <div className={cn('block min-w-0 flex-1 truncate typography-ui-label font-normal', isActive ? 'text-primary' : needsAttention ? 'text-foreground' : 'text-foreground/80')}>{renderHighlightedText(sessionTitle, normalizedSessionSearchQuery)}</div>
                       {/* While a turn runs (and until its result is read) the
                           elapsed counter takes over this slot from the usual
-                          goal/branch/date metadata, which stays one hover or
-                          one read away. */}
+                          goal/date metadata. */}
                       {alwaysShowActions ? (
                         // Touch runtimes have no hover tooltip, so the compact
                         // date stays inline there.
                         <span className="ml-2 inline-flex flex-shrink-0 items-center gap-1 text-[0.72rem] text-muted-foreground/75">
-                          <SessionCheckoutIndicators model={indicatorModel} variant="sidebar" dragHandleProps={worktreeDragHandleProps} />
+                          {showCheckoutIndicator ? <SessionCheckoutIndicators model={indicatorModel} variant="sidebar" /> : null}
+                          <SessionPrIndicator model={indicatorModel} variant="sidebar" />
                           {showActivityDuration ? (
                             <SessionActivityDuration sessionId={session.id} running={isStreaming} />
                           ) : (
                             <>
                               <SessionGoalIndicator goal={indicatorModel.goal} variant="sidebar" />
-                              {showInlineBranchMarker ? (
-                                <Icon
-                                  name="git-branch"
-                                  className={cn('h-3 w-3', !prIconColor && 'text-muted-foreground/60')}
-                                  style={prIconColor ? { color: prIconColor } : undefined}
-                                />
-                              ) : null}
                               {sessionCompactUpdatedLabel}
                             </>
                           )}
                         </span>
-                      ) : (indicatorModel.worktreeDirectory || indicatorModel.rootDirectory || showActivityDuration || indicatorModel.goal || showInlineBranchMarker) ? (
+                      ) : (showCheckoutIndicator || indicatorModel.prSummary || showActivityDuration || indicatorModel.goal) ? (
                         <div className="relative ml-1 flex h-4 flex-shrink-0 items-center justify-end">
                           <span className={cn(
                             'inline-flex items-center gap-1 whitespace-nowrap text-right transition-opacity duration-150',
                             isSessionMenuOpen
                               ? 'opacity-0'
-                              : trailingMetadataVisibilityClass,
-                          )}>
-                            <SessionCheckoutIndicators model={indicatorModel} variant="sidebar" dragHandleProps={worktreeDragHandleProps} />
+                              : hideOnHoverClass,
+                            )}>
+                            {showCheckoutIndicator ? <SessionCheckoutIndicators model={indicatorModel} variant="sidebar" /> : null}
+                            <SessionPrIndicator model={indicatorModel} variant="sidebar" />
                             {showActivityDuration ? (
                               <SessionActivityDuration
                                 sessionId={session.id}
@@ -1234,16 +1224,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
                                 className="text-[0.72rem]"
                               />
                             ) : (
-                              <>
-                                <SessionGoalIndicator goal={indicatorModel.goal} variant="sidebar" />
-                                {showInlineBranchMarker ? (
-                                  <Icon
-                                    name="git-branch"
-                                    className={cn('h-3 w-3', !prIconColor && 'text-muted-foreground/60')}
-                                    style={prIconColor ? { color: prIconColor } : undefined}
-                                  />
-                                ) : null}
-                              </>
+                              <SessionGoalIndicator goal={indicatorModel.goal} variant="sidebar" />
                             )}
                           </span>
                         </div>

@@ -500,6 +500,7 @@ export const dict: Record<I18nKey, string> = {
   "sessions.sidebar.project.actions.edit": "Редагувати",
   "sessions.sidebar.project.actions.newDraftSession": "Нова чернетка сесії",
   "sessions.sidebar.project.status.uncommittedChanges": "Незакомічені зміни",
+  "sessions.sidebar.project.status.worktreeChanges": "Зміни в робочих деревах",
   "sessions.sidebar.session.menu.rename": "Перейменувати",
   "sessions.sidebar.session.menu.copyId": "Копіювати ID сесії",
   "sessions.sidebar.session.copyId.success": "ID сесії скопійовано",

@@ -500,6 +500,7 @@ export const dict: Record<I18nKey, string> = {
   'sessions.sidebar.project.actions.edit': '编辑',
   'sessions.sidebar.project.actions.newDraftSession': '新建草稿会话',
   'sessions.sidebar.project.status.uncommittedChanges': '未提交的更改',
+  'sessions.sidebar.project.status.worktreeChanges': '工作树更改',
   'sessions.sidebar.session.menu.rename': '重命名',
   'sessions.sidebar.session.menu.copyId': '复制会话 ID',
   'sessions.sidebar.session.copyId.success': '会话 ID 已复制',
