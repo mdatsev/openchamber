@@ -1540,9 +1540,10 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
   );
 
 
-  // Web/desktop route archived sessions to the Archive page; only the VS Code
-  // compact webview keeps inline archived buckets behind its toggle.
-  const showInlineArchived = isVSCode && showArchivedSessions;
+  // Web/desktop route archived sessions to the Archive page during normal
+  // browsing, but matching archived buckets remain visible in search results.
+  // VS Code keeps its existing inline archived toggle.
+  const showInlineArchived = hasSessionSearchQuery || (isVSCode && showArchivedSessions);
   // 'by-worktree' renders the worktree-grouped sections (parallel-work
   // overview); 'flat' renders the merged per-project list. VS Code has no
   // worktree groups, so both resolve to the same shape — use flat there.

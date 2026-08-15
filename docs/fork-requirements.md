@@ -101,3 +101,9 @@
 
 - Put fork-only preferences in a dedicated Custom Fork settings page.
 - Let users choose whether New Chat actions inherit the current worktree.
+
+### FC-020: Resume archived sessions through normal messaging
+
+- Show matching archived sessions under their projects in sidebar search results.
+- Before sending a prompt, slash command, or shell input to an archived session, restore it and wait for server confirmation.
+- If restoration fails or the runtime changes, do not dispatch the message.
