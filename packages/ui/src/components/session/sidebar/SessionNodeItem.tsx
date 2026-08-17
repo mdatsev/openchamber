@@ -55,6 +55,7 @@ import {
   SessionPersistentErrorIndicator,
   SessionPrIndicator,
   SessionCheckoutIndicators,
+  SessionUpstreamAheadIndicator,
 } from './SessionRowIndicators';
 import { useSessionRowIndicatorModel } from './useSessionRowIndicatorModel';
 
@@ -1196,7 +1197,8 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
                         // Touch runtimes have no hover tooltip, so the compact
                         // date stays inline there.
                         <span className="ml-2 inline-flex flex-shrink-0 items-center gap-1 text-[0.72rem] text-muted-foreground/75">
-                          {showCheckoutIndicator ? <SessionCheckoutIndicators model={indicatorModel} variant="sidebar" /> : null}
+                          {showCheckoutIndicator ? <SessionCheckoutIndicators model={indicatorModel} variant="sidebar" showAhead={renderContext === 'recent'} /> : null}
+                          {worktreeDragHandleProps ? <SessionUpstreamAheadIndicator ahead={indicatorModel.worktreeUpstreamAhead} variant="sidebar" /> : null}
                           <SessionPrIndicator model={indicatorModel} variant="sidebar" />
                           {showActivityDuration ? (
                             <SessionActivityDuration sessionId={session.id} running={isStreaming} />
@@ -1215,7 +1217,8 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
                               ? 'opacity-0'
                               : hideOnHoverClass,
                             )}>
-                            {showCheckoutIndicator ? <SessionCheckoutIndicators model={indicatorModel} variant="sidebar" /> : null}
+                            {showCheckoutIndicator ? <SessionCheckoutIndicators model={indicatorModel} variant="sidebar" showAhead={renderContext === 'recent'} /> : null}
+                            {worktreeDragHandleProps ? <SessionUpstreamAheadIndicator ahead={indicatorModel.worktreeUpstreamAhead} variant="sidebar" /> : null}
                             <SessionPrIndicator model={indicatorModel} variant="sidebar" />
                             {showActivityDuration ? (
                               <SessionActivityDuration

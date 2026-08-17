@@ -74,6 +74,7 @@
 - Let the user view committed changes, uncommitted changes, or both together. Cherry-pick equivalence is not supported.
 - Show an orange repository icon on a project when its root checkout has uncommitted changes.
 - Show an orange worktree icon on a worktree entry when it has committed or uncommitted changes relative to the root branch.
+- Show an orange upward arrow on a project or worktree entry when its branch has commits ahead of its tracked upstream.
 - When a project is collapsed, show the repository icon, worktree icon, or both according to changes in its root checkout and worktrees.
 - Do not repeat checkout status on ordinary session rows inside an expanded project. A compact single-conversation worktree row acts as the worktree entry and shows its changed indicator there.
 - In the mixed-project Recent list, show one repository or worktree icon per session: neutral when authoritatively clean and orange when dirty or unmerged. Show no checkout icon for confirmed non-repositories or unresolved state.

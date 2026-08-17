@@ -1579,6 +1579,29 @@ export const useGitCleanStatusMap = (directories: string[]) => {
   });
 };
 
+export const useGitUpstreamAheadStatusMap = (directories: string[]) => {
+  const cacheRef = React.useRef<Map<string, number | null>>(new Map());
+  return useGitStore((state) => {
+    const previous = cacheRef.current;
+    let unchanged = previous.size === directories.length;
+    for (const directory of directories) {
+      const ahead = state.directories.get(directory)?.status?.ahead ?? null;
+      if (previous.get(directory) !== ahead) {
+        unchanged = false;
+        break;
+      }
+    }
+    if (unchanged) return previous;
+
+    const result = new Map<string, number | null>();
+    for (const directory of directories) {
+      result.set(directory, state.directories.get(directory)?.status?.ahead ?? null);
+    }
+    cacheRef.current = result;
+    return result;
+  });
+};
+
 export const useGitLoadingStatus = (directory: string | null) => {
   return useGitStore((state) => {
     if (!directory) return false;

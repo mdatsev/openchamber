@@ -123,6 +123,7 @@ export interface SortableProjectItemProps extends ProjectIdentityProps {
   statusIndicator?: React.ReactNode;
   /** Whether the project root's authoritative Git status contains changes. */
   rootHasChanges?: boolean;
+  rootUpstreamAhead?: number | null;
   worktreeChangesIndicator?: React.ReactNode;
 }
 
@@ -154,6 +155,7 @@ export const SortableProjectItem: React.FC<SortableProjectItemProps> = ({
   setOpenSidebarMenuKey,
   statusIndicator = null,
   rootHasChanges = false,
+  rootUpstreamAhead = null,
   worktreeChangesIndicator,
 }) => {
   const { t } = useI18n();
@@ -319,6 +321,24 @@ export const SortableProjectItem: React.FC<SortableProjectItemProps> = ({
                           </TooltipTrigger>
                           <TooltipContent side="right" sideOffset={8}>
                             {t('sessions.sidebar.project.status.uncommittedChanges')}
+                          </TooltipContent>
+                        </Tooltip>
+                      </span>
+                    ) : null}
+                    {rootUpstreamAhead && rootUpstreamAhead > 0 ? (
+                      <span className="ml-1 inline-flex flex-shrink-0 items-center">
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span
+                              className="inline-flex size-4 shrink-0 items-center justify-center text-status-warning"
+                              role="img"
+                              aria-label={t('gitView.sync.pushTooltipAhead', { count: rootUpstreamAhead })}
+                            >
+                              <Icon name="arrow-up" className="size-3.5" />
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent side="right" sideOffset={8}>
+                            {t('gitView.sync.pushTooltipAhead', { count: rootUpstreamAhead })}
                           </TooltipContent>
                         </Tooltip>
                       </span>

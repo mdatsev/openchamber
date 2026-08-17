@@ -208,6 +208,9 @@ export const MobileSessionSwitcher: React.FC<{
         void ensureWorktreeComparison(directory, git, { mode: 'combined' });
       }
     }
+    for (const directory of worktreeDirectories) {
+      void ensureStatus(directory, git);
+    }
     for (const directory of rootDirectories) {
       void ensureStatus(directory, git);
     }
@@ -217,6 +220,7 @@ export const MobileSessionSwitcher: React.FC<{
       if (!git.getWorktreeComparison) return;
       for (const directory of worktreeDirectories) {
         void fetchWorktreeComparison(directory, git, { mode: 'combined' });
+        void fetchStatus(directory, git, { silent: true });
       }
     };
     return sessionEvents.onGitRefreshHint((hint) => {
@@ -224,6 +228,9 @@ export const MobileSessionSwitcher: React.FC<{
       if (!directory) return;
       if (git.getWorktreeComparison && worktreeDirectorySet.has(directory)) {
         void fetchWorktreeComparison(directory, git, { mode: 'combined' });
+      }
+      if (worktreeDirectorySet.has(directory)) {
+        void fetchStatus(directory, git, { silent: true });
       }
       if (rootDirectorySet.has(directory)) {
         void fetchStatus(directory, git, { silent: true });

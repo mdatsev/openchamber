@@ -20,6 +20,7 @@ export const WorktreeChangesIndicator: React.FC<{
   const { git } = useRuntimeAPIs();
   const normalizedDirectory = normalizeDirectory(directory);
   const comparison = useResolvedWorktreeComparisonSummary(normalizedDirectory || null);
+  const upstreamAhead = useGitStore((state) => state.directories.get(normalizedDirectory)?.status?.ahead ?? 0);
   const fetchWorktreeComparison = useGitStore((state) => state.fetchWorktreeComparison);
   const ensureWorktreeComparison = useGitStore((state) => state.ensureWorktreeComparison);
 
@@ -32,19 +33,31 @@ export const WorktreeChangesIndicator: React.FC<{
     });
   }, [ensureWorktreeComparison, fetchWorktreeComparison, git, manageRefresh, normalizedDirectory]);
 
-  if (!comparison?.available || (!comparison.hasCommittedChanges && !comparison.isDirty)) return null;
+  const hasWorktreeChanges = Boolean(comparison?.available && (comparison.hasCommittedChanges || comparison.isDirty));
+  const hasUnpushedCommits = upstreamAhead > 0;
+  if (!hasWorktreeChanges && !hasUnpushedCommits) return null;
 
-  const label = t('sessions.sidebar.worktreeChanges', {
-    branch: comparison.baseBranch ?? '',
-    count: comparison.fileCount,
-  });
+  const changeLabel = hasWorktreeChanges && comparison?.available
+    ? t('sessions.sidebar.worktreeChanges', {
+        branch: comparison.baseBranch ?? '',
+        count: comparison.fileCount,
+      })
+    : null;
+  const pushLabel = hasUnpushedCommits
+    ? t('gitView.sync.pushTooltipAhead', { count: upstreamAhead })
+    : null;
   const indicator = (
-    <span
-      className={cn('inline-flex size-4 shrink-0 items-center justify-center text-[var(--status-warning)]', className)}
-      aria-label={label}
-      role="img"
-    >
-      <Icon name="node-tree" className="size-3.5" />
+    <span className={cn('inline-flex shrink-0 items-center gap-1 text-status-warning', className)}>
+      {changeLabel ? (
+        <span className="inline-flex size-4 items-center justify-center" aria-label={changeLabel} role="img">
+          <Icon name="node-tree" className="size-3.5" />
+        </span>
+      ) : null}
+      {pushLabel ? (
+        <span className="inline-flex size-4 items-center justify-center" aria-label={pushLabel} role="img">
+          <Icon name="arrow-up" className="size-3.5" />
+        </span>
+      ) : null}
     </span>
   );
 
@@ -52,7 +65,10 @@ export const WorktreeChangesIndicator: React.FC<{
   return (
     <Tooltip>
       <TooltipTrigger asChild>{indicator}</TooltipTrigger>
-      <TooltipContent sideOffset={8}>{label}</TooltipContent>
+      <TooltipContent sideOffset={8}>
+        {changeLabel ? <div>{changeLabel}</div> : null}
+        {pushLabel ? <div>{pushLabel}</div> : null}
+      </TooltipContent>
     </Tooltip>
   );
 };

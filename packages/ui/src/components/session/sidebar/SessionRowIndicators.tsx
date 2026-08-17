@@ -66,9 +66,11 @@ export function SessionLeadingIndicatorGlyph({
 export function SessionCheckoutIndicators({
   model,
   variant,
+  showAhead = true,
 }: {
   model: SessionRowIndicatorModel;
   variant: 'sidebar' | 'mobile';
+  showAhead?: boolean;
 }): React.ReactNode {
   const { t } = useI18n();
   const iconSize = variant === 'mobile' ? 'size-3.5' : 'size-3';
@@ -84,32 +86,61 @@ export function SessionCheckoutIndicators({
         aria-label={`${t('sessions.sidebar.grouping.projectRoot')} · ${stateLabel}`}
       >
         <Icon name="git-repository" className={iconSize} />
+        {showAhead ? <SessionUpstreamAheadIndicator ahead={model.rootUpstreamAhead} variant={variant} /> : null}
       </span>
     );
   }
   if (!model.worktreeDirectory) return null;
   const comparison = model.worktreeComparison;
-  if (!comparison?.available) return null;
-  const hasComparisonChanges = comparison.hasCommittedChanges || comparison.isDirty;
-  const comparisonLabel = hasComparisonChanges
-    ? t('sessions.sidebar.worktreeChanges', {
-        branch: comparison.baseBranch ?? '',
-        count: comparison.fileCount,
-      })
-    : t('sessions.sidebar.session.status.worktreeClean', {
-        branch: comparison.baseBranch ?? '',
-      });
+  const hasComparison = comparison?.available === true;
+  const hasComparisonChanges = hasComparison && (comparison.hasCommittedChanges || comparison.isDirty);
+  const comparisonLabel = hasComparison
+    ? hasComparisonChanges
+      ? t('sessions.sidebar.worktreeChanges', {
+          branch: comparison.baseBranch ?? '',
+          count: comparison.fileCount,
+        })
+      : t('sessions.sidebar.session.status.worktreeClean', {
+          branch: comparison.baseBranch ?? '',
+        })
+    : null;
+  const hasAhead = showAhead && Boolean(model.worktreeUpstreamAhead && model.worktreeUpstreamAhead > 0);
+  if (!hasComparison && !hasAhead) return null;
 
   return (
     <span
       className="inline-flex shrink-0"
       role="img"
-      aria-label={`${t('sessions.sidebar.session.status.linkedWorktree')} · ${comparisonLabel}`}
+      aria-label={
+        [t('sessions.sidebar.session.status.linkedWorktree'), comparisonLabel, hasAhead ? t('gitView.sync.pushTooltipAhead', { count: model.worktreeUpstreamAhead }) : null]
+          .filter(Boolean)
+          .join(' · ')
+      }
     >
-      <Icon
-        name="node-tree"
-        className={cn(iconSize, hasComparisonChanges ? 'text-status-warning' : 'text-muted-foreground/60')}
-      />
+      {hasComparison ? (
+        <Icon
+          name="node-tree"
+          className={cn(iconSize, hasComparisonChanges ? 'text-status-warning' : 'text-muted-foreground/60')}
+        />
+      ) : null}
+      {hasAhead ? <SessionUpstreamAheadIndicator ahead={model.worktreeUpstreamAhead} variant={variant} /> : null}
+    </span>
+  );
+}
+
+export function SessionUpstreamAheadIndicator({
+  ahead,
+  variant,
+}: {
+  ahead: number | null;
+  variant: 'sidebar' | 'mobile';
+}): React.ReactNode {
+  const { t } = useI18n();
+  if (!ahead || ahead <= 0) return null;
+  const label = t('gitView.sync.pushTooltipAhead', { count: ahead });
+  return (
+    <span className="inline-flex shrink-0 items-center text-status-warning" role="img" aria-label={label} title={label}>
+      <Icon name="arrow-up" className={variant === 'mobile' ? 'size-3.5' : 'size-3'} />
     </span>
   );
 }

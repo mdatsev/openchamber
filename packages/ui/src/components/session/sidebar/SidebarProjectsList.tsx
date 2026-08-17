@@ -64,19 +64,35 @@ const ProjectWorktreeChangesIndicator = React.memo(function ProjectWorktreeChang
     const comparison = state.directories.get(directory)?.worktreeComparisonSummary;
     return Boolean(comparison?.available && (comparison.hasCommittedChanges || comparison.isDirty));
   }), [directories]));
-  if (!hasWorktreeChanges) return null;
+  const hasUnpushedCommits = useGitStore(React.useCallback((state) => directories.some((directory) => (
+    (state.directories.get(directory)?.status?.ahead ?? 0) > 0
+  )), [directories]));
+  if (!hasWorktreeChanges && !hasUnpushedCommits) return null;
 
-  const label = t('sessions.sidebar.project.status.worktreeChanges');
+  const changeLabel = t('sessions.sidebar.project.status.worktreeChanges');
+  const pushLabel = t('gitView.sync.pushTooltip');
   const indicator = (
-    <span className="inline-flex size-4 shrink-0 items-center justify-center text-status-warning" role="img" aria-label={label}>
-      <Icon name="node-tree" className="size-3.5" />
+    <span className="inline-flex shrink-0 items-center gap-1 text-status-warning">
+      {hasWorktreeChanges ? (
+        <span className="inline-flex size-4 items-center justify-center" role="img" aria-label={changeLabel}>
+          <Icon name="node-tree" className="size-3.5" />
+        </span>
+      ) : null}
+      {hasUnpushedCommits ? (
+        <span className="inline-flex size-4 items-center justify-center" role="img" aria-label={pushLabel}>
+          <Icon name="arrow-up" className="size-3.5" />
+        </span>
+      ) : null}
     </span>
   );
   if (!showTooltip) return indicator;
   return (
     <Tooltip>
       <TooltipTrigger asChild>{indicator}</TooltipTrigger>
-      <TooltipContent side="right" sideOffset={8}>{label}</TooltipContent>
+      <TooltipContent side="right" sideOffset={8}>
+        {hasWorktreeChanges ? <div>{changeLabel}</div> : null}
+        {hasUnpushedCommits ? <div>{pushLabel}</div> : null}
+      </TooltipContent>
     </Tooltip>
   );
 });
@@ -109,6 +125,7 @@ type Props = {
   hideDirectoryControls: boolean;
   projectRepoStatus: Map<string, boolean | null>;
   projectRootDirtyStatus: Map<string, boolean | null>;
+  projectRootAheadStatus: Map<string, number | null>;
   isDesktopShellRuntime: boolean;
   stickyZoneHeaders: boolean;
   stuckProjectHeaders: Set<string>;
@@ -229,6 +246,12 @@ function SidebarProjectsListComponent(props: Props): React.ReactNode {
   const leadingProjectHasRootChanges = leadingProject
     ? props.projectRootDirtyStatus.get(leadingProject.id) === true
     : false;
+  const leadingProjectHasRootAhead = leadingProject
+    ? (props.projectRootAheadStatus.get(leadingProject.id) ?? 0) > 0
+    : false;
+  const leadingProjectRootAhead = leadingProject
+    ? props.projectRootAheadStatus.get(leadingProject.id) ?? null
+    : null;
 
   if (props.sharedSessionsOnly) {
     return (
@@ -327,6 +350,7 @@ function SidebarProjectsListComponent(props: Props): React.ReactNode {
               const isCollapsed = props.collapsedProjects.has(projectKey);
               const isRepo = props.projectRepoStatus.get(projectKey);
               const rootHasChanges = props.projectRootDirtyStatus.get(projectKey) === true;
+              const rootUpstreamAhead = props.projectRootAheadStatus.get(projectKey) ?? null;
               const structuralGroups = structuralGroupsByProjectId.get(projectKey) ?? section.groups;
 
               return (
@@ -348,6 +372,7 @@ function SidebarProjectsListComponent(props: Props): React.ReactNode {
                   alwaysShowActions={props.alwaysShowActions}
                   statusIndicator={isCollapsed ? props.renderProjectStatusIndicator?.(projectKey, section.groups) : null}
                   rootHasChanges={rootHasChanges}
+                  rootUpstreamAhead={rootUpstreamAhead}
                   worktreeChangesIndicator={isCollapsed ? <ProjectWorktreeChangesIndicator groups={structuralGroups} /> : null}
                   onToggle={() => props.toggleProject(projectKey)}
                   onNewSession={() => {
@@ -445,6 +470,9 @@ function SidebarProjectsListComponent(props: Props): React.ReactNode {
               />
               {leadingProjectHasRootChanges ? (
                 <Icon name="git-repository" className="size-3.5 shrink-0 text-status-warning" />
+              ) : null}
+              {leadingProjectHasRootAhead ? (
+                <Icon name="arrow-up" className="size-3.5 shrink-0 text-status-warning" aria-label={t('gitView.sync.pushTooltipAhead', { count: leadingProjectRootAhead ?? 0 })} />
               ) : null}
               {leadingProjectSection && props.collapsedProjects.has(leadingProject.id) ? (
                 <ProjectWorktreeChangesIndicator groups={leadingProjectGroups} showTooltip={false} />

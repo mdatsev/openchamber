@@ -32,6 +32,8 @@ export type SessionRowIndicatorModel = {
   goal: SessionGoalPayload | null;
   worktreeDirectory: string | null;
   worktreeComparison: GitWorktreeComparison | null;
+  worktreeUpstreamAhead: number | null;
+  rootUpstreamAhead: number | null;
   rootDirectory: string | null;
   rootIsClean: boolean | null;
   prSummary: PrVisualSummary | null;
@@ -93,6 +95,12 @@ export function useSessionRowIndicatorModel({
   const candidateRootDirectory = !worktreeDirectory && normalizedDirectory && normalizedDirectory === normalizedProjectRoot
     ? normalizedDirectory
     : null;
+  const upstreamAhead = useGitStore((state) => {
+    const statusDirectory = worktreeDirectory ?? candidateRootDirectory;
+    return statusDirectory
+      ? state.directories.get(statusDirectory)?.status?.ahead ?? null
+      : null;
+  });
   const rootIsClean = useGitStore((state) => {
     if (!candidateRootDirectory) return null;
     const directoryState = state.directories.get(candidateRootDirectory);
@@ -148,6 +156,8 @@ export function useSessionRowIndicatorModel({
     goal: getSessionGoal(session),
     worktreeDirectory,
     worktreeComparison,
+    worktreeUpstreamAhead: worktreeDirectory ? upstreamAhead : null,
+    rootUpstreamAhead: candidateRootDirectory ? upstreamAhead : null,
     rootDirectory,
     rootIsClean,
     prSummary,

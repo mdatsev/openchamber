@@ -16,7 +16,7 @@ import { SessionPrefetchEffect } from './sidebar/hooks/useSessionPrefetch';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { getDeferredSafeStorage } from '@/stores/utils/safeStorage';
-import { useGitStore, useGitAllBranches, useGitCleanStatusMap, useGitRepoStatusMap } from '@/stores/useGitStore';
+import { useGitStore, useGitAllBranches, useGitCleanStatusMap, useGitRepoStatusMap, useGitUpstreamAheadStatusMap } from '@/stores/useGitStore';
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { NewWorktreeDialog } from './NewWorktreeDialog';
@@ -1154,6 +1154,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
   const githubAuthChecked = useGitHubAuthStore((state) => state.hasChecked);
   const gitRepoStatus = useGitRepoStatusMap(isVisible ? normalizedProjectPaths : EMPTY_STRING_ARRAY);
   const gitCleanStatus = useGitCleanStatusMap(isVisible ? normalizedProjectPaths : EMPTY_STRING_ARRAY);
+  const gitUpstreamAheadStatus = useGitUpstreamAheadStatusMap(isVisible ? normalizedProjectPaths : EMPTY_STRING_ARRAY);
   const projectRootDirtyStatus = React.useMemo(() => {
     const statusByProjectId = new Map<string, boolean | null>();
     for (const project of normalizedProjects) {
@@ -1162,6 +1163,14 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
     }
     return statusByProjectId;
   }, [gitCleanStatus, normalizedProjects]);
+  const projectRootAheadStatus = React.useMemo(() => {
+    const statusByProjectId = new Map<string, number | null>();
+    for (const project of normalizedProjects) {
+      const ahead = gitUpstreamAheadStatus.get(project.normalizedPath);
+      statusByProjectId.set(project.id, ahead ?? null);
+    }
+    return statusByProjectId;
+  }, [gitUpstreamAheadStatus, normalizedProjects]);
   const ensurePrStatusEntry = useGitHubPrStatusStore((state) => state.ensureEntry);
   const setPrStatusParams = useGitHubPrStatusStore((state) => state.setParams);
   const refreshPrStatusTargets = useGitHubPrStatusStore((state) => state.refreshTargets);
@@ -1381,22 +1390,32 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
       : EMPTY_STRING_ARRAY;
     const visibleWorktreeDirectorySet = new Set(worktreeDirectories);
     const projectDirectorySet = new Set(projectDirectories);
-    const { ensureWorktreeComparison, fetchWorktreeComparison, fetchStatus } = useGitStore.getState();
+    const { ensureWorktreeComparison, fetchWorktreeComparison, ensureStatus, fetchStatus } = useGitStore.getState();
     const refreshWorktreeComparison = (directory: string) => {
       if (!git.getWorktreeComparison || !visibleWorktreeDirectorySet.has(directory)) return;
       void fetchWorktreeComparison(directory, git, { mode: 'combined' });
     };
+    const refreshWorktreeStatus = (directory: string) => {
+      if (!visibleWorktreeDirectorySet.has(directory)) return;
+      void fetchStatus(directory, git, { silent: true });
+    };
     worktreeDirectories.forEach((directory) => {
-      if (!git.getWorktreeComparison) return;
-      void ensureWorktreeComparison(directory, git, { mode: 'combined' });
+      if (git.getWorktreeComparison) {
+        void ensureWorktreeComparison(directory, git, { mode: 'combined' });
+      }
+      void ensureStatus(directory, git);
     });
     return sessionEvents.onGitRefreshHint((hint) => {
       const directory = normalizePath(hint.directory);
       if (!directory) return;
       if (projectDirectorySet.has(directory)) {
         worktreeDirectories.forEach(refreshWorktreeComparison);
+        worktreeDirectories.forEach(refreshWorktreeStatus);
       } else {
         refreshWorktreeComparison(directory);
+        if (visibleWorktreeDirectorySet.has(directory)) {
+          refreshWorktreeStatus(directory);
+        }
       }
       if (projectDirectorySet.has(directory)) {
         void fetchStatus(directory, git, { silent: true });
@@ -2010,6 +2029,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
         hideDirectoryControls={hideDirectoryControls}
         projectRepoStatus={projectRepoStatus}
         projectRootDirtyStatus={projectRootDirtyStatus}
+        projectRootAheadStatus={projectRootAheadStatus}
         isDesktopShellRuntime={isDesktopShellRuntime}
         stickyZoneHeaders={stickyZoneHeaders}
         stuckProjectHeaders={stuckProjectHeaders}

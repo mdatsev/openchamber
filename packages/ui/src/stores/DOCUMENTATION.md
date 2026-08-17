@@ -140,7 +140,7 @@ Important properties:
 
 - `directories: Map<string, DirectoryGitState>` is the source of truth
 - loading state is per-directory, not global
-- `ensureStatus()`, `ensureAll()`, and `ensureWorktreeComparison()` are the preferred freshness-gated entry points for consumers
+- `ensureStatus()`, `ensureAll()`, and `ensureWorktreeComparison()` are the preferred freshness-gated entry points for consumers; sidebar ahead indicators read the authoritative tracked-branch `status.ahead` field only after the owning directory has been ensured
 - in-flight dedupe exists for status and `ensureAll()`
 - linked-worktree comparison requests dedupe by directory, summary/full-patch tier, explicit comparison mode, and context-line count; a mode or patch-context switch cannot reuse another request
 - failed comparison requests bypass freshness reuse; confirmed Git mutations cancel older in-flight comparison authority, invalidate related linked-worktree caches when their primary checkout changes, and clear comparison timestamps before the next read
