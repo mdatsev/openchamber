@@ -97,8 +97,6 @@ const pageOrder: SettingsPageSlug[] = [
   'voice',
   'usage',
   'about',
-  // 'fork' group — custom fork only
-  'fork',
   // 'projects' group — Workspace
   'projects',
   'remote-instances',
@@ -116,9 +114,11 @@ const pageOrder: SettingsPageSlug[] = [
   'snippets',
   'skills.installed',
   'skills.catalog',
+  // 'fork' group — custom fork only
+  'fork',
 ];
 
-const NAV_GROUP_ORDER = ['general', 'fork', 'projects', 'opencode', 'content'] as const;
+const NAV_GROUP_ORDER = ['general', 'projects', 'opencode', 'content', 'fork'] as const;
 
 const ADD_PROVIDER_SETTINGS_ID = '__add_provider__';
 
