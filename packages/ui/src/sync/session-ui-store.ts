@@ -122,7 +122,14 @@ export function expandSlashCommandGoalObjective(content: string, commands: GoalC
 // Send routing — shell mode, slash commands, or normal prompt
 // ---------------------------------------------------------------------------
 
-export function routeMessage(params: {
+export class ArchivedSessionRestoreError extends Error {
+  constructor() {
+    super("Failed to restore archived session before sending")
+    this.name = "ArchivedSessionRestoreError"
+  }
+}
+
+export async function routeMessage(params: {
   runtimeKey?: string
   sessionId: string
   directory?: string | null
@@ -138,6 +145,17 @@ export function routeMessage(params: {
   delivery?: 'steer'
 }): Promise<void> {
   const requestDirectory = params.directory ?? undefined
+  const targetSession = useGlobalSessionsStore.getState().getSessionById(params.sessionId)
+  if (targetSession?.time?.archived) {
+    const restored = await unarchiveSessionAction(params.sessionId, params.runtimeKey)
+    if (!restored) {
+      if (params.runtimeKey && params.runtimeKey !== getRuntimeKey()) {
+        throw new Error("Message was not sent because the runtime changed.")
+      }
+      throw new ArchivedSessionRestoreError()
+    }
+  }
+
   if (params.inputMode === "shell") {
     return opencodeClient.shellSession({
       runtimeKey: params.runtimeKey,
@@ -232,6 +250,12 @@ type SendMessageOptions = {
   target?: CapturedSendTarget
   sessionId?: string
   directory?: string
+  runtimeKey?: string
+  /** Immutable copy of the new-session draft at submit time; used instead of the live draft. */
+  draftSnapshot?: NewSessionDraftState
+  /** Live draft object that produced draftSnapshot; used only to reject stale UI side effects. */
+  draftSource?: NewSessionDraftState
+  onTargetResolved?: (target: SentMessageTarget) => void
   delivery?: 'steer'
 }
 
@@ -254,10 +278,9 @@ function notifyMessageSent(sessionId: string): void {
 // Types
 // ---------------------------------------------------------------------------
 
-export type { SyntheticContextPart } from "./input-store"
-export type { SessionMemoryState } from "./viewport-store"
-
 export type NewSessionDraftState = {
+  draftId?: string
+  draftRevision?: number
   open: boolean
   selectedProjectId?: string | null
   directoryOverride: string | null
@@ -346,7 +369,7 @@ export type SessionUIState = {
     variant?: string,
     inputMode?: "normal" | "shell",
     options?: SendMessageOptions,
-  ) => Promise<void>
+  ) => Promise<SentMessageTarget>
 
   createSession: (title?: string, directoryOverride?: string | null, parentID?: string | null, metadata?: Record<string, unknown>) => Promise<Session | null>
   deleteSession: (id: string, options?: DeleteSessionOptions) => Promise<boolean>
@@ -551,6 +574,9 @@ const DEFAULT_DRAFT: NewSessionDraftState = {
   parentID: null,
 }
 
+let nextDraftId = 0
+const createDraftId = (): string => `draft_${Date.now()}_${nextDraftId += 1}`
+
 const activeSessionByRuntime = new Map<string, string | null>()
 type RuntimeSessionMemory = {
   sessionId: string | null
@@ -587,6 +613,18 @@ type MaterializedDraftSession = {
   syntheticParts?: SyntheticContextPart[]
 }
 
+type SentMessageTarget = {
+  runtimeKey: string
+  sessionId: string
+  directory: string | null
+}
+
+type MaterializeDraftSessionOptions = {
+  runtimeKey?: string
+  draftSnapshot?: NewSessionDraftState
+  draftSource?: NewSessionDraftState
+}
+
 const resolveProjectRefForWorktreeDirectory = (directory: string | null, projectId?: string | null): { id: string; path: string } | null => {
   const projectsState = useProjectsStore.getState()
   if (projectId) {
@@ -605,15 +643,34 @@ const waitForWorktreeBootstrapIfConfigured = async (directory: string | null, pr
   }
 }
 
+const isActiveDraftSource = (source: NewSessionDraftState | null): boolean => {
+  if (!source) return false
+  const current = useSessionUIStore.getState().newSessionDraft
+  return current === source || (
+    source.draftId !== undefined
+    && current.draftId === source.draftId
+    && current.draftRevision === source.draftRevision
+  )
+}
+
 export async function materializeOpenDraftSession(selection: {
   providerID: string
   modelID: string
   agent?: string
   variant?: string
-}): Promise<MaterializedDraftSession | null> {
+}, options?: MaterializeDraftSessionOptions): Promise<MaterializedDraftSession | null> {
+  const expectedRuntimeKey = options?.runtimeKey ?? getRuntimeKey()
+  const assertRuntimeUnchanged = () => {
+    if (getRuntimeKey() !== expectedRuntimeKey) {
+      throw new Error("Session was not created because the runtime changed.")
+    }
+  }
+  assertRuntimeUnchanged()
   const store = useSessionUIStore.getState()
-  const draft = store.newSessionDraft
+  const draft = options?.draftSnapshot ?? store.newSessionDraft
+  let activeDraftSource = options?.draftSource ?? (options?.draftSnapshot ? null : draft)
   if (!draft?.open) return null
+  const configState = useConfigStore.getState()
   const draftPermissionAutoAcceptEnabled = draft.permissionAutoAcceptEnabled === true
 
   const trimmedAgent = typeof selection.agent === "string" && selection.agent.trim().length > 0
@@ -624,12 +681,24 @@ export async function materializeOpenDraftSession(selection: {
 
   if (draft.pendingWorktreeRequestId) {
     draftDirectoryOverride = await waitForPendingDraftWorktreeRequest(draft.pendingWorktreeRequestId)
-    store.resolvePendingDraftWorktreeTarget(draft.pendingWorktreeRequestId, draftDirectoryOverride)
+    assertRuntimeUnchanged()
+    if (isActiveDraftSource(activeDraftSource)) {
+      store.resolvePendingDraftWorktreeTarget(draft.pendingWorktreeRequestId, draftDirectoryOverride)
+      activeDraftSource = useSessionUIStore.getState().newSessionDraft
+    }
   }
 
   await waitForWorktreeBootstrapIfConfigured(draftDirectoryOverride, draftProjectId)
+  assertRuntimeUnchanged()
 
-  const created = await store.createSession(draft.title, draftDirectoryOverride, draft.parentID ?? null)
+  const created = await createSessionAction(
+    draft.title,
+    draftDirectoryOverride,
+    draft.parentID ?? null,
+    undefined,
+    { expectedRuntimeKey, select: false },
+  )
+  assertRuntimeUnchanged()
   if (!created?.id) throw new Error("Failed to create session")
 
   // The server response is authoritative. It may canonicalize a requested
@@ -638,17 +707,12 @@ export async function materializeOpenDraftSession(selection: {
   // directory scope than the session that was just created.
   const createdDirectory = normalizePath(created.directory ?? draftDirectoryOverride ?? null)
 
-  persistDraftTarget({
-    projectId: draftProjectId,
-    directory: createdDirectory,
-  })
+  const folderScope = draftDirectoryOverride ?? createdDirectory
+  if (draft.targetFolderId && folderScope) {
+    useSessionFoldersStore.getState().addSessionToFolder(folderScope, draft.targetFolderId, created.id)
+  }
 
   const draftSyntheticParts = draft.syntheticParts
-  const configState = useConfigStore.getState()
-  void activateConfigForDirectory(createdDirectory).catch((error) => {
-    console.warn("Failed to activate directory after creating session:", error)
-  })
-
   const effectiveDraftAgent = trimmedAgent ?? configState.currentAgentName
 
   useSelectionStore.getState().saveSessionModelSelection(created.id, selection.providerID, selection.modelID)
@@ -661,11 +725,23 @@ export async function materializeOpenDraftSession(selection: {
 
   store.initializeNewOpenChamberSession(created.id, configState.agents ?? [])
 
-  store.setCurrentSession(created.id, createdDirectory)
+  if (isActiveDraftSource(activeDraftSource)) {
+    persistDraftTarget({
+      projectId: draftProjectId,
+      directory: createdDirectory,
+    })
+    void activateConfigForDirectory(createdDirectory).catch((error) => {
+      console.warn("Failed to activate directory after creating session:", error)
+    })
+    store.setCurrentSession(created.id, createdDirectory)
+  }
 
   if (draftPermissionAutoAcceptEnabled) {
     void import("@/stores/permissionStore")
-      .then(({ usePermissionStore }) => usePermissionStore.getState().setSessionAutoAccept(created.id, true))
+      .then(({ usePermissionStore }) => {
+        if (getRuntimeKey() !== expectedRuntimeKey) return
+        return usePermissionStore.getState().setSessionAutoAccept(created.id, true)
+      })
       .catch((error) => {
         console.warn("Failed to apply draft permission auto-accept to new session:", error)
       })
@@ -928,6 +1004,8 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     persistDraftTarget({ projectId: selectedProject?.id ?? null, directory })
 
     const nextDraft: NewSessionDraftState = {
+      draftId: createDraftId(),
+      draftRevision: 0,
       open: true,
       selectedProjectId: selectedProject?.id ?? null,
       directoryOverride: directory,
@@ -1026,6 +1104,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       return {
         newSessionDraft: {
           ...s.newSessionDraft,
+          draftRevision: (s.newSessionDraft.draftRevision ?? 0) + 1,
           selectedProjectId: target.projectId ?? target.selectedProjectId ?? s.newSessionDraft.selectedProjectId,
           directoryOverride: target.directoryOverride ?? s.newSessionDraft.directoryOverride,
         },
@@ -1041,13 +1120,24 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
   setDraftPreserveDirectoryOverride: (value) =>
     set((s) => {
       if (!s.newSessionDraft?.open) return s
-      return { newSessionDraft: { ...s.newSessionDraft, preserveDirectoryOverride: value } }
+      return {
+        newSessionDraft: {
+          ...s.newSessionDraft,
+          preserveDirectoryOverride: value,
+        },
+      }
     }),
 
   setDraftPermissionAutoAcceptEnabled: (enabled) =>
     set((s) => {
       if (!s.newSessionDraft?.open) return s
-      return { newSessionDraft: { ...s.newSessionDraft, permissionAutoAcceptEnabled: enabled } }
+      return {
+        newSessionDraft: {
+          ...s.newSessionDraft,
+          draftRevision: (s.newSessionDraft.draftRevision ?? 0) + 1,
+          permissionAutoAcceptEnabled: enabled,
+        },
+      }
     }),
 
   acknowledgeSessionAbort: (sessionId) =>
@@ -1224,7 +1314,8 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     options?: SendMessageOptions,
   ) => {
     const capturedTarget = options?.target
-    if (capturedTarget && capturedTarget.runtimeKey !== getRuntimeKey()) {
+    const expectedRuntimeKey = capturedTarget?.runtimeKey ?? options?.runtimeKey ?? getRuntimeKey()
+    if (expectedRuntimeKey !== getRuntimeKey()) {
       throw new Error("Message was not sent because the runtime changed.")
     }
 
@@ -1236,7 +1327,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       set({ pendingChangesBarDismissed: map });
     }
 
-    const draft = get().newSessionDraft
+    const draft = options?.draftSnapshot ?? get().newSessionDraft
     const trimmedAgent = typeof agent === "string" && agent.trim().length > 0 ? agent.trim() : undefined
 
     const goalArm = inputMode !== "shell" && content.trim().length > 0
@@ -1280,9 +1371,11 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
         }
       }
       try {
-        await setSessionGoal(goalSessionId, goalDirectory ?? undefined, { objective, tokenBudget }, null)
+        await setSessionGoal(goalSessionId, goalDirectory ?? undefined, { objective, tokenBudget }, null, expectedRuntimeKey)
       } catch (error) {
-        useSessionGoalArmStore.getState().setArmed(true, goalArm.objectiveOverride)
+        if (getRuntimeKey() === expectedRuntimeKey) {
+          useSessionGoalArmStore.getState().setArmed(true, goalArm.objectiveOverride)
+        }
         throw error
       }
     }
@@ -1294,8 +1387,18 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
         modelID,
         agent: trimmedAgent,
         variant,
+      }, {
+        runtimeKey: expectedRuntimeKey,
+        draftSnapshot: options?.draftSnapshot,
+        draftSource: options?.draftSource,
       })
       if (!createdDraftSession) throw new Error("Failed to create session")
+      const sendTarget = {
+        runtimeKey: expectedRuntimeKey,
+        sessionId: createdDraftSession.sessionId,
+        directory: createdDraftSession.directory,
+      }
+      options?.onTargetResolved?.(sendTarget)
 
       const mergedAdditionalParts = createdDraftSession.syntheticParts?.length
         ? [...(additionalParts || []), ...createdDraftSession.syntheticParts]
@@ -1314,8 +1417,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
 
       await applyArmedGoal(createdDraftSession.sessionId, createdDraftSession.directory)
       await routeMessage({
-        sessionId: createdDraftSession.sessionId,
-        directory: createdDraftSession.directory,
+        ...sendTarget,
         content,
         providerID,
         modelID,
@@ -1336,7 +1438,10 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
           })),
         })),
       })
-      return
+      if (getRuntimeKey() !== expectedRuntimeKey) {
+        throw new Error("Message send stopped because runtime changed.")
+      }
+      return sendTarget
     }
 
     // ---- Existing session ----
@@ -1377,6 +1482,12 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     const currentSessionDirectory = targetSessionId
       ? normalizePath(capturedTarget?.directory ?? options?.directory ?? get().getDirectoryForSession(targetSessionId))
       : null
+    const sendTarget = {
+      runtimeKey: expectedRuntimeKey,
+      sessionId: targetSessionId || "",
+      directory: currentSessionDirectory,
+    }
+    options?.onTargetResolved?.(sendTarget)
     if (targetSessionId) {
       notifyMessageSent(targetSessionId)
     }
@@ -1396,9 +1507,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       await applyArmedGoal(targetSessionId, currentSessionDirectory)
     }
     await routeMessage({
-      runtimeKey: capturedTarget?.runtimeKey,
-      sessionId: targetSessionId || "",
-      directory: currentSessionDirectory,
+      ...sendTarget,
       content,
       providerID,
       modelID,
@@ -1419,6 +1528,10 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
         })),
       })),
     })
+    if (getRuntimeKey() !== expectedRuntimeKey) {
+      throw new Error("Message send stopped because runtime changed.")
+    }
+    return sendTarget
   },
 
   // ---------------------------------------------------------------------------
@@ -1503,9 +1616,8 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     const revertToId = currentSession?.revert?.messageID
     let targetMessage: typeof messages[number] | undefined
     if (revertToId) {
-      const revertMessageIndex = messages.findIndex((message) => message.id === revertToId)
-      if (revertMessageIndex < 0) return
-      targetMessage = messages.slice(0, revertMessageIndex).reverse().find((message) => message.role === "user")
+      const revertIndex = userMessages.findIndex((message) => message.id === revertToId)
+      targetMessage = revertIndex > 0 ? userMessages[revertIndex - 1] : undefined
     } else {
       targetMessage = userMessages[userMessages.length - 1]
     }
@@ -1551,9 +1663,9 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
 
     await refetchSessionMessages(sessionId)
     const messages = getSyncMessages(sessionId)
-    const revertMessageIndex = messages.findIndex((message) => message.id === revertToId)
-    if (revertMessageIndex < 0) return
-    const targetMessage = messages.slice(revertMessageIndex + 1).find((message) => message.role === "user")
+    const userMessages = messages.filter((m) => m.role === "user")
+    const revertIndex = userMessages.findIndex((message) => message.id === revertToId)
+    const targetMessage = revertIndex >= 0 ? userMessages[revertIndex + 1] : undefined
 
     if (targetMessage) {
       await get().revertToMessage(sessionId, targetMessage.id, { skipRedoPush: true })

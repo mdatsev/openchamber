@@ -1203,28 +1203,14 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
                   {groupActivityIndicator}
                 </span>
               ) : (!group.isMain || group.worktree) ? (
-                // Worktree sub-header in the flat visual language: slim
-                // folder-style row with a PR-tinted branch icon and PR badge.
+                // Worktree sub-header: structural controls lead, while changed
+                // checkout and linked PR state follow the worktree label.
                 <span className="flex w-full min-w-0 items-center gap-1.5">
-                  <span className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center">
-                    <Icon name={compactEmptyWorktreeGroup ? 'node-tree' : 'git-branch'}
-                      className={cn(
-                        'h-3.5 w-3.5 shrink-0',
-                        !groupPrColor && 'text-muted-foreground',
-                        isGroupCollapsible
-                          && (alwaysShowActions ? 'hidden' : 'group-hover/gh:hidden group-focus-within/gh:hidden'),
-                      )}
-                      style={groupPrColor ? { color: groupPrColor } : undefined}
-                    />
-                    {isGroupCollapsible ? (
-                      <span className={cn(
-                        'text-muted-foreground h-3.5 w-3.5 items-center justify-center',
-                        alwaysShowActions ? 'inline-flex' : 'hidden group-hover/gh:inline-flex group-focus-within/gh:inline-flex',
-                      )}>
-                        {isCollapsed ? <Icon name="arrow-right-s" className="h-3.5 w-3.5" /> : <Icon name="arrow-down-s" className="h-3.5 w-3.5" />}
-                      </span>
-                    ) : null}
-                  </span>
+                  {isGroupCollapsible ? (
+                    <span className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center text-muted-foreground">
+                      {isCollapsed ? <Icon name="arrow-right-s" className="h-3.5 w-3.5" /> : <Icon name="arrow-down-s" className="h-3.5 w-3.5" />}
+                    </span>
+                  ) : null}
                   <span className="min-w-0 truncate typography-ui-label font-semibold text-muted-foreground">
                     {renderHighlightedText(group.label, normalizedSessionSearchQuery)}
                   </span>
@@ -1244,9 +1230,12 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
                   {groupActivityIndicator}
                   {groupPrSummary ? (
                     <span
-                      className="ml-auto flex-shrink-0 text-[0.72rem] font-medium leading-none"
+                      className="ml-auto inline-flex flex-shrink-0 items-center gap-1 text-[0.72rem] font-medium leading-none"
                       style={groupPrColor ? { color: groupPrColor } : undefined}
+                      role="img"
+                      aria-label={`#${groupPrSummary.number}`}
                     >
+                      <Icon name="git-pull-request" className="size-3.5" />
                       #{groupPrSummary.number}
                     </span>
                   ) : null}
@@ -1259,12 +1248,7 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
               )}
             </p>
             {showBranchSubtitle && statusLine ? (
-              <span className="inline-flex min-w-0 items-center gap-1.5 leading-tight">
-                {group.isArchivedBucket ? (
-                  <Icon name="archive" className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
-                ) : (
-                  <Icon name="git-branch" className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
-                )}
+              <span className="inline-flex min-w-0 items-center leading-tight">
                 <span className="min-w-0 truncate text-[11px] font-medium text-muted-foreground/80">
                   {statusLine.label}
                 </span>

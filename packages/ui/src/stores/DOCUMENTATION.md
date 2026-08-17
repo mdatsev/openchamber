@@ -202,7 +202,6 @@ Good:
 - `useGitRepoStatusMap(directories)`
 - `useWorktreeComparisonSummary(directory)`
 - `useWorktreeComparisonFull(directory)`
-- `usePrVisualSummaryByKeys(keys)`
 
 Bad:
 

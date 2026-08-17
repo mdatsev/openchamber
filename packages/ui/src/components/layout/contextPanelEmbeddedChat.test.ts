@@ -7,6 +7,7 @@ import {
   EMBEDDED_RUNTIME_BOOTSTRAP_RESPONSE,
   focusEmbeddedSessionChatComposer,
   getOrCreateEmbeddedSessionChatURL,
+  getActiveEmbeddedSessionChatTab,
   getEmbeddedSessionChatOriginSessionId,
   isEmbeddedSessionChat,
   requestEmbeddedSessionRuntimeBootstrap,
@@ -133,6 +134,17 @@ describe('embedded session chat URL', () => {
     expect(new URL(second).searchParams.get('themeVariant')).toBe('dark');
   });
 
+  test('bootstraps subagent prompting before the embedded chat first renders', () => {
+    const src = buildEmbeddedSessionChatURL('ses_1', '/repo', false, {
+      mode: 'system',
+      lightThemeId: 'light-a',
+      darkThemeId: 'dark-a',
+      currentTheme: makeTheme('dark-a', 'dark'),
+    }, { allowPromptingSubagentSessions: true });
+
+    expect(new URL(src).searchParams.get('allowPromptingSubagentSessions')).toBe('1');
+  });
+
   test('rebuilds cached src when readOnly changes for an existing tab', () => {
     const cache = new Map<string, EmbeddedSessionChatURLCacheEntry>();
     const theme = {
@@ -148,6 +160,22 @@ describe('embedded session chat URL', () => {
     expect(readOnly).not.toBe(writable);
     expect(new URL(writable).searchParams.get('readOnly')).toBeNull();
     expect(new URL(readOnly).searchParams.get('readOnly')).toBe('1');
+  });
+});
+
+describe('active embedded session chat', () => {
+  const tabs = Array.from({ length: 8 }, (_, index) => ({
+    id: `chat-${index + 1}`,
+    sessionID: `ses_${index + 1}`,
+  }));
+
+  test('selects one tab from persisted chat tabs', () => {
+    expect(getActiveEmbeddedSessionChatTab(tabs, 'chat-5')).toEqual(tabs[4]);
+  });
+
+  test('selects no tab when a chat is not active', () => {
+    expect(getActiveEmbeddedSessionChatTab(tabs, null)).toBeNull();
+    expect(getActiveEmbeddedSessionChatTab(tabs, 'missing-chat')).toBeNull();
   });
 });
 

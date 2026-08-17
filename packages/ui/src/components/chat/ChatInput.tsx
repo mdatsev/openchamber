@@ -5,7 +5,7 @@ import { useConfigStore } from '@/stores/useConfigStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { createMessageQueueTarget, getMessageQueueKey, useMessageQueueStore, type QueuedMessage } from '@/stores/messageQueueStore';
 import { useAutoReviewStore } from '@/stores/useAutoReviewStore';
-import { useSessionUIStore } from '@/sync/session-ui-store';
+import { ArchivedSessionRestoreError, useSessionUIStore } from '@/sync/session-ui-store';
 import { useSelectionStore } from '@/sync/selection-store';
 import { useInputStore } from '@/sync/input-store';
 import {
@@ -224,6 +224,7 @@ const MemoStatusRow = React.memo(StatusRow);
 interface ChatInputProps {
     onOpenSettings?: () => void;
     scrollToBottom?: () => void;
+    active?: boolean;
 }
 
 const resolveChatDraftIdentity = (sessionId: string | null): ChatDraftIdentity | null => {
@@ -237,7 +238,7 @@ const resolveChatDraftIdentity = (sessionId: string | null): ChatDraftIdentity |
     return createChatDraftIdentity(getRuntimeKey(), directory, sessionId);
 };
 
-const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollToBottom }) => {
+const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollToBottom, active = true }) => {
     const { t } = useI18n();
     // Track if we restored a draft on mount (for text selection)
     const initialDraftRef = React.useRef<string | null>(null);
@@ -286,6 +287,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
     const suppressNextFileDropTextInsertTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
     const suppressNextFileMentionPasteRef = React.useRef(false);
     const suppressNextFileMentionPasteTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+    const shellTriggerNormalizationRef = React.useRef(false);
     const pendingDroppedAbsolutePathsRef = React.useRef<string[]>([]);
     const canAcceptDropRef = React.useRef(false);
     const mentionRef = React.useRef<FileMentionHandle>(null);
@@ -298,10 +300,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
     const pendingPastedAttachmentFilenamesRef = React.useRef<Set<string>>(new Set());
 
     // TODO: port sendMessage to session-actions (complex — creates sessions, handles attachments, etc.)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const sendMessage = React.useRef((...args: any[]) =>
-        Promise.resolve((useSessionUIStore.getState().sendMessage as (...a: unknown[]) => unknown)(...args)),
-    ).current;
+    const sendMessage = React.useRef(useSessionUIStore.getState().sendMessage).current;
     const currentSessionId = useSessionUIStore((s) => s.currentSessionId);
     const fallbackDirectory = useDirectoryStore((s) => s.currentDirectory);
     const currentDirectory = useEffectiveDirectory() ?? fallbackDirectory;
@@ -972,7 +971,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
 
     const getSubmitErrorMessage = (error: unknown, fallback: string) => {
         const message = error instanceof Error ? error.message : '';
-        return message.toLowerCase().includes('runtime changed')
+        return error instanceof ArchivedSessionRestoreError || message.toLowerCase().includes('runtime changed')
             ? t('chat.chatInput.toast.messageSendFailed')
             : message || fallback;
     };
@@ -982,6 +981,28 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         const queuedMessageId = options?.queuedMessageId;
         const delivery = options?.delivery === 'steer' && sessionPhase !== 'idle' ? 'steer' : undefined;
         const capturedTarget = messageQueueTarget;
+        // Snapshot the draft and current-session identity before the first
+        // async gap so a later sidebar selection cannot reroute the send.
+        const capturedDraftSource = newSessionDraftOpen ? newSessionDraft : null;
+        const capturedDraftSnapshot = capturedDraftSource ? { ...capturedDraftSource } : null;
+        const capturedRuntimeKey = getRuntimeKey();
+        let resolvedSendTarget: {
+            runtimeKey: string;
+            sessionId: string;
+            directory: string | null;
+        } | null = capturedTarget;
+        const isSubmitTargetCurrent = () => {
+            if (getRuntimeKey() !== capturedRuntimeKey) return false;
+            const sessionState = useSessionUIStore.getState();
+            if (resolvedSendTarget) return sessionState.currentSessionId === resolvedSendTarget.sessionId;
+            if (!capturedDraftSource) return false;
+            const currentDraft = sessionState.newSessionDraft;
+            return currentDraft === capturedDraftSource || (
+                capturedDraftSource.draftId !== undefined
+                && currentDraft.draftId === capturedDraftSource.draftId
+                && currentDraft.draftRevision === capturedDraftSource.draftRevision
+            );
+        };
         const inputSnapshot = options?.presetText != null
             ? {
                 message: options.presetText,
@@ -1081,9 +1102,27 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
             }
         }
 
-        const sendMessageOptions = capturedTarget
-            ? { target: capturedTarget, ...(delivery ? { delivery } : {}) }
-            : delivery ? { delivery } : undefined;
+        const sendMessageOptions: {
+            target?: NonNullable<typeof capturedTarget>;
+            runtimeKey?: string;
+            draftSnapshot?: NonNullable<typeof capturedDraftSnapshot>;
+            draftSource?: NonNullable<typeof capturedDraftSource>;
+            onTargetResolved?: (target: NonNullable<typeof resolvedSendTarget>) => void;
+            delivery?: 'steer';
+        } | undefined = (capturedTarget || capturedDraftSnapshot || delivery)
+            ? {
+                ...(capturedTarget ? { target: capturedTarget } : {}),
+                onTargetResolved: (target) => {
+                    resolvedSendTarget = target;
+                },
+                ...(capturedDraftSource && capturedDraftSnapshot ? {
+                    runtimeKey: capturedRuntimeKey,
+                    draftSnapshot: capturedDraftSnapshot,
+                    draftSource: capturedDraftSource,
+                } : {}),
+                ...(delivery ? { delivery } : {}),
+            }
+            : undefined;
 
         // Inline review comments and synthetic context are consumed before
         // assembly so a failed send can restore exactly what it took.
@@ -1274,7 +1313,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
             });
         }
 
-        void sendPromise.then(() => {
+        void sendPromise.then((sentTarget) => {
             // Record what this session was pointed at, so the work-status panel
             // can show it as a context source long after the message scrolled
             // away. A snapshot only — never re-fetched, never authoritative.
@@ -1285,18 +1324,8 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                 : linkedPr
                     ? { attachment: linkedPr, kind: 'pull' as const }
                     : null;
-            // On a draft there is no session yet in this closure: the send path
-            // creates one and makes it current before resolving, so the id is
-            // read from the store. The fallback is used only when the closure
-            // had no session at all, so a mid-send session switch cannot
-            // redirect the write to an unrelated session.
-            const sessionState = useSessionUIStore.getState();
-            const linkTargetSessionId = currentSessionId ?? sessionState.currentSessionId;
-            const linkTargetDirectory = currentSessionId
-                ? currentSessionDirectoryForSync ?? currentDirectory
-                : sessionState.currentSessionDirectory
-                    ?? (linkTargetSessionId ? sessionState.getDirectoryForSession(linkTargetSessionId) : null)
-                    ?? currentDirectory;
+            const linkTargetSessionId = sentTarget.sessionId;
+            const linkTargetDirectory = sentTarget.directory;
 
             if (attachedThread && linkTargetSessionId) {
                 void sessionActions.setLinkedIssue(
@@ -1311,15 +1340,18 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                         linkedAt: Date.now(),
                     }),
                     true,
+                    sentTarget.runtimeKey,
                 ).catch(() => undefined);
             }
 
             // Clear linked issue after successful message send
-            if (linkedIssue) {
-                setLinkedIssue(null);
+            const sentTargetIsCurrent = getRuntimeKey() === sentTarget.runtimeKey
+                && useSessionUIStore.getState().currentSessionId === sentTarget.sessionId;
+            if (linkedIssue && sentTargetIsCurrent) {
+                setLinkedIssue((current) => current === linkedIssue ? null : current);
             }
-            if (linkedPr) {
-                setLinkedPr(null);
+            if (linkedPr && sentTargetIsCurrent) {
+                setLinkedPr((current) => current === linkedPr ? null : current);
             }
         }).catch((error: unknown) => {
             const rawMessage =
@@ -1334,10 +1366,23 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
             restoreConsumedDrafts();
 
             const currentInput = composerRef.current?.getValue() ?? messageRef.current;
-            if (newSessionDraftOpen && inputSnapshot.message && (!currentInput || currentInput === inputSnapshot.message)) {
+            if (isSubmitTargetCurrent() && newSessionDraftOpen && inputSnapshot.message && (!currentInput || currentInput === inputSnapshot.message)) {
                 setMessage(inputSnapshot.message);
-                writeChatDraft(chatDraftIdentity, inputSnapshot.message, confirmedMentionsRef.current);
+                const recoveryDraftIdentity = resolvedSendTarget
+                    ? createChatDraftIdentity(
+                        resolvedSendTarget.runtimeKey,
+                        resolvedSendTarget.directory,
+                        resolvedSendTarget.sessionId,
+                    )
+                    : chatDraftIdentity;
+                writeChatDraft(recoveryDraftIdentity, inputSnapshot.message, confirmedMentionsRef.current);
             }
+
+            const restoreAttachments = (): boolean => {
+                if (!isSubmitTargetCurrent() || allAttachments.length === 0) return false;
+                useInputStore.getState().setAttachedFiles(allAttachments);
+                return true;
+            };
 
             const isSoftNetworkError =
                 normalized.includes('timeout') ||
@@ -1352,31 +1397,24 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
 
             if (normalized.includes('payload too large') || normalized.includes('413') || normalized.includes('entity too large')) {
                 toast.error(t('chat.chatInput.toast.attachmentsTooLarge'));
-                if (allAttachments.length > 0) {
-                    useInputStore.getState().setAttachedFiles(allAttachments);
-                }
+                restoreAttachments();
                 return;
             }
 
             if (isSoftNetworkError) {
-                if (allAttachments.length > 0) {
-                    useInputStore.getState().setAttachedFiles(allAttachments);
+                if (restoreAttachments()) {
                     toast.error(t('chat.chatInput.toast.sendAttachmentsFailed'));
                 }
                 return;
             }
 
-            if (normalized.includes('runtime changed')) {
-                if (allAttachments.length > 0) {
-                    useInputStore.getState().setAttachedFiles(allAttachments);
-                }
+            if (error instanceof ArchivedSessionRestoreError || normalized.includes('runtime changed')) {
+                restoreAttachments();
                 toast.error(t('chat.chatInput.toast.messageSendFailed'));
                 return;
             }
 
-            if (allAttachments.length > 0) {
-                useInputStore.getState().setAttachedFiles(allAttachments);
-            }
+            restoreAttachments();
             toast.error(rawMessage || t('chat.chatInput.toast.messageSendFailed'));
         });
 
@@ -1455,6 +1493,19 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         // Early return during IME composition to prevent interference with autocomplete.
         // Uses keyCode === 229 fallback for WebKit where compositionend fires before keydown.
         if (isIMECompositionEvent(e)) return;
+
+        // Enter shell mode before CodeMirror inserts the trigger. Keeping the
+        // document unchanged also keeps the caret at the start for the first
+        // command character.
+        if (inputMode === 'normal' && e.key === '!') {
+            const selection = composerRef.current?.getSelection();
+            if (selection?.start === 0 && selection.end === 0) {
+                e.preventDefault();
+                setInputMode('shell');
+                closeAutocomplete();
+                return;
+            }
+        }
 
         if (inputMode === 'shell' && e.key === 'Escape') {
             e.preventDefault();
@@ -1767,6 +1818,12 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
     }, []);
 
     const handleComposerChange = ({ value, selection, fromPaste, insertedText }: ComposerChange) => {
+        if (shellTriggerNormalizationRef.current) {
+            shellTriggerNormalizationRef.current = false;
+            setMessage(value);
+            return;
+        }
+
         // VS Code drops the dragged path as text as well as firing the drop
         // handler; swallow that duplicate insertion.
         if (isVSCodeRuntime() && suppressNextFileDropTextInsertRef.current) {
@@ -1785,13 +1842,21 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         const inputSource: FileMentionAutocompleteInputSource = isPasteInput ? 'paste' : 'manual';
 
         // A leading `!` switches the composer into shell mode and is consumed.
+        // Mobile keyboards and paste may update the document without a usable
+        // keydown, so consume the trigger in the same editor transaction rather
+        // than moving the caret in a later frame against stale text.
         if (inputMode === 'normal' && value.startsWith('!')) {
             const shellCommand = value.slice(1);
             const nextCursor = Math.max(0, selection.start - 1);
             setInputMode('shell');
-            setMessage(shellCommand);
             closeAutocomplete();
-            requestAnimationFrame(() => composerRef.current?.setSelection(nextCursor));
+            const editor = composerRef.current;
+            if (editor) {
+                shellTriggerNormalizationRef.current = true;
+                editor.replaceRange(0, 1, '', nextCursor);
+            } else {
+                setMessage(shellCommand);
+            }
             return;
         }
 
@@ -2062,10 +2127,10 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
 
     React.useEffect(() => {
 
-        if (currentSessionId && composerRef.current && !isMobile) {
+        if (active && currentSessionId && composerRef.current && !isMobile) {
             composerRef.current.focus();
         }
-    }, [currentSessionId, isMobile]);
+    }, [active, currentSessionId, isMobile]);
 
     React.useEffect(() => {
         if (!isMobile) {

@@ -90,12 +90,16 @@ export function useSessionRowIndicatorModel({
   const worktreeComparison = useResolvedWorktreeComparisonSummary(worktreeDirectory);
   const normalizedDirectory = normalizePath(directory);
   const normalizedProjectRoot = normalizePath(projectRootDirectory);
-  const rootDirectory = !worktreeDirectory && normalizedDirectory && normalizedDirectory === normalizedProjectRoot
+  const candidateRootDirectory = !worktreeDirectory && normalizedDirectory && normalizedDirectory === normalizedProjectRoot
     ? normalizedDirectory
     : null;
-  const rootIsClean = useGitStore((state) => (
-    rootDirectory ? state.directories.get(rootDirectory)?.status?.isClean ?? null : null
-  ));
+  const rootIsClean = useGitStore((state) => {
+    if (!candidateRootDirectory) return null;
+    const directoryState = state.directories.get(candidateRootDirectory);
+    if (directoryState?.isGitRepo !== true || directoryState.status?.isClean === undefined) return null;
+    return directoryState.status.isClean;
+  });
+  const rootDirectory = rootIsClean === null ? null : candidateRootDirectory;
   const prLookupKey = React.useMemo(() => {
     const normalizedBranch = branch?.trim();
     return worktreeDirectory && normalizedBranch

@@ -4,7 +4,6 @@ import { useI18n } from '@/lib/i18n';
 import type { SessionGoalPayload } from '@/lib/sessionGoalMetadata';
 import { sessionGoalStatusColor, sessionGoalStatusLabelKey } from '@/lib/sessionGoalPresentation';
 import { cn } from '@/lib/utils';
-import type { SortableDragHandleProps } from './sortableItems';
 import type { SessionLeadingIndicator, SessionRowIndicatorModel } from './useSessionRowIndicatorModel';
 
 export function SessionLeadingIndicatorGlyph({
@@ -67,81 +66,50 @@ export function SessionLeadingIndicatorGlyph({
 export function SessionCheckoutIndicators({
   model,
   variant,
-  dragHandleProps,
 }: {
   model: SessionRowIndicatorModel;
   variant: 'sidebar' | 'mobile';
-  dragHandleProps?: SortableDragHandleProps | null;
 }): React.ReactNode {
   const { t } = useI18n();
   const iconSize = variant === 'mobile' ? 'size-3.5' : 'size-3';
   if (model.rootDirectory) {
-    const stateLabel = model.rootIsClean === true
+    const isClean = model.rootIsClean === true;
+    const stateLabel = isClean
       ? t('gitView.empty.cleanTitle')
-      : model.rootIsClean === false
-        ? t('sessions.sidebar.project.status.uncommittedChanges')
-        : null;
+      : t('sessions.sidebar.project.status.uncommittedChanges');
     return (
-      <span className="inline-flex shrink-0 items-center gap-1">
-        <span className="inline-flex" role="img" aria-label={t('sessions.sidebar.grouping.projectRoot')}>
-          <Icon name="git-repository" className={cn(iconSize, 'text-muted-foreground/60')} />
-        </span>
-        {stateLabel ? (
-          <span
-            className={cn(
-              'inline-flex',
-              model.rootIsClean ? 'text-status-success' : 'text-status-warning',
-            )}
-            role="img"
-            aria-label={stateLabel}
-          >
-            <Icon name={model.rootIsClean ? 'check' : 'file-edit'} className={iconSize} />
-          </span>
-        ) : null}
+      <span
+        className={cn('inline-flex shrink-0', isClean ? 'text-muted-foreground/60' : 'text-status-warning')}
+        role="img"
+        aria-label={`${t('sessions.sidebar.grouping.projectRoot')} · ${stateLabel}`}
+      >
+        <Icon name="git-repository" className={iconSize} />
       </span>
     );
   }
   if (!model.worktreeDirectory) return null;
   const comparison = model.worktreeComparison;
-  const hasComparisonChanges = Boolean(
-    comparison?.available && (comparison.hasCommittedChanges || comparison.isDirty),
-  );
-  const comparisonLabel = comparison?.available
-    ? hasComparisonChanges
-      ? t('sessions.sidebar.worktreeChanges', {
-          branch: comparison.baseBranch ?? '',
-          count: comparison.fileCount,
-        })
-      : t('sessions.sidebar.session.status.worktreeClean', {
-          branch: comparison.baseBranch ?? '',
-        })
-    : null;
+  if (!comparison?.available) return null;
+  const hasComparisonChanges = comparison.hasCommittedChanges || comparison.isDirty;
+  const comparisonLabel = hasComparisonChanges
+    ? t('sessions.sidebar.worktreeChanges', {
+        branch: comparison.baseBranch ?? '',
+        count: comparison.fileCount,
+      })
+    : t('sessions.sidebar.session.status.worktreeClean', {
+        branch: comparison.baseBranch ?? '',
+      });
 
   return (
     <span
-      ref={dragHandleProps?.setActivatorNodeRef}
-      data-worktree-drag-handle={dragHandleProps ? 'true' : undefined}
-      className={cn(
-        'inline-flex shrink-0 items-center gap-1',
-        dragHandleProps && 'cursor-grab active:cursor-grabbing',
-      )}
-      {...(dragHandleProps?.listeners ?? {})}
+      className="inline-flex shrink-0"
+      role="img"
+      aria-label={`${t('sessions.sidebar.session.status.linkedWorktree')} · ${comparisonLabel}`}
     >
-      <span className="inline-flex" role="img" aria-label={t('sessions.sidebar.session.status.linkedWorktree')}>
-        <Icon name="node-tree" className={cn(iconSize, 'text-muted-foreground/60')} />
-      </span>
-      {comparison?.available && comparisonLabel ? (
-        <span
-          className={cn(
-            'inline-flex',
-            hasComparisonChanges ? 'text-status-warning' : 'text-status-success',
-          )}
-          role="img"
-          aria-label={comparisonLabel}
-        >
-          <Icon name={hasComparisonChanges ? 'git-commit' : 'check'} className={iconSize} />
-        </span>
-      ) : null}
+      <Icon
+        name="node-tree"
+        className={cn(iconSize, hasComparisonChanges ? 'text-status-warning' : 'text-muted-foreground/60')}
+      />
     </span>
   );
 }

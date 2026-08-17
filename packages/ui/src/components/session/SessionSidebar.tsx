@@ -73,7 +73,6 @@ import {
 import { useSessionPinnedStore } from '@/stores/useSessionPinnedStore';
 import {
   formatProjectLabel,
-  isPathWithinProject,
   normalizePath,
   selectExpandedParentKeysForContext,
   toggleExpandedParentKey,
@@ -142,20 +141,13 @@ const isKnownActiveSessionDirectory = (
   options?: {
     allowUnknownDirectory?: boolean;
     allowEmptyDirectorySet?: boolean;
-    projectDirectories?: Set<string>;
   },
 ): boolean => {
   if (session.time?.archived) return true;
   const directory = normalizePath(resolveGlobalSessionDirectory(session))?.toLowerCase();
   if (!directory) return options?.allowUnknownDirectory ?? true;
   if (knownDirectories.size === 0) return options?.allowEmptyDirectorySet ?? true;
-  if (knownDirectories.has(directory)) return true;
-
-  // See docs/records/incident-descendant-session-hidden-by-directory-allowlist.md.
-  for (const projectDirectory of options?.projectDirectories ?? []) {
-    if (isPathWithinProject(directory, projectDirectory)) return true;
-  }
-  return false;
+  return knownDirectories.has(directory);
 };
 
 const SIDEBAR_PR_NO_PR_RETRY_MS = 5 * 60_000;
@@ -575,10 +567,6 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
     () => buildKnownSessionDirectories(projects, availableWorktreesByProject, { includeWorktrees: !isVSCode }),
     [availableWorktreesByProject, isVSCode, projects],
   );
-  const projectDirectories = React.useMemo(
-    () => buildKnownSessionDirectories(projects, new Map(), { includeWorktrees: false }),
-    [projects],
-  );
 
   const sessions = React.useMemo(() => {
     const merged = [...globalActiveSessions];
@@ -594,9 +582,8 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
     return merged.filter((session) => isKnownActiveSessionDirectory(session, knownSessionDirectories, {
       allowUnknownDirectory: !isVSCode,
       allowEmptyDirectorySet: !isVSCode,
-      projectDirectories: isVSCode ? undefined : projectDirectories,
     }));
-  }, [globalActiveSessions, isVSCode, knownSessionDirectories, liveFallbackSessions, projectDirectories]);
+  }, [globalActiveSessions, isVSCode, knownSessionDirectories, liveFallbackSessions]);
 
   const persistenceSessions = React.useMemo(
     () => [...globalActiveSessions, ...archivedSessions],
@@ -730,9 +717,12 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
     const unsubscribe = subscribeOpenchamberEvents((event) => {
       if (event.type === 'scheduled-task-ran') {
         needsGlobalRefresh = true;
-      } else {
+      } else if (event.type === 'session-created') {
         sessionDirectories.add(event.directory);
         requestWorktreeDiscovery();
+      } else {
+        // Browser control events carry no session state; nothing to refresh.
+        return;
       }
       if (refreshTimeout) {
         clearTimeout(refreshTimeout);
@@ -1550,9 +1540,10 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
   );
 
 
-  // Web/desktop route archived sessions to the Archive page; only the VS Code
-  // compact webview keeps inline archived buckets behind its toggle.
-  const showInlineArchived = isVSCode && showArchivedSessions;
+  // Web/desktop route archived sessions to the Archive page during normal
+  // browsing, but matching archived buckets remain visible in search results.
+  // VS Code keeps its existing inline archived toggle.
+  const showInlineArchived = hasSessionSearchQuery || (isVSCode && showArchivedSessions);
   // 'by-worktree' renders the worktree-grouped sections (parallel-work
   // overview); 'flat' renders the merged per-project list. VS Code has no
   // worktree groups, so both resolve to the same shape — use flat there.
@@ -1962,6 +1953,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
         openNewSessionDraft={openNewSessionDraft}
         setActiveMainTab={setActiveMainTab}
         setSessionSwitcherOpen={setSessionSwitcherOpen}
+        sessionOwnerBySessionId={sessionOwnership.bySessionId}
       />
       <SessionPrefetchEffect
         enabled={isVisible}

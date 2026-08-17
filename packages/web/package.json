@@ -1,6 +1,6 @@
 {
   "name": "@openchamber/web",
-  "version": "1.18.2",
+  "version": "1.18.4",
   "private": false,
   "type": "module",
   "main": "./server/index.js",
@@ -15,8 +15,8 @@
     "dev": "bun run build:watch",
     "dev:server": "bun server/index.js --port ${OPENCHAMBER_PORT:-3001}",
     "dev:server:watch": "nodemon --watch server --ext js --exec \"bun server/index.js --port ${OPENCHAMBER_PORT:-3001}\"",
-    "build": "vite build",
-    "build:watch": "vite build --watch",
+    "build": "node --max-old-space-size=4096 node_modules/vite/bin/vite.js build",
+    "build:watch": "node --max-old-space-size=4096 node_modules/vite/bin/vite.js build --watch",
     "type-check": "tsc --noEmit",
     "lint": "eslint \"./src/**/*.{ts,tsx}\" --config ../../eslint.config.js",
     "test": "vitest run",
@@ -25,7 +25,7 @@
   "dependencies": {
     "@clack/prompts": "^1.1.0",
     "@octokit/rest": "^22.0.1",
-    "@opencode-ai/sdk": "1.18.16",
+    "@opencode-ai/sdk": "1.18.18",
     "@simplewebauthn/server": "13.3.1",
     "adm-zip": "^0.6.0",
     "bun-pty": "^0.4.5",

@@ -1,3 +1,5 @@
+import { createForkRuntime } from './fork-runtime.js';
+
 const SYSTEMD_SERVICE_UNIT_PATTERN = /^[A-Za-z0-9:_.@-]+\.service$/;
 
 function resolveSystemdServiceUnit(environment) {
@@ -29,7 +31,19 @@ export const registerOpenChamberRoutes = (app, dependencies) => {
     readSettingsFromDiskMigrated,
     fetchFreeZenModels,
     getCachedZenModels,
+    openchamberVersion,
+    serverStartedAt,
+    managedRestartSupported,
   } = dependencies;
+
+  const forkRuntime = createForkRuntime({
+    serverDirectory: __dirname,
+    openchamberVersion,
+    serverStartedAt,
+    managedRestartSupported,
+    environment: process.env,
+  });
+  forkRuntime.registerRoutes(app);
 
   app.get('/api/openchamber/update-check', async (req, res) => {
     try {

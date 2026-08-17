@@ -39,6 +39,7 @@ This module provides OpenCode server integration utilities for the web server ru
 - `packages/web/server/lib/opencode/server-utils-runtime.js`: shared server runtime utilities for OpenCode proxy wiring, OpenCode port/readiness helpers, and snapshot fetchers.
 - `packages/web/server/lib/opencode/openchamber-routes.js`: OpenChamber update and models metadata route registration.
   - Web update checks report when the server runs from a Git checkout. Source checkouts remain notification-only, and the install route rejects package-manager updates so UI bypass cannot replace the custom runtime.
+- `packages/web/server/lib/opencode/fork-runtime.js`: authenticated custom-fork source status and managed deployment runtime. It captures immutable running identity, compares the live checkout and running commit with the canonical custom branch, reports the official release independently, and owns the staged fast-forward/install/build/apply operation.
 - `packages/web/server/lib/opencode/pwa-manifest-routes.js`: PWA manifest route registration with recent-session shortcut resolution and short-lived caching.
 - `packages/web/server/lib/opencode/project-icon-routes.js`: project icon upload/read/discovery route registration and icon storage orchestration.
 - `packages/web/server/lib/opencode/skill-routes.js`: route registration for skill config CRUD, supporting files, and skills catalog scan/install flows.
@@ -92,6 +93,8 @@ This module provides OpenCode server integration utilities for the web server ru
   - `POST /api/opencode/upgrade` (enforces the active runtime's upgrade capability and serializes upgrades; a supervised request closes new-turn admission, drains existing turns, then upgrades and restarts OpenCode)
   - `POST /api/opencode/upgrade/cancel` (cancels only a supervised upgrade still waiting for active turns and reopens admission)
   - `GET /api/opencode/upgrade-status` (returns version availability plus the authoritative `upgrade.supported`, `upgrade.manager`, and `upgrade.reason` capability)
+    - A custom systemd runtime configured with `OPENCHAMBER_MANAGED_OPENCODE_BINARY` also probes that exact executable and returns `installedVersion` or a distinct `installedVersionError`; `currentVersion` remains the live connected process authority.
+  - `POST /api/opencode/restart` (systemd-supervised runtimes only; uses the same new-turn admission barrier, active-session drain, operation status, cancellation window, restart, and realtime rebind as supervised upgrades)
   - `POST /api/opencode/directory` (validates and activates an existing project directory; `{ create: true }` explicitly creates the requested project directory before activation, including outside the previously active workspace)
   - `GET /api/provider/:providerId/source`
   - `PUT /api/provider` (create/update custom OpenAI-compatible provider config in OpenCode user/project/custom layers via `scope`; secrets stay in auth via the OpenCode auth API)
@@ -365,6 +368,14 @@ an authoritative loopback callback URL even when OpenChamber binds port `0`.
 
 ## Public exports (openchamber-routes.js)
 - `registerOpenChamberRoutes(app, dependencies)`: registers OpenChamber endpoints:
+  - `GET /api/openchamber/fork/status`
+    - Returns immutable running source identity, current checkout identity, separate running/checkout comparisons with the canonical custom branch, latest custom package release, latest official release, stale/error authority, capabilities, and the current deployment operation.
+    - `?refresh=true` bypasses the short remote-status cache. Fetch failure remains distinct from an authoritative zero-behind result, and the last successful remote identity is retained as stale.
+  - `POST /api/openchamber/fork/update`
+    - Available only for a managed-restart source runtime. It accepts no client repository, remote, branch, or revision.
+    - The optional body mode is `update` (default) or `rebuild-current`. Both derive the repository, branch, and target revision exclusively from server configuration and canonical remote authority.
+    - Requires the configured `custom` checkout to be clean and fast-forwardable to `mdatsev/openchamber:custom`. `rebuild-current` additionally requires the checkout to equal the canonical target and exists for stale compiled assets after source was updated outside the managed operation. It prepares a detached worktree on the same filesystem, installs the locked dependencies, builds and validates web assets, retains prior hashed chunks, and writes a mode-0600 prepared-update record. It does not mutate live source, dependencies, or assets while the old process is running.
+    - The installed dependency-free `apply-custom-update.mjs` helper runs as `openchamber-custom.service` `ExecStartPre`. After the old process stops, it fast-forwards source, idempotently rename-swaps root/workspace dependency links and assets, validates referenced HTML assets and clean target HEAD, then removes staging and the record before Node imports application modules. Safe pre-apply failures start the old revision and remain visible as failed state; ambiguous target-apply failures keep startup blocked for retry/manual recovery.
   - `GET /api/openchamber/update-check`
   - `POST /api/openchamber/update-install`
     - Foreground servers running under a systemd user unit queue installation in
@@ -427,6 +438,9 @@ an authoritative loopback callback URL even when OpenChamber binds port `0`.
 - Project config: `<workingDirectory>/.opencode/opencode.json` or `opencode.json`.
 - Custom config: `OPENCODE_CONFIG` env var path.
 - Rate limit config: `OPENCHAMBER_RATE_LIMIT_MAX_ATTEMPTS`, `OPENCHAMBER_RATE_LIMIT_NO_IP_MAX_ATTEMPTS` env vars.
+- Managed custom runtime: `OPENCHAMBER_CUSTOM_FORK_REPO`, `OPENCHAMBER_CUSTOM_FORK_REMOTE`, `OPENCHAMBER_CUSTOM_FORK_BRANCH`, `OPENCHAMBER_BUN_BINARY`, `OPENCHAMBER_MANAGED_OPENCODE_BINARY`, `OPENCHAMBER_CUSTOM_FORK_UPDATE_STATE`, `OPENCHAMBER_CUSTOM_FORK_UPDATE_HELPER`, and `OPENCHAMBER_CUSTOM_FORK_UPDATE_PROTOCOL`. The runtime installer writes exact trusted values into `openchamber-custom.service`; browser requests cannot override them. Preparation is enabled only when protocol `1` is configured, and each successful transaction replaces the installed helper with the target revision's helper for the next update.
+
+The supervised OpenCode update performs another authoritative active-session drain after `/global/upgrade` and before systemd restart, because a direct OpenCode client can begin work while the binary update runs. OpenChamber's admission barrier is authoritative only for requests routed through OpenChamber; an unrelated client connected directly to OpenCode does not participate in that lock, so no cross-process atomic start-versus-restart guarantee exists at that external boundary.
 
 ## Notes for contributors
 - This module serves as foundation for OpenCode-related server utilities.

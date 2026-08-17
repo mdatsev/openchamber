@@ -59,7 +59,7 @@ export const SETTINGS_SECTION_TITLE_CLASS =
 /** Split-pane sidebar panel title — same level as section titles. */
 export const SETTINGS_PANEL_TITLE_CLASS = SETTINGS_SECTION_TITLE_CLASS;
 /** L3 — control-group heading inside a section. */
-export const SETTINGS_GROUP_TITLE_CLASS =
+const SETTINGS_GROUP_TITLE_CLASS =
   'typography-settings-group-title text-foreground';
 /** L4 — field / control labels. */
 export const SETTINGS_FIELD_LABEL_CLASS =
@@ -328,6 +328,60 @@ export const SettingsFieldRow: React.FC<SettingsFieldRowProps> = ({
         {children}
       </div>
     </div>
+  );
+};
+
+interface SettingsReadOnlyRowProps {
+  label: React.ReactNode;
+  value: React.ReactNode;
+  details?: React.ReactNode;
+  settingsItem?: string;
+  mono?: boolean;
+  tone?: 'default' | 'success' | 'warning' | 'error';
+  live?: boolean;
+}
+
+/** Read-only Settings value with always-visible operational detail. */
+export const SettingsReadOnlyRow: React.FC<SettingsReadOnlyRowProps> = ({
+  label,
+  value,
+  details,
+  settingsItem,
+  mono = true,
+  tone = 'default',
+  live = false,
+}) => {
+  let toneClass = 'text-foreground';
+  if (tone === 'success') {
+    toneClass = 'text-[var(--status-success)]';
+  } else if (tone === 'warning') {
+    toneClass = 'text-[var(--status-warning)]';
+  } else if (tone === 'error') {
+    toneClass = 'text-[var(--status-error)]';
+  }
+
+  return (
+    <SettingsFieldRow
+      label={label}
+      settingsItem={settingsItem}
+      alignEnd={false}
+      controlClassName="w-full @xl:!flex-1 @xl:max-w-[24rem]"
+    >
+      <div
+        className="min-w-0 space-y-0.5"
+        role={live ? 'status' : undefined}
+        aria-live={live ? 'polite' : undefined}
+      >
+        <div className={cn('break-words typography-meta', mono && 'font-mono', toneClass)}>
+          {value}
+        </div>
+        {details != null ? (
+          <div className={cn(SETTINGS_HELPER_CLASS, 'space-y-0.5 break-words')}>
+            {details}
+          </div>
+        ) : null}
+      </div>
+    </SettingsFieldRow>
   );
 };
 
