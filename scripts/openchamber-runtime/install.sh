@@ -52,6 +52,7 @@ mkdir -p "$runtime_dir" "$bin_dir" "$unit_dir"
 staging_dir="$(mktemp -d "$unit_dir/.openchamber-runtime.XXXXXX")"
 trap 'rm -rf "$staging_dir"' EXIT
 install -m 0644 "$script_dir/systemd/opencode-tools.slice" "$staging_dir/opencode-tools.slice"
+install -m 0755 "$script_dir/opencode-tool-memory-supervisor" "$runtime_dir/opencode-tool-memory-supervisor"
 
 render_unit() {
   local source="$1"
@@ -80,7 +81,6 @@ systemd-analyze --user verify \
   "$staging_dir/opencode-tools.slice" \
   "$staging_dir/openchamber.service" \
   "$staging_dir/openchamber-custom.service"
-install -m 0755 "$script_dir/opencode-tool-memory-supervisor" "$runtime_dir/opencode-tool-memory-supervisor"
 install -m 0755 "$script_dir/openchamber-switch" "$bin_dir/openchamber-switch"
 install -m 0644 "$staging_dir/opencode.service" "$unit_dir/opencode.service"
 install -m 0644 "$staging_dir/opencode-tool-memory-supervisor.service" "$unit_dir/opencode-tool-memory-supervisor.service"

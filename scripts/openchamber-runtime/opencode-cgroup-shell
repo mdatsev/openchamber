@@ -7,9 +7,11 @@ memory_max="${OPENCHAMBER_TOOL_MEMORY_MAX:-3G}"
 memory_swap_max="${OPENCHAMBER_TOOL_MEMORY_SWAP_MAX:-512M}"
 tasks_max="${OPENCHAMBER_TOOL_TASKS_MAX:-512}"
 output_max_bytes="${OPENCHAMBER_TOOL_OUTPUT_MAX_BYTES:-16777216}"
+cgroup_root="${OPENCHAMBER_CGROUP_ROOT:-/sys/fs/cgroup}"
 tools_slice='opencode-tools.slice'
 supervisor_unit='opencode-tool-memory-supervisor.service'
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+launcher="$script_dir/${BASH_SOURCE[0]##*/}"
 supervisor="$script_dir/opencode-tool-memory-supervisor"
 runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 diagnosis_dir="$runtime_dir/openchamber-opencode-tools"
@@ -33,6 +35,18 @@ validate_size OPENCHAMBER_TOOL_MEMORY_MAX "$memory_max"
 validate_size OPENCHAMBER_TOOL_MEMORY_SWAP_MAX "$memory_swap_max"
 validate_count OPENCHAMBER_TOOL_TASKS_MAX "$tasks_max"
 validate_count OPENCHAMBER_TOOL_OUTPUT_MAX_BYTES "$output_max_bytes"
+[[ "$cgroup_root" == /* ]] || fail 'OPENCHAMBER_CGROUP_ROOT must be absolute'
+
+if [[ "${1:-}" == '--openchamber-scope-command' ]]; then
+  shift
+  [[ $# -ge 1 ]] || fail 'missing scoped command'
+  IFS=: read -r _ _ scope_cgroup < /proc/self/cgroup \
+    || fail 'cannot resolve command cgroup'
+  [[ "$scope_cgroup" == /* ]] || fail 'command cgroup path is invalid'
+  printf '1\n' > "$cgroup_root$scope_cgroup/memory.oom.group" \
+    || fail 'cannot enable command-tree OOM grouping'
+  exec "$real_shell" -c "$@"
+fi
 
 if [[ "${1:-}" != '-c' ]]; then
   exec "$real_shell" "$@"
@@ -40,15 +54,31 @@ fi
 
 [[ $# -ge 2 ]] || fail 'missing command after -c'
 [[ -x "$supervisor" ]] || fail "memory supervisor is not executable: $supervisor"
+systemd_version="$(systemd-run --version)" || fail 'cannot inspect systemd version'
+systemd_version="${systemd_version#systemd }"
+systemd_version="${systemd_version%% *}"
+[[ "$systemd_version" =~ ^[0-9]+$ ]] || fail 'cannot parse systemd version'
+systemd_run_expand_environment=()
+if (( systemd_version >= 254 )); then
+  systemd_run_expand_environment=(--expand-environment=no)
+fi
 shift
 command="$1"
 shift
+systemd_run_oom_policy=()
+if (( systemd_version >= 253 )); then
+  systemd_run_oom_policy=(--property=OOMPolicy=kill)
+fi
 
 unit="opencode-tool-${PPID}-$$-${RANDOM}"
 scope="${unit}.scope"
 runner_pid=''
 diagnosis_file="$diagnosis_dir/$scope"
 output_overflow_file="$diagnosis_dir/.$scope.output-overflow"
+scope_command=("$real_shell" -c "$command" "$@")
+if (( systemd_version < 253 )); then
+  scope_command=("$launcher" --openchamber-scope-command "$command" "$@")
+fi
 
 mkdir -p -m 0700 "$diagnosis_dir" || fail "cannot create diagnosis directory: $diagnosis_dir"
 chmod 0700 "$diagnosis_dir" || fail "cannot secure diagnosis directory: $diagnosis_dir"
@@ -82,6 +112,9 @@ print_diagnosis() {
       ;;
     output-limit)
       printf 'OpenCode command terminated: combined command output exceeded %s bytes; the command tree was stopped to protect the OpenCode runtime from output amplification.\n' "$output_max_bytes" >&2
+      ;;
+    command-sigkill)
+      printf 'OpenCode command terminated by SIGKILL inside its constrained cgroup; this systemd version cannot distinguish a command OOM kill from another SIGKILL after the scope exits.\n' >&2
       ;;
     '')
       if [[ "$result" == 'oom-kill' ]]; then
@@ -133,7 +166,7 @@ systemctl_user is-active --quiet "$supervisor_unit" \
     --scope \
     --quiet \
     --same-dir \
-    --expand-environment=no \
+    "${systemd_run_expand_environment[@]}" \
     --unit="$unit" \
     --slice="$tools_slice" \
     --description='OpenCode tool command' \
@@ -142,9 +175,9 @@ systemctl_user is-active --quiet "$supervisor_unit" \
     --property="MemorySwapMax=$memory_swap_max" \
     --property=TasksAccounting=yes \
     --property="TasksMax=$tasks_max" \
-    --property=OOMPolicy=kill \
+    "${systemd_run_oom_policy[@]}" \
     -- \
-    "$real_shell" -c "$command" "$@"
+    "${scope_command[@]}"
 ) 2>&1 | (
   exec 9>&-
   initial_size=1
@@ -188,6 +221,9 @@ flock -u 9
 
 wait "$runner_pid" 2>/dev/null
 status=$?
+if (( systemd_version < 253 && status == 137 )) && [[ ! -e "$diagnosis_file" ]]; then
+  printf 'command-sigkill\n' > "$diagnosis_file" || true
+fi
 flock 9
 "$supervisor" --reconcile || true
 print_diagnosis
