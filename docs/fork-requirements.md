@@ -37,13 +37,6 @@
 
 - Nest it in the spawning Task's chat summary. The child session may remain visible in session navigation.
 
-### FC-008: /side: Disposable side chats
-
-- On web and Desktop, `/btw` and `/side` open a disposable chat in a side panel.
-- The side chat inherits the context at the point of invocation, even if mid-turn.
-- Allow the side chat to be promoted to a normal session.
-- Repeating either command for an existing side chat focuses it and sends the new prompt there.
-
 ### FC-009: Prevent accidental file reverts
 
 - Ask for confirmation before reverting a file with uncommitted changes.

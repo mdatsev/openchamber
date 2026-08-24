@@ -7,8 +7,6 @@ import {
   mergeLiveSessionWithGlobalSession,
   useGlobalSessionsStore,
 } from './useGlobalSessionsStore';
-import { useDisposableSideChatsStore } from './useDisposableSideChatsStore';
-import { getRuntimeKey } from '@/lib/runtime-switch';
 
 type SessionExtra = Partial<Session> & {
   directory?: string | null;
@@ -22,13 +20,6 @@ const buildSession = (shareUrl: string, extra: SessionExtra = {}): Session => ({
   share: { url: shareUrl },
   ...extra,
 } as Session);
-
-const disposableSession = (extra: SessionExtra = {}): Session => buildSession('https://share.example/side', {
-  id: 'ses_side',
-  directory: '/repo/app',
-  metadata: { openchamber: { sideChat: { disposable: true, parentSessionID: 'ses_parent' } } },
-  ...extra,
-} as SessionExtra);
 
 describe('useGlobalSessionsStore', () => {
   beforeEach(() => {
@@ -147,39 +138,19 @@ describe('useGlobalSessionsStore', () => {
     expect(publications).toBe(1);
   });
 
-  test('keeps disposable sessions directly addressable while excluding them from global navigation lists', () => {
-    const ordinary = buildSession('https://share.example/a', { directory: '/repo/app' });
-    const disposable = disposableSession();
-
-    useGlobalSessionsStore.getState().applySnapshot([ordinary, disposable], [
-      disposableSession({ id: 'ses_archived_side', time: { created: 1, updated: 2, archived: 3 } }),
-    ]);
-
-    const state = useGlobalSessionsStore.getState();
-    expect(state.activeSessions.map((session) => session.id)).toEqual(['ses_1']);
-    expect(state.archivedSessions).toEqual([]);
-    expect(state.sessionsByDirectory.get('/repo/app')?.map((session) => session.id)).toEqual(['ses_1']);
-    expect(state.getSessionById('ses_side')).toBe(disposable);
-  });
-
-  test('does not publish a disposable event upsert into global navigation lists', () => {
-    useGlobalSessionsStore.getState().upsertSession(disposableSession());
-
-    expect(useGlobalSessionsStore.getState().activeSessions).toEqual([]);
-    expect(useGlobalSessionsStore.getState().getSessionById('ses_side')?.id).toBe('ses_side');
-  });
-
-  test('makes a promoted session discoverable after its disposable marker is removed', () => {
-    useGlobalSessionsStore.getState().upsertSession(disposableSession());
-    const ownership = useDisposableSideChatsStore.getState().findBySide(getRuntimeKey(), '/repo/app', 'ses_side');
-    if (ownership?.sideSessionId) useDisposableSideChatsStore.getState().completePromotion({
-      ...ownership,
-      sideSessionId: ownership.sideSessionId,
+  test('indexes active and archived sessions by ID', () => {
+    const active = buildSession('https://share.example/active');
+    const archived = buildSession('https://share.example/archived', {
+      id: 'ses_archived',
+      time: { created: 1, updated: 2, archived: 3 },
     });
-    useGlobalSessionsStore.getState().upsertSession(disposableSession({ metadata: {} } as SessionExtra));
 
-    expect(useGlobalSessionsStore.getState().activeSessions.map((session) => session.id)).toEqual(['ses_side']);
+    useGlobalSessionsStore.getState().applySnapshot([active], [archived]);
+
+    expect(useGlobalSessionsStore.getState().getSessionById(active.id)).toBe(active);
+    expect(useGlobalSessionsStore.getState().getSessionById(archived.id)).toBe(archived);
   });
+
 });
 
 describe('mergeLiveSessionWithGlobalSession', () => {

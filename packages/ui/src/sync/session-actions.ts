@@ -32,7 +32,6 @@ import { getImperativeSessionMessageLoader } from "./session-message-loader"
 import { cleanupPersistedSessionState } from "./session-deletion-cleanup"
 import { getRuntimeKey } from "@/lib/runtime-switch"
 import { isAmbiguousTransportFailure } from "@/lib/relay/transport-error"
-import type { SideChatRuntimeOperation } from "@/lib/sideChats/runtimeOperation"
 import { getStaleRunningToolMessageID } from "./materialization"
 import { normalizePath } from "@/lib/pathNormalization"
 import { mergeMessages } from "./optimistic"
@@ -241,7 +240,7 @@ function updateLiveSession(session: Session, directory?: string): boolean {
   return false
 }
 
-export function mirrorSessionIntoLiveStores(session: Session, directory?: string): void {
+function mirrorSessionIntoLiveStores(session: Session, directory?: string): void {
   if (directory && updateLiveSession(session, directory)) {
     return
   }
@@ -1141,27 +1140,6 @@ export async function deleteSessions(
   return { deletedIds, failedIds }
 }
 
-export async function deleteSessionInCapturedRuntime(
-  sessionId: string,
-  directory: string,
-  operation: SideChatRuntimeOperation,
-): Promise<boolean> {
-  const knownSubtree = getKnownSessionSubtree(sessionId)
-  try {
-    const result = await operation.client.session.delete({ sessionID: sessionId, directory })
-    if (assertSdkData(result, "session.delete") !== true) throw new Error("session.delete failed: server did not confirm deletion")
-    if (operation.isCurrent()) finalizeConfirmedSessionDeletion(sessionId, directory, operation.runtimeKey, knownSubtree)
-    return true
-  } catch (error) {
-    if (getErrorStatus(error) === 404) {
-      if (operation.isCurrent()) finalizeConfirmedSessionDeletion(sessionId, directory, operation.runtimeKey, knownSubtree)
-      return true
-    }
-    console.error("[session-actions] captured runtime delete failed", error)
-    return false
-  }
-}
-
 /**
  * Archive one session.
  *
@@ -1677,25 +1655,6 @@ export async function abortCurrentOperation(sessionId: string): Promise<void> {
   }
 }
 
-export async function abortSessionInDirectory(sessionId: string, directory: string): Promise<void> {
-  const result = await opencodeClient.getScopedSdkClient(directory).session.abort({
-    sessionID: sessionId,
-    directory,
-  })
-  if (assertSdkData(result, "session.abort") !== true) {
-    throw new Error("Session abort failed")
-  }
-}
-
-export async function abortSessionInCapturedRuntime(
-  sessionId: string,
-  directory: string,
-  operation: SideChatRuntimeOperation,
-): Promise<void> {
-  const result = await operation.client.session.abort({ sessionID: sessionId, directory })
-  if (assertSdkData(result, "session.abort") !== true) throw new Error("Session abort failed")
-}
-
 // ---------------------------------------------------------------------------
 // Permissions
 // ---------------------------------------------------------------------------
@@ -1722,22 +1681,6 @@ export async function respondToPermission(
   if (assertSdkData(result, "permission.reply") !== true) {
     throw new Error("Permission reply failed")
   }
-}
-
-export async function respondToPermissionInCapturedRuntime(
-  sessionId: string,
-  requestId: string,
-  response: "once" | "always" | "reject",
-  directory: string | undefined,
-  operation: SideChatRuntimeOperation,
-): Promise<void> {
-  if (!operation.isCurrent()) throw new Error("Permission reply runtime changed")
-  const result = await operation.client.permission.reply({
-    requestID: requestId,
-    reply: response,
-    ...(directory ? { directory } : {}),
-  })
-  if (assertSdkData(result, "permission.reply") !== true) throw new Error("Permission reply failed")
 }
 
 export async function dismissPermission(

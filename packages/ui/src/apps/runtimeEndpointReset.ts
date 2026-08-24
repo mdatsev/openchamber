@@ -20,7 +20,6 @@ import { useGlobalSessionStatusStore } from '@/sync/global-session-status';
 import { resetSessionOrdering } from '@/sync/session-ordering';
 import { resetSessionActivityTiming } from '@/sync/session-activity-timing';
 import { syncDesktopSettings } from '@/lib/persistence';
-import { useDisposableSideChatsStore } from '@/stores/useDisposableSideChatsStore';
 import { resetSessionInboxForRuntimeSwitch } from '@/stores/useSessionInboxStore';
 
 // Same-device transport switch (LAN⇄relay for one paired device): rebind the SDK
@@ -55,7 +54,6 @@ export const resetAppForRuntimeEndpointChange = (detail: RuntimeEndpointChangedD
     lastDisconnectReason: null,
   });
   useProjectsStore.getState().resetForRuntimeSwitch();
-  useDisposableSideChatsStore.getState().resetForRuntimeSwitch(detail.runtimeKey);
   resetSessionInboxForRuntimeSwitch(detail.runtimeKey);
   // Notes, todos, plans and the pinned-context bookkeeping are keyed by a
   // path-derived project id, which two runtimes can collide on.

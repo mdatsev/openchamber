@@ -36,7 +36,7 @@ import {
 import { ReviewFlowDialog, type ReviewFlowExecution } from '@/components/session/ReviewFlowDialog';
 import { BtwPanel } from './btw/BtwPanel';
 import { useBtwPanelState } from './btw/useBtwPanelState';
-import type { BtwSessionRef } from '@/lib/btw';
+import { destroyBtwSession, startBtwSession, type BtwSessionRef } from '@/lib/btw';
 import { AttachedFilesList, AttachedVSCodeFileChips, ActiveEditorFileSuggestion } from './FileAttachment';
 import { lazyWithChunkRecovery } from '@/lib/chunkLoadRecovery';
 import type { ToolPopupContent } from './message/types';
@@ -147,9 +147,6 @@ import { LinkedReferenceRow } from './composer/ui/LinkedReferenceRow';
 import { RevertedMessageDock } from './composer/ui/RevertedMessageDock';
 import { SessionSuggestionChip } from '@/components/chat/SessionSuggestionChip';
 import { SessionGoalRow } from '@/components/chat/SessionGoalRow';
-import { getOpenChamberCommands, parseSideChatCommand } from './openChamberCommands';
-import { installEmbeddedSessionChatComposerFocusListener, isEmbeddedSessionChat } from '@/components/layout/contextPanelEmbeddedChat';
-import { openDisposableSideChat } from '@/lib/sideChats/controller';
 
 // Lazy like in ChatMessage: a static import would pull the @pierre/diffs and
 // Shiki stacks into the eager startup graph for a dialog opened on demand.
@@ -392,11 +389,6 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
     const isMobile = useUIStore((state) => state.isMobile);
     const hasHardwareKeyboard = useHardwareKeyboard();
     const { enabled: isTabletLayout } = useTabletLayout();
-    const sideChatCommands = React.useMemo(() => getOpenChamberCommands({
-        surface: currentSessionId && !isEmbeddedSessionChat() ? 'main' : 'embedded',
-        isMobile,
-        isVSCode: isVSCodeRuntime(),
-    }), [currentSessionId, isMobile]);
     const setImagePreviewOpen = useUIStore((state) => state.setImagePreviewOpen);
     const inputBarOffset = useUIStore((state) => state.inputBarOffset);
     const persistChatDraft = useUIStore((state) => state.persistChatDraft);
@@ -587,12 +579,11 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
         const names = new Set<string>([
             'init', 'review', 'undo', 'redo', 'timeline', 'compact', 'btw', 'summary', 'workspace-review', 'plan-feature', 'craft-goal', 'schedule-task', 'catch-up', 'debug', 'weigh', 'explore',
         ]);
-        for (const command of sideChatCommands) names.add(command.name);
         if (!isMobile && !isVSCodeRuntime()) names.add('handoff-review');
         for (const command of availableCommands) names.add(command.name.toLowerCase());
         for (const skill of availableSkills) names.add(skill.name.toLowerCase());
         return names;
-    }, [availableCommands, availableSkills, isMobile, sideChatCommands]);
+    }, [availableCommands, availableSkills, isMobile]);
 
     const availableSnippets = useSnippetsStore((s) => s.snippets);
     const knownSnippetTriggers = React.useMemo(() => {
@@ -919,7 +910,6 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
         };
     }, [attachedFiles.length, hasDrafts, message]);
 
-    React.useEffect(() => installEmbeddedSessionChatComposerFocusListener(() => composerRef.current?.focus()), []);
 
     // Keep a ref to handleSubmit so callbacks don't depend on it.
     type SubmitOptions = {
@@ -933,18 +923,9 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
     };
     const handleSubmitRef = React.useRef<(options?: SubmitOptions) => Promise<void>>(async () => {});
 
-    // Add message to queue instead of sending. Side-chat commands are app
-    // actions, so the busy-session queue button must submit them immediately.
+    // Add message to queue instead of sending
     const handleQueueMessage = React.useCallback(() => {
         const inputSnapshot = getCurrentInputSnapshot();
-        if (
-            inputMode === 'normal'
-            && sideChatCommands.length > 0
-            && parseSideChatCommand(inputSnapshot.message) !== null
-        ) {
-            void handleSubmitRef.current();
-            return;
-        }
         if (!inputSnapshot.hasContent || !currentSessionId || !messageQueueTarget) return;
 
         const drafts = inlineDraftTarget ? consumeDrafts(inlineDraftTarget) : [];
@@ -978,7 +959,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
         if (!isMobile) {
             composerRef.current?.focus();
         }
-    }, [getCurrentInputSnapshot, inputMode, sideChatCommands, currentSessionId, messageQueueTarget, inlineDraftTarget, attachedFiles, sanitizeAttachmentsForSend, addToQueue, clearAttachedFiles, isMobile, consumeDrafts, currentProviderId, currentModelId, currentAgentName, currentVariant]);
+    }, [getCurrentInputSnapshot, currentSessionId, messageQueueTarget, inlineDraftTarget, attachedFiles, sanitizeAttachmentsForSend, addToQueue, clearAttachedFiles, isMobile, consumeDrafts, currentProviderId, currentModelId, currentAgentName, currentVariant]);
 
     const handleQueuedMessageEdit = React.useCallback((content: string) => {
         setMessage(content);
@@ -1078,33 +1059,6 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
 
         if (!providerIdToSend || !modelIdToSend) {
             console.warn('Cannot send message: provider or model not selected');
-            return;
-        }
-
-        const sideChatCommand = !queuedOnly && inputMode === 'normal' && sideChatCommands.length > 0
-            ? parseSideChatCommand(inputSnapshot.message)
-            : null;
-        const sideChatDirectory = currentSessionDirectoryForSync ?? currentDirectory;
-        if (sideChatCommand) {
-            if (!currentSessionId || !sideChatDirectory) return;
-            try {
-                await openDisposableSideChat({
-                    parentSessionId: currentSessionId,
-                    directory: sideChatDirectory,
-                    prompt: sideChatCommand.prompt,
-                    providerID: providerIdToSend,
-                    modelID: modelIdToSend,
-                    agent: agentNameToSend ?? undefined,
-                    variant: variantToSend ?? undefined,
-                });
-                setMessage('');
-                persistDraftImmediately(chatDraftIdentity, '');
-                closeAutocomplete();
-                setAutocompleteQuery('');
-            } catch (error) {
-                console.error('Side chat command failed:', error);
-                toast.error(error instanceof Error ? error.message : t('sideChat.cleanup.error'));
-            }
             return;
         }
 
@@ -1314,6 +1268,40 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
                 }
                 return;
             }
+            if (commandName === 'btw' && currentSessionId) {
+                const question = argument.trim();
+                if (!question) {
+                    toast.error(t('chat.btw.toast.emptyArgument'));
+                    return;
+                }
+                const targetDirectory = useSessionUIStore.getState().getDirectoryForSession(currentSessionId)
+                    || currentDirectory
+                    || null;
+                if (!targetDirectory) {
+                    toast.error(t('chat.btw.toast.createFailed'));
+                    return;
+                }
+                try {
+                    // A new btw replaces this session's current one: destroy
+                    // the previous fork first so forks never accumulate.
+                    if (btwSessionRef) {
+                        await destroyBtwSession(btwSessionRef);
+                    }
+                    await startBtwSession({
+                        parentSessionId: currentSessionId,
+                        question,
+                        directory: targetDirectory,
+                        providerID: providerIdToSend,
+                        modelID: modelIdToSend,
+                        agent: agentNameToSend,
+                        variant: variantToSend,
+                    });
+                    scrollToBottom?.();
+                } catch (error) {
+                    toast.error(getSubmitErrorMessage(error, t('chat.btw.toast.createFailed')));
+                }
+                return;
+            }
             // The rest render a visible prompt plus synthetic instructions and
             // send them as one message.
             const command = findMagicPromptCommand(commandName);
@@ -1519,13 +1507,6 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
     // Primary action for send/queue button — respects selected follow-up behavior
     const handlePrimaryAction = React.useCallback(() => {
         const inputSnapshot = getCurrentInputSnapshot();
-        const isSideChatCommand = inputMode === 'normal'
-            && sideChatCommands.length > 0
-            && parseSideChatCommand(inputSnapshot.message) !== null;
-        if (isSideChatCommand) {
-            void handleSubmitRef.current();
-            return;
-        }
         const canQueue = !isBtwActive && inputMode === 'normal' && inputSnapshot.hasContent && currentSessionId && (currentSessionPhase !== 'idle' || autoReviewRunning);
         if (followUpBehavior === 'queue' && canQueue) {
             handleQueueMessage();
@@ -1534,7 +1515,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
         } else {
             void handleSubmitRef.current();
         }
-    }, [inputMode, getCurrentInputSnapshot, currentSessionId, currentSessionPhase, autoReviewRunning, followUpBehavior, handleQueueMessage, isBtwActive, sideChatCommands]);
+    }, [inputMode, getCurrentInputSnapshot, currentSessionId, currentSessionPhase, autoReviewRunning, followUpBehavior, handleQueueMessage, isBtwActive]);
 
     // Draft welcome presets: submit immediately.
     const submitPresetPrompt = React.useCallback((text: string, type: 'command' | 'skill') => {
@@ -1747,14 +1728,6 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
             e.preventDefault();
 
             const isCtrlEnter = e.ctrlKey || e.metaKey;
-
-            const isSideChatCommand = inputMode === 'normal'
-                && sideChatCommands.length > 0
-                && parseSideChatCommand(message) !== null;
-            if (isSideChatCommand) {
-                handleSubmit();
-                return;
-            }
 
             // Queueing / steering only works when there's an existing busy
             // session (or an active auto-review run).

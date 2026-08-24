@@ -10,7 +10,6 @@ import type { SessionNode } from '../types';
 import { isPathWithinProject } from '../utils';
 import { compareSessionsByLifecycleOrder, useSessionOrderingStore } from '@/sync/session-ordering';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { filterDiscoverableSessions } from '@/stores/useDisposableSideChatsStore';
 import type { WorktreeMetadata } from '@/types/worktree';
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { isChatDirectoryPath } from '@/lib/chatDirectories';
@@ -103,10 +102,8 @@ export const useSwitcherItems = (enabled: boolean, options: SwitcherItemsOptions
 
   const items = React.useMemo<SwitcherItem[]>(() => {
     if (!enabled) return [];
-    const discoverableSessions = filterDiscoverableSessions(activeSessions);
-
     const childrenByParent = new Map<string, Session[]>();
-    for (const session of discoverableSessions) {
+    for (const session of activeSessions) {
       const parentId = (session as Session & { parentID?: string | null }).parentID;
       if (!parentId) continue;
       if (session.time?.archived) continue;
@@ -121,7 +118,7 @@ export const useSwitcherItems = (enabled: boolean, options: SwitcherItemsOptions
       list.sort((a, b) => compareSessionsByLifecycleOrder(a, b, pinnedSessionIds, sessionOrderRanks));
     });
 
-    const parents = discoverableSessions
+    const parents = activeSessions
       .filter((session) => !session.time?.archived)
       // btw forks stay hidden until promoted to a full session
       .filter((session) => !isBtwSession(session))

@@ -59,3 +59,9 @@ No upstream feature fully replaced an active fork requirement. Every entry in `d
 
 1. The new anti-slop check could not run because `oxlint` 1.78.0 is not installed in the current dependency tree. Installing dependencies was outside this synchronization run's machine authorization.
 2. Native desktop startup, systemd runtime switching/upgrades, cgroup OOM selection, mobile interaction flows, and the complete disposable side-chat lifecycle were not exercised manually. Their static checks and automated tests passed, but those platform and lifecycle contracts still require runtime validation before release deployment.
+
+## Follow-up, 2026-08-24
+
+The FC-008 comparison above contains an inaccurate historical claim: upstream v1.20 `/btw` already supports promotion. The user approved restoring upstream `/btw` and retiring the fork behavior and FC-008. Upstream now owns the authoritative `/btw` behavior rather than the custom disposable side-chat controller described in this record.
+
+Sessions that still carry the old custom marker surface as ordinary sessions. They are not deleted or migrated.

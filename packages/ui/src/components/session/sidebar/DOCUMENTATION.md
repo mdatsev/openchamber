@@ -49,7 +49,6 @@
 - `sortableItems.tsx`: DnD sortable wrapper for project ordering plus the sticky zone-band project header and its action affordances.
 - `sessionFolderDnd.tsx`: Folder/session DnD scope and wrappers for dropping/moving sessions into folders.
 - `sessionOwnership.ts`: Resolves session directories once into shared project/worktree ownership and folder-scope indexes.
-- `sessionOwnership.ts` applies the shared disposable-side-chat predicate before assigning active or archived sidebar ownership; direct side-panel lookup remains owned by sync/global direct-ID state.
 
 ### Hooks
 
@@ -90,8 +89,6 @@
 - CLI/server-created sessions use the low-frequency OpenChamber control event stream to refresh only the created session directory. The same event retriggers bounded worktree discovery so a newly created external worktree gains ownership without a view reload; it does not re-enable broad session or streaming subscriptions.
 - Recent membership includes active root sessions immediately even when their last committed `time.updated` falls outside the 48-hour window. Children and archived sessions remain excluded, and inactive roots remain timestamp-based. The active-ID subscription is disabled while the sidebar is hidden and ignores retry/status detail changes, avoiding streaming-frequency rerenders.
 - Desktop/web session discovery accepts exact configured project and discovered worktree directories. A directory is not accepted merely because it is below a configured project root; unrelated directories and undiscovered external worktrees remain excluded. VS Code continues to require exact open-workspace directories.
-- Disposable side chats never enter sidebar ownership, search, recent, folder, or switcher projections. The live-session fallback applies the same predicate so an event arriving before route metadata cannot flash a disposable row.
-- Promotion removes the disposable marker before normal navigation publication, so the preserved session becomes eligible for sidebar/search/folder/pin projections only after server authority changes. Purge removes the side-chat root and known descendants through canonical session cleanup.
 - Structural updates rebuild grouped nodes only for projects whose local sessions, worktrees, repository state, or branch changed; unchanged project sections preserve references so memoized group/session descendants skip the update wave.
 - Empty successful lists, unresolved loads, and failed loads are separate UI states. Failed groups expose Retry and retain prior data.
 - Directory permission failures remain visible even when stale sessions are retained. Flat groups inspect every represented root/worktree directory; local Desktop may open the native picker for the exact failed directory, while other runtimes keep the ordinary Retry action.

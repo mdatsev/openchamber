@@ -7,8 +7,6 @@ import { getOriginalSessionID, getReviewSessionID } from '@/lib/sessionReviewMet
 import { normalizePath } from '@/lib/pathNormalization';
 import { raiseSessionOrderingBaselines } from '@/sync/session-ordering';
 import { mapWithConcurrency } from '@/lib/concurrency';
-import { filterDiscoverableSessions, useDisposableSideChatsStore } from '@/stores/useDisposableSideChatsStore';
-import { getRuntimeKey } from '@/lib/runtime-switch';
 import { persistManagedChatSessions, readManagedChatSessions } from '@/sync/persist-cache';
 import { isVSCodeRuntime } from '@/lib/desktop';
 
@@ -382,9 +380,6 @@ const applySnapshot = (
       if (current) sessionsById.set(sessionId, current);
     }
   }
-  useDisposableSideChatsStore.getState().reconcileSessions([...sessionsById.values()], getRuntimeKey());
-  activeSessions = filterDiscoverableSessions(activeSessions);
-  archivedSessions = filterDiscoverableSessions(archivedSessions);
   const nextActiveSessions = sameSessionList(state.activeSessions, activeSessions)
     ? state.activeSessions
     : activeSessions;
@@ -466,11 +461,6 @@ const applySessionUpserts = (state: GlobalSessionsState, sessions: Session[]): P
 
   for (const session of sessions) {
     sessionsById.set(session.id, session);
-    if (filterDiscoverableSessions([session]).length === 0) {
-      nextActiveSessions = removeSessionFromList(nextActiveSessions, session.id);
-      nextArchivedSessions = removeSessionFromList(nextArchivedSessions, session.id);
-      continue;
-    }
     const existingSession = nextActiveSessions.find((candidate) => candidate.id === session.id)
       ?? nextArchivedSessions.find((candidate) => candidate.id === session.id)
       ?? null;
@@ -663,16 +653,14 @@ export const useGlobalSessionsStore = create<GlobalSessionsState>((set, get) => 
         if (current) nextSessionsById.set(sessionId, current);
         else nextSessionsById.delete(sessionId);
       }
-      useDisposableSideChatsStore.getState().reconcileSessions([...nextSessionsById.values()], getRuntimeKey());
-
       let nextActiveSessions = replaceSessionsForDirectories(
         state.activeSessions,
-        filterDiscoverableSessions(active),
+        active,
         fetched.directories,
       );
       nextActiveSessions = mergeSessionLists(
         nextActiveSessions,
-        fallbackActive ? filterDiscoverableSessions(fallbackActive) : fallbackActive,
+        fallbackActive,
       );
       if (sameSessionList(state.activeSessions, nextActiveSessions)) {
         nextActiveSessions = state.activeSessions;
@@ -680,7 +668,7 @@ export const useGlobalSessionsStore = create<GlobalSessionsState>((set, get) => 
 
       let nextArchivedSessions = replaceSessionsForDirectories(
         state.archivedSessions,
-        filterDiscoverableSessions(archived),
+        archived,
         fetched.directories,
       );
       if (sameSessionList(state.archivedSessions, nextArchivedSessions)) {
@@ -722,13 +710,11 @@ export const useGlobalSessionsStore = create<GlobalSessionsState>((set, get) => 
   },
 
   upsertSession: (session) => {
-    useDisposableSideChatsStore.getState().reconcileSessions([session], getRuntimeKey());
     set((state) => applySessionUpserts(state, [session]));
   },
 
   upsertSessions: (sessions) => {
     if (sessions.length === 0) return;
-    useDisposableSideChatsStore.getState().reconcileSessions(sessions, getRuntimeKey());
     set((state) => applySessionUpserts(state, sessions));
   },
 

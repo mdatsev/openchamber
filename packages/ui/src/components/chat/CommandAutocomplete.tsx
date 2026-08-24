@@ -11,8 +11,6 @@ import { useUIStore } from '@/stores/useUIStore';
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { useMobileAutocompleteMaxHeight } from './useMobileAutocompleteMaxHeight';
 import { commandMatchesSearch, mergeCommandAutocompleteItems } from './commandAutocompleteItems';
-import { getOpenChamberCommands, mergeOpenChamberCommands } from './openChamberCommands';
-import { isEmbeddedSessionChat } from '@/components/layout/contextPanelEmbeddedChat';
 import { AutocompleteRowTooltip } from './composer/ui/AutocompleteRowTooltip';
 
 type CommandSource = 'openchamber' | 'opencode' | 'skill';
@@ -75,14 +73,6 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
   const canStartSessionCommand = hasSession || hasNewSessionDraft;
   const isMobile = useUIStore((state) => state.isMobile);
   const canUseReviewHandoffFlow = hasSession && !isMobile && !isVSCodeRuntime();
-  const sideChatCommands = React.useMemo(() => getOpenChamberCommands({
-    surface: !hasSession || isEmbeddedSessionChat() ? 'embedded' : 'main',
-    isMobile,
-    isVSCode: isVSCodeRuntime(),
-    sideChatDescription: t('chat.commandAutocomplete.command.sideDescription'),
-    btwDescription: t('chat.commandAutocomplete.command.btwDescription'),
-  }), [hasSession, isMobile, t]);
-
   const [commands, setCommands] = React.useState<CommandInfo[]>([]);
   const [loading, setLoading] = React.useState(false);
   const commandsWithMetadata = useCommandsStore((s) => s.commands);
@@ -163,6 +153,10 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
           ),
           { id: 'openchamber:compact', name: 'compact', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.compactDescription'), isBuiltIn: true },
           ...(hasSession
+            ? [{ id: 'openchamber:btw', name: 'btw', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.btwDescription'), isOpenChamber: true }]
+            : []
+          ),
+          ...(hasSession
             ? [{ id: 'openchamber:summary', name: 'summary', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.summaryDescription'), isOpenChamber: true }]
             : []
           ),
@@ -203,10 +197,7 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
             : []
           ),
         ];
-        const allCommands = mergeOpenChamberCommands(
-          sideChatCommands,
-          mergeCommandAutocompleteItems(builtInCommands, customCommands, skillCommands),
-        );
+        const allCommands = mergeCommandAutocompleteItems(builtInCommands, customCommands, skillCommands);
 
         const allowInitCommand = !hasMessagesInCurrentSession;
         const filtered = (searchQuery
@@ -239,6 +230,10 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
             : []
           ),
           { id: 'openchamber:compact', name: 'compact', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.compactDescription'), isBuiltIn: true },
+          ...(hasSession
+            ? [{ id: 'openchamber:btw', name: 'btw', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.btwDescription'), isOpenChamber: true }]
+            : []
+          ),
           ...(hasSession
             ? [{ id: 'openchamber:summary', name: 'summary', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.summaryDescription'), isOpenChamber: true }]
             : []
@@ -281,10 +276,9 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
           ),
         ];
 
-        const fallbackCommands = mergeOpenChamberCommands(sideChatCommands, builtInCommands);
         const filtered = (searchQuery
-          ? fallbackCommands.filter((cmd) => commandMatchesSearch(cmd, searchQuery))
-          : fallbackCommands).filter(cmd => allowInitCommand || cmd.name !== 'init');
+          ? builtInCommands.filter((cmd) => commandMatchesSearch(cmd, searchQuery))
+          : builtInCommands).filter(cmd => allowInitCommand || cmd.name !== 'init');
 
         setCommands(filtered);
       } finally {
@@ -293,7 +287,7 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
     };
 
     loadCommands();
-  }, [searchQuery, hasMessagesInCurrentSession, hasSession, canStartSessionCommand, canUseReviewHandoffFlow, commandsWithMetadata, skills, sideChatCommands, t]);
+  }, [searchQuery, hasMessagesInCurrentSession, hasSession, canStartSessionCommand, canUseReviewHandoffFlow, commandsWithMetadata, skills, t]);
 
   React.useEffect(() => {
     setSelectedIndex(0);

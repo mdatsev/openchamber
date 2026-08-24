@@ -63,3 +63,7 @@ No incoming feature fully replaced an active fork requirement. The merge therefo
 2. The web suite's combined-process relay order sensitivity remains; isolated relay runs are green.
 3. Arbitrary assistant-referenced images outside both the workspace and OpenCode temporary root are not eligible for the new gallery grant, although authenticated direct file viewing remains unrestricted.
 4. The inherited desktop dev-tunnel path still needs lifecycle hardening. `devTunnel.ts` clears UI maps on a runtime switch but does not close shell listeners or reject an old `desktop_dev_tunnel_open` completion that arrives afterward. The server client also rejects non-HTTP(S) runtime base schemes, and its reuse key omits request headers so a reused listener retains the first connection's captured authentication headers.
+
+## Follow-up, 2026-08-24
+
+The FC-008 comparison and conflict resolutions above record the v1.18.4 integration and are no longer current requirements. The user approved retiring FC-008 and restoring upstream v1.20 `/btw` as the authoritative behavior. Sessions that still carry the old custom marker surface as ordinary sessions. They are not deleted or migrated.

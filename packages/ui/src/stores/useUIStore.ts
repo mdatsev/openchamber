@@ -11,7 +11,6 @@ import { getRuntimeKey } from '@/lib/runtime-switch';
 import type { TerminalShell } from '@/lib/api/types';
 import { useFilesViewTabsStore } from './useFilesViewTabsStore';
 import { isWindowsArm64 } from '@/lib/platform';
-import type { DisposableSideChatIdentity } from '@/lib/sideChats/types';
 import { isVSCodeRuntime } from '@/lib/desktop';
 
 /**
@@ -38,7 +37,7 @@ function normalizeFileEditorKeymap(value: unknown): FileEditorKeymap {
   return value === 'vim' ? 'vim' : 'default';
 }
 
-export type ContextPanelTab = {
+type ContextPanelTab = {
   id: string;
   mode: ContextPanelMode;
   targetPath: string | null;
@@ -52,7 +51,6 @@ export type ContextPanelTab = {
   readOnly: boolean;
   stagedDiff: boolean;
   diffScope: PendingDiffScope | null;
-  disposableSideChat: DisposableSideChatIdentity | null;
   touchedAt: number;
 };
 
@@ -66,7 +64,6 @@ type ContextPanelTabDescriptor = {
   readOnly?: boolean;
   stagedDiff?: boolean;
   diffScope?: PendingDiffScope | null;
-  disposableSideChat?: DisposableSideChatIdentity | null;
 };
 
 type ContextPanelDirectoryState = {
@@ -211,18 +208,6 @@ const normalizePendingDiffScope = (value: unknown): PendingDiffScope | null => {
   return value === 'branch' || value === 'working' || value === 'staged' || value === 'turn' ? value : null;
 };
 
-const normalizeDisposableSideChatIdentity = (value: unknown): DisposableSideChatIdentity | null => {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const candidate = value as Partial<DisposableSideChatIdentity>;
-  const runtimeKey = typeof candidate.runtimeKey === 'string' ? candidate.runtimeKey.trim() : '';
-  const directory = typeof candidate.directory === 'string' ? normalizeDirectoryPath(candidate.directory) : '';
-  const parentSessionId = typeof candidate.parentSessionId === 'string' ? candidate.parentSessionId.trim() : '';
-  const sideSessionId = typeof candidate.sideSessionId === 'string' ? candidate.sideSessionId.trim() : '';
-  return runtimeKey && directory && parentSessionId && sideSessionId
-    ? { runtimeKey, directory, parentSessionId, sideSessionId }
-    : null;
-};
-
 const buildDefaultContextPanelTabDedupeKey = (mode: ContextPanelMode, targetPath: string | null): string => {
   if (mode === 'file') {
     return targetPath || mode;
@@ -278,7 +263,6 @@ const createContextPanelTab = (descriptor: ContextPanelTabDescriptor): ContextPa
     readOnly: descriptor.readOnly === true,
     stagedDiff: descriptor.stagedDiff === true,
     diffScope: normalizePendingDiffScope(descriptor.diffScope) ?? (descriptor.stagedDiff === true ? 'staged' : 'working'),
-    disposableSideChat: normalizeDisposableSideChatIdentity(descriptor.disposableSideChat),
     touchedAt: Date.now(),
   };
 };
@@ -306,18 +290,13 @@ const clampContextPanelTabs = (
     const modeTabs = tabs.filter((tab) => tab.mode === mode);
     const removable = [...modeTabs]
       .sort((a, b) => a.touchedAt - b.touchedAt)
-      .filter((tab) => tab.id !== activeTabId && !tab.disposableSideChat);
+      .filter((tab) => tab.id !== activeTabId);
     // Never drop the tab being opened or looked at; if that leaves the mode one
     // over its budget, one extra tab beats losing the one in use.
     for (const tab of removable.slice(0, count - maxTabsPerMode)) removeSet.add(tab.id);
   }
 
   return removeSet.size === 0 ? tabs : tabs.filter((tab) => !removeSet.has(tab.id));
-};
-
-export const getSessionContextPanelTabID = (sessionID: string): string | null => {
-  const normalized = sessionID.trim();
-  return normalized ? buildContextPanelTabID('chat', `session:${normalized}`) : null;
 };
 
 const sanitizeContextPanelTabs = (tabs: unknown): ContextPanelTab[] => {
@@ -344,7 +323,6 @@ const sanitizeContextPanelTabs = (tabs: unknown): ContextPanelTab[] => {
       readOnly?: unknown;
       stagedDiff?: unknown;
       diffScope?: unknown;
-      disposableSideChat?: unknown;
       touchedAt?: unknown;
     };
 
@@ -386,7 +364,6 @@ const sanitizeContextPanelTabs = (tabs: unknown): ContextPanelTab[] => {
       readOnly: candidate.readOnly === true,
       stagedDiff: candidate.stagedDiff === true,
       diffScope: normalizePendingDiffScope(candidate.diffScope) ?? (candidate.stagedDiff === true ? 'staged' : 'working'),
-      disposableSideChat: normalizeDisposableSideChatIdentity(candidate.disposableSideChat),
       touchedAt: typeof candidate.touchedAt === 'number' && Number.isFinite(candidate.touchedAt)
         ? candidate.touchedAt
         : Date.now(),
@@ -454,7 +431,6 @@ const upsertContextPanelTab = (
           stagedDiff: nextTab.stagedDiff,
           diffScope: nextTab.diffScope,
           readOnly: nextTab.readOnly,
-          disposableSideChat: nextTab.disposableSideChat ?? tab.disposableSideChat,
           touchedAt: Date.now(),
         }
       : tab));
@@ -621,27 +597,6 @@ const sanitizeContextPanelByDirectory = (
   return next;
 };
 
-let lastContextPanelPersistenceInput: Record<string, ContextPanelDirectoryState> | null = null;
-let lastContextPanelPersistenceOutput: Record<string, ContextPanelDirectoryState> = {};
-
-export const contextPanelForPersistence = (
-  value: Record<string, ContextPanelDirectoryState>,
-): Record<string, ContextPanelDirectoryState> => {
-  if (value === lastContextPanelPersistenceInput) return lastContextPanelPersistenceOutput;
-  lastContextPanelPersistenceInput = value;
-  lastContextPanelPersistenceOutput = Object.fromEntries(Object.entries(value).map(([directory, state]) => {
-    const tabs = state.tabs.filter((tab) => !tab.disposableSideChat);
-    const activeTabId = resolveActiveContextPanelTabID(tabs, state.activeTabId);
-    return [directory, {
-      ...state,
-      tabs,
-      activeTabId,
-      isOpen: tabs.length > 0 && state.isOpen,
-    }];
-  }));
-  return lastContextPanelPersistenceOutput;
-};
-
 const clampContextPanelRoots = (
   byDirectory: Record<string, ContextPanelDirectoryState>,
   maxRoots: number
@@ -652,10 +607,8 @@ const clampContextPanelRoots = (
   }
 
   entries.sort((a, b) => (b[1]?.touchedAt ?? 0) - (a[1]?.touchedAt ?? 0));
-  const protectedEntries = entries.filter(([, state]) => state.tabs.some((tab) => tab.disposableSideChat));
-  const removableEntries = entries.filter(([, state]) => !state.tabs.some((tab) => tab.disposableSideChat));
   const next: Record<string, ContextPanelDirectoryState> = {};
-  for (const [directory, state] of [...protectedEntries, ...removableEntries.slice(0, Math.max(0, maxRoots - protectedEntries.length))]) {
+  for (const [directory, state] of entries.slice(0, maxRoots)) {
     next[directory] = state;
   }
   return next;
@@ -2758,7 +2711,7 @@ export const useUIStore = create<UIStore>()(
           theme: state.theme,
           isSidebarOpen: state.isSidebarOpen,
           sidebarWidth: state.sidebarWidth,
-          contextPanelByDirectory: contextPanelForPersistence(state.contextPanelByDirectory),
+          contextPanelByDirectory: state.contextPanelByDirectory,
           contextRailOrder: state.contextRailOrder,
           contextEditorTreeVisible: state.contextEditorTreeVisible,
           contextEditorTreeWidth: state.contextEditorTreeWidth,

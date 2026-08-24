@@ -1,6 +1,5 @@
 import type { Session } from '@opencode-ai/sdk/v2';
 import { normalizePath } from '@/lib/pathNormalization';
-import { isDiscoverableSession } from '@/stores/useDisposableSideChatsStore';
 
 type Project = {
   id: string;
@@ -148,7 +147,6 @@ export const createSessionOwnershipIndex = (
     scopeTarget?: Map<string, Set<string>>,
   ): void => {
     for (const session of input) {
-      if (!isDiscoverableSession(session)) continue;
       const owner = resolveOwner(resolveSessionDirectory(session));
       if (!owner) continue;
       bySessionId.set(session.id, owner);

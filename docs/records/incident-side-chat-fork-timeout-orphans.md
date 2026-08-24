@@ -25,3 +25,9 @@ fixed
 - The client already preserves repeated `/side <prompt>` semantics: an existing marked side chat is focused and the new trailing prompt is sent to it.
 
 Evidence sources: `journalctl --user -u openchamber-custom.service`, `~/.local/share/opencode/log/opencode.log`, read-only queries against `~/.local/share/opencode/opencode.db`, OpenCode 1.18.12 `Session.fork`, and `packages/web/server/lib/side-chats/routes.js`.
+
+## Follow-up, 2026-08-24
+
+The user approved retiring FC-008 and restoring upstream v1.20 `/btw` as the authoritative behavior. The custom disposable side-chat lifecycle described in this incident is no longer an active fork requirement. This record remains as the history of the timeout and orphan investigation.
+
+Sessions that still carry the old custom marker surface as ordinary sessions. They are not deleted or migrated.

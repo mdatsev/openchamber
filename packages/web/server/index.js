@@ -1950,7 +1950,6 @@ async function main(options = {}) {
     isUnsafeSkillRelativePath,
     buildOpenCodeUrl,
     getOpenCodeAuthHeaders,
-    isRequestOriginAllowed,
     getOpenCodePort: () => openCodePort,
     // Dev-server discovery must not offer OpenChamber's own listeners back to
     // the user as something to preview.

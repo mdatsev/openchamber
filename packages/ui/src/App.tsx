@@ -65,7 +65,6 @@ import { SyncAppEffects } from '@/apps/AppEffects';
 import { resetAppForRuntimeEndpointChange } from '@/apps/runtimeEndpointReset';
 import { useAppFontEffects } from '@/apps/useAppFontEffects';
 import { OpenCodeUpdateToast } from '@/components/update/OpenCodeUpdateToast';
-import { DisposableSideChatRecoveryDialog } from '@/components/layout/DisposableSideChatRecoveryDialog';
 import { SessionWorktreeMoveDialog } from '@/components/session/SessionWorktreeMoveDialog';
 import { markStartupTrace, startupTraceEnabled } from '@/lib/startupTrace';
 
@@ -947,7 +946,6 @@ function App({ apis }: AppProps) {
                   <SyncAppEffects embeddedBackgroundWorkEnabled={embeddedBackgroundWorkEnabled} />
                   <OpenCodeUpdateToast />
                   <MainLayout />
-                  <DisposableSideChatRecoveryDialog enabled={isInitialized && isConnected && !isSwitchingDirectory} />
                   <SessionWorktreeMoveDialog />
                   <Toaster />
                   <AppLinkConfirmDialog />
