@@ -34,6 +34,7 @@ export const createContextObligatoryRuntime = ({
   buildOpenCodeUrl,
   getOpenCodeAuthHeaders,
   runWithTurnAdmission,
+  sessionKnowledgeRuntime = null,
 }) => {
   const inflight = new Set();
   let stopped = false;
@@ -60,7 +61,26 @@ export const createContextObligatoryRuntime = ({
     const session = await openCodeFetch(`/session/${encodeURIComponent(sessionId)}`, { directory });
     if (session?.parentID) return;
     const state = readContextState(session);
-    if (state.messages.length === 0) return;
+
+    /**
+     * Project knowledge rides along with the pinned messages. Compaction takes
+     * both away, and both are restored for the same reason, so they travel as
+     * one message: two synthetic turns back to back would read as the agent
+     * being interrupted twice.
+     */
+    const knowledge = sessionKnowledgeRuntime
+      ? await sessionKnowledgeRuntime
+        .resolvePending(
+          directory,
+          // Compaction removed the previously delivered block, so its stored
+          // signature is no longer evidence that the session still carries it.
+          '',
+          sessionKnowledgeRuntime.readPins(session),
+        )
+        .catch(() => ({ text: '', signature: '' }))
+      : { text: '', signature: '' };
+
+    if (state.messages.length === 0 && !knowledge.text) return;
 
     const recent = await openCodeFetch(`/session/${encodeURIComponent(sessionId)}/message`, {
       directory,
@@ -87,7 +107,7 @@ export const createContextObligatoryRuntime = ({
       .filter((result) => result.status === 'fulfilled' && result.value.text)
       .map((result) => result.value)
       .sort((left, right) => left.pinned.createdAt - right.pinned.createdAt);
-    if (entries.length === 0) return;
+    if (entries.length === 0 && !knowledge.text) return;
 
     const executionInfo = recent.toReversed().find((message) =>
       message?.info?.role === 'assistant' && message.info.summary !== true)?.info;
@@ -101,7 +121,13 @@ export const createContextObligatoryRuntime = ({
       body: {
         model: { providerID, modelID },
         ...(typeof agent === 'string' && agent ? { agent } : {}),
-        parts: [{ type: 'text', text: buildContextPrompt(entries), synthetic: true }],
+        parts: [{
+          type: 'text',
+          text: [knowledge.text, entries.length > 0 ? buildContextPrompt(entries) : '']
+            .filter(Boolean)
+            .join('\n\n---\n\n'),
+          synthetic: true,
+        }],
       },
     });
     if (typeof runWithTurnAdmission === 'function') {
@@ -121,6 +147,11 @@ export const createContextObligatoryRuntime = ({
           openchamber: {
             ...freshState.openchamber,
             context_obligatory_last_compaction_message_id: summary.id,
+            // Recorded together with the cursor: the session now carries this
+            // knowledge again, so the next send must not repeat it.
+            ...(knowledge.signature
+              ? { [sessionKnowledgeRuntime.metadataKey]: knowledge.signature }
+              : {}),
           },
         },
       },

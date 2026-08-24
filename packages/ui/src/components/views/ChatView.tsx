@@ -6,11 +6,23 @@ import { useSessionUIStore } from '@/sync/session-ui-store';
 type ChatViewProps = {
     active?: boolean;
     autoOpenDraft?: boolean;
+    /**
+     * Controls message-history subscription independently of `active`.
+     * Embedded session-chat panels keep this true so history stays visible
+     * while composer focus / background work remain gated by visibility.
+     */
+    messagesEnabled?: boolean;
     readOnly?: boolean;
     initialAllowPromptingSubagentSessions?: boolean;
 };
 
-export const ChatView: React.FC<ChatViewProps> = ({ active = true, autoOpenDraft = true, readOnly = false, initialAllowPromptingSubagentSessions }) => {
+export const ChatView: React.FC<ChatViewProps> = ({
+    active = true,
+    autoOpenDraft = true,
+    messagesEnabled,
+    readOnly = false,
+    initialAllowPromptingSubagentSessions,
+}) => {
     const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
 
     return (
@@ -18,6 +30,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ active = true, autoOpenDraft
             <ChatContainer
                 active={active}
                 autoOpenDraft={autoOpenDraft}
+                messagesEnabled={messagesEnabled}
                 readOnly={readOnly}
                 initialAllowPromptingSubagentSessions={initialAllowPromptingSubagentSessions}
             />

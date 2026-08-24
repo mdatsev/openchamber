@@ -10,6 +10,7 @@ import { OpenChamberLogo } from '@/components/ui/OpenChamberLogo';
 import { ChatView } from '@/components/views/ChatView';
 import { PlanView } from '@/components/views/PlanView';
 import { SettingsView } from '@/components/views/SettingsView';
+import { AppLinkConfirmDialog } from '@/components/chat/AppLinkConfirmDialog';
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
 import { RuntimeAPIProvider } from '@/contexts/RuntimeAPIProvider';
 import { registerRuntimeAPIs } from '@/contexts/runtimeAPIRegistry';
@@ -85,6 +86,7 @@ const MOBILE_SETTINGS_PAGES = [
   'usage',
   'voice',
   'fork',
+  'integrations',
   'about',
 ] as const;
 
@@ -110,7 +112,7 @@ const MobileShell: React.FC<{ onActiveConnectionDeleted: () => void }> = ({ onAc
   const [workspaceTab, setWorkspaceTab] = React.useState<MobileWorkspaceTab>('changes');
   // A plan opened from the workspace drawer's Notes tab, shown as a fullscreen
   // layer on top of it (back returns to the notes).
-  const [openPlan, setOpenPlan] = React.useState<{ path: string; title: string } | null>(null);
+  const [openPlan, setOpenPlan] = React.useState<{ id: string; title: string } | null>(null);
   const [settingsInitialMobileStage, setSettingsInitialMobileStage] = React.useState<'nav' | 'page-content'>('nav');
   // When set, the Changes surface opens directly into the per-file diff for this path.
   const [pendingChangesDiff, setPendingChangesDiff] = React.useState<{ path: string; staged: boolean } | null>(null);
@@ -541,7 +543,7 @@ const MobileShell: React.FC<{ onActiveConnectionDeleted: () => void }> = ({ onAc
           >
             <ErrorBoundary>
               <PlanView
-                targetPath={openPlan.path}
+                projectPlanId={openPlan.id}
                 onNavigatedToChat={() => {
                   closeSurface();
                   closeWorkspace();
@@ -1260,6 +1262,7 @@ export function MobileApp({ apis }: MobileAppProps) {
                 setConnectionEpoch((value) => value + 1);
               }} />
               <SessionWorktreeMoveDialog />
+              <AppLinkConfirmDialog />
               <Toaster position="top-center" offset="calc(var(--oc-safe-area-top, 0px) + 16px)" />
               {isInitialized ? <ConfigUpdateOverlay /> : null}
             </div>

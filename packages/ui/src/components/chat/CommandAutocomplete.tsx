@@ -13,6 +13,7 @@ import { useMobileAutocompleteMaxHeight } from './useMobileAutocompleteMaxHeight
 import { commandMatchesSearch, mergeCommandAutocompleteItems } from './commandAutocompleteItems';
 import { getOpenChamberCommands, mergeOpenChamberCommands } from './openChamberCommands';
 import { isEmbeddedSessionChat } from '@/components/layout/contextPanelEmbeddedChat';
+import { AutocompleteRowTooltip } from './composer/ui/AutocompleteRowTooltip';
 
 type CommandSource = 'openchamber' | 'opencode' | 'skill';
 
@@ -93,7 +94,7 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
   const keyboardNavigationRef = React.useRef(false);
   const itemRefs = React.useRef<(HTMLDivElement | null)[]>([]);
   const containerRef = React.useRef<HTMLDivElement | null>(null);
-  const mobileMaxHeight = useMobileAutocompleteMaxHeight(containerRef, isMobile);
+  const mobileMaxHeight = useMobileAutocompleteMaxHeight(containerRef, true);
   const ignoreClickRef = React.useRef(false);
   const pointerStartRef = React.useRef<{ x: number; y: number } | null>(null);
   const pointerMovedRef = React.useRef(false);
@@ -386,6 +387,7 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
               const isSystem = command.isBuiltIn;
               const isOpenChamberBadge = command.isOpenChamber;
               return (
+                <AutocompleteRowTooltip description={command.description} active={!isMobile && index === selectedIndex}>
                 <div
                   key={command.id}
                   ref={(el) => { itemRefs.current[index] = el; }}
@@ -481,13 +483,9 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
                         </span>
                       )}
                     </div>
-                    {command.description && !isMobile && (
-                      <div className="typography-meta text-muted-foreground mt-0.5 truncate">
-                        {command.description}
-                      </div>
-                    )}
                   </div>
                 </div>
+                </AutocompleteRowTooltip>
               );
             })}
             {commands.length === 0 && (

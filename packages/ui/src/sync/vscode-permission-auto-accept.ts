@@ -4,7 +4,6 @@ import { usePermissionStore } from "@/stores/permissionStore"
 import { getAllSyncSessionMap, getDirectoryState } from "./sync-refs"
 import * as sessionActions from "./session-actions"
 import { getRuntimeKey } from "@/lib/runtime-switch"
-import { captureSideChatRuntimeOperation } from "@/lib/sideChats/runtimeOperation"
 
 const RETRY_DELAYS_MS = [0, 250, 1000]
 
@@ -133,18 +132,20 @@ const runtime = createVSCodePermissionAutoAcceptRuntime({
   getKnownPendingPermissions: (directory) => Object.values(getDirectoryState(directory)?.permission ?? {}).flat(),
   listPendingPermissions: (directory) => opencodeClient.listPendingPermissions({ directories: [directory] }),
   getPermissionState: async (sessionId, requestId, directory) => (await opencodeClient.fetchPermission(sessionId, requestId, directory)).state,
-  reply: (sessionId, requestId, directory) => {
+  reply: async (sessionId, requestId, directory) => {
+    const { captureSideChatRuntimeOperation } = await import("@/lib/sideChats/runtimeOperation")
     const operation = captureSideChatRuntimeOperation()
     return sessionActions.respondToPermissionInCapturedRuntime(sessionId, requestId, "once", directory, operation)
   },
   wait: (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
 })
 
-export const processVSCodePermissionAutoAccept = (
+export const processVSCodePermissionAutoAccept = async (
   permission: PermissionRequest,
   directory?: string,
   expectedRuntimeKey = getRuntimeKey(),
 ) => {
+  const { captureSideChatRuntimeOperation } = await import("@/lib/sideChats/runtimeOperation")
   const operation = captureSideChatRuntimeOperation()
   return runtime.processPermission(permission, directory, {
     verifyPending: false,

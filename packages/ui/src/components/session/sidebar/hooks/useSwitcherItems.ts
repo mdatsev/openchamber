@@ -2,6 +2,7 @@ import React from 'react';
 import type { Session } from '@opencode-ai/sdk/v2';
 
 import { useGlobalSessionsStore, resolveGlobalSessionDirectory } from '@/stores/useGlobalSessionsStore';
+import { isBtwSession } from '@/lib/sessionBtwMetadata';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { isSessionPinned, useSessionPinnedStore } from '@/stores/useSessionPinnedStore';
 import { useGitAllBranches } from '@/stores/useGitStore';
@@ -11,6 +12,8 @@ import { compareSessionsByLifecycleOrder, useSessionOrderingStore } from '@/sync
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { filterDiscoverableSessions } from '@/stores/useDisposableSideChatsStore';
 import type { WorktreeMetadata } from '@/types/worktree';
+import { isVSCodeRuntime } from '@/lib/desktop';
+import { isChatDirectoryPath } from '@/lib/chatDirectories';
 
 export type SwitcherItem = {
   node: SessionNode;
@@ -55,6 +58,7 @@ export const useSwitcherItems = (enabled: boolean, options: SwitcherItemsOptions
   const sessionOrderRanks = useSessionOrderingStore((state) => state.rankById);
   const branchesByDirectory = useGitAllBranches();
   const availableWorktreesByProject = useSessionUIStore((state) => state.availableWorktreesByProject);
+  const isVSCode = React.useMemo(() => isVSCodeRuntime(), []);
 
   // Worktree sessions live OUTSIDE their project's path, so prefix matching
   // can't resolve their project — and their branch is known from worktree
@@ -119,6 +123,9 @@ export const useSwitcherItems = (enabled: boolean, options: SwitcherItemsOptions
 
     const parents = discoverableSessions
       .filter((session) => !session.time?.archived)
+      // btw forks stay hidden until promoted to a full session
+      .filter((session) => !isBtwSession(session))
+      .filter((session) => !isVSCode || !isChatDirectoryPath(resolveGlobalSessionDirectory(session)))
       .filter((session) => !(session as Session & { parentID?: string | null }).parentID)
       .filter((session) => {
         if (!scopeProjectId) return true;
@@ -166,7 +173,7 @@ export const useSwitcherItems = (enabled: boolean, options: SwitcherItemsOptions
         },
       };
     });
-  }, [activeSessions, branchesByDirectory, enabled, findProjectForDirectory, maxParents, pinnedSessionIds, scopeProjectId, sessionOrderRanks, worktreeInfoByPath]);
+  }, [activeSessions, branchesByDirectory, enabled, findProjectForDirectory, isVSCode, maxParents, pinnedSessionIds, scopeProjectId, sessionOrderRanks, worktreeInfoByPath]);
 
   return items;
 };
