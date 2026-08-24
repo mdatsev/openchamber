@@ -73,8 +73,8 @@ const ProjectWorktreeChangesIndicator = React.memo(function ProjectWorktreeChang
   const pushLabel = t('gitView.sync.pushTooltip');
   const indicator = (
     <span className="inline-flex shrink-0 items-center gap-1 text-status-warning">
-      {hasWorktreeChanges ? (
-        <span className="inline-flex size-4 items-center justify-center" role="img" aria-label={changeLabel}>
+      {hasWorktreeChanges || hasUnpushedCommits ? (
+        <span className="inline-flex size-4 items-center justify-center" role="img" aria-label={hasWorktreeChanges ? changeLabel : pushLabel}>
           <Icon name="node-tree" className="size-3.5" />
         </span>
       ) : null}
@@ -468,7 +468,7 @@ function SidebarProjectsListComponent(props: Props): React.ReactNode {
                 projectIconImage={leadingProject.iconImage}
                 projectIconBackground={leadingProject.iconBackground}
               />
-              {leadingProjectHasRootChanges ? (
+              {leadingProjectHasRootChanges || leadingProjectHasRootAhead ? (
                 <Icon name="git-repository" className="size-3.5 shrink-0 text-status-warning" />
               ) : null}
               {leadingProjectHasRootAhead ? (

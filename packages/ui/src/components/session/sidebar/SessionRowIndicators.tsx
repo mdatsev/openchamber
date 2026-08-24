@@ -76,12 +76,16 @@ export function SessionCheckoutIndicators({
   const iconSize = variant === 'mobile' ? 'size-3.5' : 'size-3';
   if (model.rootDirectory) {
     const isClean = model.rootIsClean === true;
-    const stateLabel = isClean
-      ? t('gitView.empty.cleanTitle')
-      : t('sessions.sidebar.project.status.uncommittedChanges');
+    const hasAhead = showAhead && Boolean(model.rootUpstreamAhead && model.rootUpstreamAhead > 0);
+    const hasLocalChanges = !isClean || hasAhead;
+    const stateLabel = !isClean
+      ? t('sessions.sidebar.project.status.uncommittedChanges')
+      : hasAhead
+        ? t('gitView.sync.pushTooltipAhead', { count: model.rootUpstreamAhead })
+        : t('gitView.empty.cleanTitle');
     return (
       <span
-        className={cn('inline-flex shrink-0', isClean ? 'text-muted-foreground/60' : 'text-status-warning')}
+        className={cn('inline-flex shrink-0', hasLocalChanges ? 'text-status-warning' : 'text-muted-foreground/60')}
         role="img"
         aria-label={`${t('sessions.sidebar.grouping.projectRoot')} · ${stateLabel}`}
       >
@@ -94,6 +98,7 @@ export function SessionCheckoutIndicators({
   const comparison = model.worktreeComparison;
   const hasComparison = comparison?.available === true;
   const hasComparisonChanges = hasComparison && (comparison.hasCommittedChanges || comparison.isDirty);
+  const hasAhead = showAhead && Boolean(model.worktreeUpstreamAhead && model.worktreeUpstreamAhead > 0);
   const comparisonLabel = hasComparison
     ? hasComparisonChanges
       ? t('sessions.sidebar.worktreeChanges', {
@@ -104,7 +109,6 @@ export function SessionCheckoutIndicators({
           branch: comparison.baseBranch ?? '',
         })
     : null;
-  const hasAhead = showAhead && Boolean(model.worktreeUpstreamAhead && model.worktreeUpstreamAhead > 0);
   if (!hasComparison && !hasAhead) return null;
 
   return (
@@ -117,10 +121,10 @@ export function SessionCheckoutIndicators({
           .join(' · ')
       }
     >
-      {hasComparison ? (
+      {hasComparison || hasAhead ? (
         <Icon
           name="node-tree"
-          className={cn(iconSize, hasComparisonChanges ? 'text-status-warning' : 'text-muted-foreground/60')}
+          className={cn(iconSize, hasComparisonChanges || hasAhead ? 'text-status-warning' : 'text-muted-foreground/60')}
         />
       ) : null}
       {hasAhead ? <SessionUpstreamAheadIndicator ahead={model.worktreeUpstreamAhead} variant={variant} /> : null}

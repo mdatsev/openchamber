@@ -307,20 +307,24 @@ export const SortableProjectItem: React.FC<SortableProjectItemProps> = ({
                     {statusIndicator ? (
                       <span className="ml-1 inline-flex flex-shrink-0 items-center">{statusIndicator}</span>
                     ) : null}
-                    {rootHasChanges ? (
+                    {rootHasChanges || Boolean(rootUpstreamAhead && rootUpstreamAhead > 0) ? (
                       <span className="ml-1 inline-flex flex-shrink-0 items-center">
                         <Tooltip>
                           <TooltipTrigger asChild>
                             <span
                               className="inline-flex size-4 shrink-0 items-center justify-center text-status-warning"
                               role="img"
-                              aria-label={t('sessions.sidebar.project.status.uncommittedChanges')}
+                              aria-label={rootHasChanges
+                                ? t('sessions.sidebar.project.status.uncommittedChanges')
+                                : t('gitView.sync.pushTooltipAhead', { count: rootUpstreamAhead ?? 0 })}
                             >
                               <Icon name="git-repository" className="size-3.5" />
                             </span>
                           </TooltipTrigger>
                           <TooltipContent side="right" sideOffset={8}>
-                            {t('sessions.sidebar.project.status.uncommittedChanges')}
+                            {rootHasChanges
+                              ? t('sessions.sidebar.project.status.uncommittedChanges')
+                              : t('gitView.sync.pushTooltipAhead', { count: rootUpstreamAhead ?? 0 })}
                           </TooltipContent>
                         </Tooltip>
                       </span>
