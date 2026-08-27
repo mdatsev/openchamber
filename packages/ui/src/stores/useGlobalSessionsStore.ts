@@ -1,14 +1,14 @@
 import { create } from 'zustand';
 import type { OpencodeClient, Session } from '@opencode-ai/sdk/v2';
 import { opencodeClient } from '@/lib/opencode/client';
-import { listGlobalSessionPages, splitGlobalSessionsByArchived } from '@/stores/globalSessions';
+import { filterManagedChatsForRuntime, listGlobalSessionPages, splitGlobalSessionsByArchived } from '@/stores/globalSessions';
 import { getReviewTransferDirection, type ReviewTransferDirection } from '@/lib/reviewFlow';
 import { getOriginalSessionID, getReviewSessionID } from '@/lib/sessionReviewMetadata';
 import { normalizePath } from '@/lib/pathNormalization';
 import { raiseSessionOrderingBaselines } from '@/sync/session-ordering';
 import { mapWithConcurrency } from '@/lib/concurrency';
-import { filterDiscoverableSessions, useDisposableSideChatsStore } from '@/stores/useDisposableSideChatsStore';
-import { getRuntimeKey } from '@/lib/runtime-switch';
+import { persistManagedChatSessions, readManagedChatSessions } from '@/sync/persist-cache';
+import { isVSCodeRuntime } from '@/lib/desktop';
 
 type GlobalSessionsStatus = 'idle' | 'loading' | 'ready' | 'error';
 
@@ -368,6 +368,10 @@ const applySnapshot = (
   status: GlobalSessionsStatus,
   baselineRevision?: number,
 ): Partial<GlobalSessionsState> | GlobalSessionsState => {
+  if (isVSCodeRuntime()) {
+    activeSessions = filterManagedChatsForRuntime(activeSessions, true);
+    archivedSessions = filterManagedChatsForRuntime(archivedSessions, true);
+  }
   const sessionsById = new Map([...activeSessions, ...archivedSessions].map((session) => [session.id, session]));
   if (baselineRevision !== undefined) {
     for (const [sessionId, revision] of state.mutationRevisionBySessionId) {
@@ -376,9 +380,6 @@ const applySnapshot = (
       if (current) sessionsById.set(sessionId, current);
     }
   }
-  useDisposableSideChatsStore.getState().reconcileSessions([...sessionsById.values()], getRuntimeKey());
-  activeSessions = filterDiscoverableSessions(activeSessions);
-  archivedSessions = filterDiscoverableSessions(archivedSessions);
   const nextActiveSessions = sameSessionList(state.activeSessions, activeSessions)
     ? state.activeSessions
     : activeSessions;
@@ -449,6 +450,10 @@ const mutationRevisionPatch = (state: GlobalSessionsState, ids: Iterable<string>
 };
 
 const applySessionUpserts = (state: GlobalSessionsState, sessions: Session[]): Partial<GlobalSessionsState> => {
+  if (isVSCodeRuntime()) {
+    sessions = filterManagedChatsForRuntime(sessions, true);
+    if (sessions.length === 0) return state;
+  }
   const revisionPatch = mutationRevisionPatch(state, sessions.map((session) => session.id));
   let nextActiveSessions = state.activeSessions;
   let nextArchivedSessions = state.archivedSessions;
@@ -456,11 +461,6 @@ const applySessionUpserts = (state: GlobalSessionsState, sessions: Session[]): P
 
   for (const session of sessions) {
     sessionsById.set(session.id, session);
-    if (filterDiscoverableSessions([session]).length === 0) {
-      nextActiveSessions = removeSessionFromList(nextActiveSessions, session.id);
-      nextArchivedSessions = removeSessionFromList(nextArchivedSessions, session.id);
-      continue;
-    }
     const existingSession = nextActiveSessions.find((candidate) => candidate.id === session.id)
       ?? nextArchivedSessions.find((candidate) => candidate.id === session.id)
       ?? null;
@@ -510,12 +510,14 @@ const buildReviewTransferMap = (sessions: Session[]): Map<string, ReviewTransfer
   return next
 }
 
+const initialManagedChatSessions = readManagedChatSessions();
+
 export const useGlobalSessionsStore = create<GlobalSessionsState>((set, get) => ({
-  activeSessions: [],
+  activeSessions: initialManagedChatSessions,
   archivedSessions: [],
-  sessionsByDirectory: new Map(),
-  reviewTransferBySessionId: new Map(),
-  sessionsById: new Map(),
+  sessionsByDirectory: buildSessionsByDirectory(initialManagedChatSessions),
+  reviewTransferBySessionId: buildReviewTransferMap(initialManagedChatSessions),
+  sessionsById: new Map(initialManagedChatSessions.map((session) => [session.id, session])),
   mutationRevision: 0,
   mutationRevisionBySessionId: new Map(),
   hasLoaded: false,
@@ -532,12 +534,13 @@ export const useGlobalSessionsStore = create<GlobalSessionsState>((set, get) => 
   resetForRuntimeSwitch: () => {
     loadGeneration += 1;
     inflightLoad = null;
+    const managedChatSessions = readManagedChatSessions();
     set({
-      activeSessions: [],
+      activeSessions: managedChatSessions,
       archivedSessions: [],
-      sessionsByDirectory: new Map(),
-      reviewTransferBySessionId: new Map(),
-      sessionsById: new Map(),
+      sessionsByDirectory: buildSessionsByDirectory(managedChatSessions),
+      reviewTransferBySessionId: buildReviewTransferMap(managedChatSessions),
+      sessionsById: new Map(managedChatSessions.map((session) => [session.id, session])),
       mutationRevision: 0,
       mutationRevisionBySessionId: new Map(),
       hasLoaded: false,
@@ -650,16 +653,14 @@ export const useGlobalSessionsStore = create<GlobalSessionsState>((set, get) => 
         if (current) nextSessionsById.set(sessionId, current);
         else nextSessionsById.delete(sessionId);
       }
-      useDisposableSideChatsStore.getState().reconcileSessions([...nextSessionsById.values()], getRuntimeKey());
-
       let nextActiveSessions = replaceSessionsForDirectories(
         state.activeSessions,
-        filterDiscoverableSessions(active),
+        active,
         fetched.directories,
       );
       nextActiveSessions = mergeSessionLists(
         nextActiveSessions,
-        fallbackActive ? filterDiscoverableSessions(fallbackActive) : fallbackActive,
+        fallbackActive,
       );
       if (sameSessionList(state.activeSessions, nextActiveSessions)) {
         nextActiveSessions = state.activeSessions;
@@ -667,7 +668,7 @@ export const useGlobalSessionsStore = create<GlobalSessionsState>((set, get) => 
 
       let nextArchivedSessions = replaceSessionsForDirectories(
         state.archivedSessions,
-        filterDiscoverableSessions(archived),
+        archived,
         fetched.directories,
       );
       if (sameSessionList(state.archivedSessions, nextArchivedSessions)) {
@@ -709,13 +710,11 @@ export const useGlobalSessionsStore = create<GlobalSessionsState>((set, get) => 
   },
 
   upsertSession: (session) => {
-    useDisposableSideChatsStore.getState().reconcileSessions([session], getRuntimeKey());
     set((state) => applySessionUpserts(state, [session]));
   },
 
   upsertSessions: (sessions) => {
     if (sessions.length === 0) return;
-    useDisposableSideChatsStore.getState().reconcileSessions(sessions, getRuntimeKey());
     set((state) => applySessionUpserts(state, sessions));
   },
 
@@ -796,6 +795,15 @@ export const useGlobalSessionsStore = create<GlobalSessionsState>((set, get) => 
     });
   },
 }));
+
+useGlobalSessionsStore.subscribe((state, previous) => {
+  if (
+    state.activeSessions !== previous.activeSessions
+    && (state.status !== 'idle' || state.activeSessions.length > 0)
+  ) {
+    persistManagedChatSessions(state.activeSessions);
+  }
+});
 
 export const ensureGlobalSessionsLoaded = async (fallbackActive?: Session[]): Promise<LoadResult> => {
   const state = useGlobalSessionsStore.getState();

@@ -42,7 +42,7 @@ const INTERRUPTED_RESULT: SessionActivityResult = {
  * question indicator takes priority, and the send button must stay available so
  * the user can supersede the prompt with a new message).
  */
-function useSessionActivity(sessionId: string | null | undefined, directory?: string): SessionActivityResult {
+export function useSessionActivity(sessionId: string | null | undefined, directory?: string): SessionActivityResult {
   const status = useSessionStatus(sessionId ?? '', directory);
   const messages = useSessionMessages(sessionId ?? '', directory);
   const trailingMessageID = messages[messages.length - 1]?.id ?? '';

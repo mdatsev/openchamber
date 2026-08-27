@@ -5,12 +5,13 @@ import {
   buildEmbeddedSessionChatURL,
   EMBEDDED_RUNTIME_BOOTSTRAP_REQUEST,
   EMBEDDED_RUNTIME_BOOTSTRAP_RESPONSE,
-  focusEmbeddedSessionChatComposer,
+  EMBEDDED_VISIBILITY_REQUEST,
   getOrCreateEmbeddedSessionChatURL,
   getActiveEmbeddedSessionChatTab,
   getEmbeddedSessionChatOriginSessionId,
   isEmbeddedSessionChat,
   requestEmbeddedSessionRuntimeBootstrap,
+  requestEmbeddedSessionVisibility,
   resetEmbeddedSessionChatCache,
   type EmbeddedSessionChatURLCacheEntry,
 } from './contextPanelEmbeddedChat';
@@ -176,6 +177,22 @@ describe('active embedded session chat', () => {
   test('selects no tab when a chat is not active', () => {
     expect(getActiveEmbeddedSessionChatTab(tabs, null)).toBeNull();
     expect(getActiveEmbeddedSessionChatTab(tabs, 'missing-chat')).toBeNull();
+  });
+
+  test('requests authoritative visibility from the same-origin parent', () => {
+    installWindowLocation('http://127.0.0.1:5173/app?ocPanel=session-chat&sessionId=ses_1');
+    resetEmbeddedSessionChatCache();
+    const calls: Array<{ message: unknown; origin: string }> = [];
+    (window as unknown as { parent: { postMessage: (message: unknown, origin: string) => void } }).parent = {
+      postMessage: (message, origin) => calls.push({ message, origin }),
+    };
+
+    requestEmbeddedSessionVisibility();
+
+    expect(calls).toEqual([{
+      message: { type: EMBEDDED_VISIBILITY_REQUEST },
+      origin: 'http://127.0.0.1:5173',
+    }]);
   });
 });
 
@@ -376,22 +393,5 @@ describe('embedded runtime bootstrap handshake', () => {
     expect(timeoutCleared).toBe(true);
     expect(retryCleared).toBe(true);
     expect(messageListener).toBeNull();
-  });
-});
-
-describe('focusEmbeddedSessionChatComposer', () => {
-  test('focuses the matching embedded chat iframe composer', () => {
-    const focusCalls: string[] = [];
-    const iframe = {
-      contentWindow: { postMessage: (message: { type: string }) => focusCalls.push(message.type) },
-      src: 'http://127.0.0.1:5173/app?ocPanel=session-chat&sessionId=ses_side',
-    } as unknown as HTMLIFrameElement;
-    Object.defineProperty(globalThis, 'document', {
-      configurable: true,
-      value: { querySelectorAll: () => [iframe] },
-    });
-
-    expect(focusEmbeddedSessionChatComposer('ses_side')).toBe(true);
-    expect(focusCalls).toEqual(['openchamber:focus-chat-composer']);
   });
 });

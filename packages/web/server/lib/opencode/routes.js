@@ -7,6 +7,7 @@ import { execFile } from 'node:child_process';
 import {
   buildDeferredRestartResponse,
 } from './config-mutation-response.js';
+import { getClaudeCliAuthStatus } from './claude-cli-auth.js';
 
 export const registerOpenCodeRoutes = (app, dependencies) => {
   const {
@@ -854,7 +855,9 @@ ${desktopReturn ? `<a class="return" href="openchamber://focus/mcp-auth">Return 
       const sources = getProviderSources(providerId, directory);
       const { getProviderAuth } = await getAuthLibrary();
       const auth = getProviderAuth(providerId);
-      sources.sources.auth.exists = Boolean(auth);
+      sources.sources.auth.exists = providerId === 'claude-code'
+        ? getClaudeCliAuthStatus().connected
+        : Boolean(auth);
 
       return res.json({
         providerId,

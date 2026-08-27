@@ -64,6 +64,7 @@ render_unit() {
   local content
   content="$(<"$source")"
   content="${content//@HOME@/$HOME}"
+  content="${content//@BIN_DIR@/$bin_dir}"
   content="${content//@CUSTOM_REPO@/$custom_repo}"
   content="${content//@CUSTOM_FORK_REMOTE@/$custom_remote}"
   content="${content//@CUSTOM_FORK_BRANCH@/$custom_branch}"
@@ -81,22 +82,26 @@ render_unit "$script_dir/systemd/opencode.service.in" "$staging_dir/opencode.ser
 render_unit "$script_dir/systemd/opencode-tool-memory-supervisor.service.in" "$staging_dir/opencode-tool-memory-supervisor.service"
 render_unit "$script_dir/systemd/openchamber.service.in" "$staging_dir/openchamber.service"
 render_unit "$script_dir/systemd/openchamber-custom.service.in" "$staging_dir/openchamber-custom.service"
+render_unit "$script_dir/systemd/openchamber-tailnet-control.service.in" "$staging_dir/openchamber-tailnet-control.service"
 render_unit "$script_dir/openchamber-switch" "$staging_dir/openchamber-switch"
 
 install -m 0755 "$script_dir/opencode-tool-memory-supervisor" "$runtime_dir/opencode-tool-memory-supervisor"
 install -m 0644 "$script_dir/apply-custom-update.mjs" "$runtime_dir/apply-custom-update.mjs"
+install -m 0755 "$script_dir/tailnet-control.mjs" "$runtime_dir/tailnet-control.mjs"
 systemd-analyze --user verify \
   "$staging_dir/opencode.service" \
   "$staging_dir/opencode-tool-memory-supervisor.service" \
   "$staging_dir/opencode-tools.slice" \
   "$staging_dir/openchamber.service" \
-  "$staging_dir/openchamber-custom.service"
+  "$staging_dir/openchamber-custom.service" \
+  "$staging_dir/openchamber-tailnet-control.service"
 install -m 0755 "$staging_dir/openchamber-switch" "$bin_dir/openchamber-switch"
 install -m 0644 "$staging_dir/opencode.service" "$unit_dir/opencode.service"
 install -m 0644 "$staging_dir/opencode-tool-memory-supervisor.service" "$unit_dir/opencode-tool-memory-supervisor.service"
 install -m 0644 "$staging_dir/opencode-tools.slice" "$unit_dir/opencode-tools.slice"
 install -m 0644 "$staging_dir/openchamber.service" "$unit_dir/openchamber.service"
 install -m 0644 "$staging_dir/openchamber-custom.service" "$unit_dir/openchamber-custom.service"
+install -m 0644 "$staging_dir/openchamber-tailnet-control.service" "$unit_dir/openchamber-tailnet-control.service"
 systemctl --user daemon-reload
 install -m 0755 "$script_dir/opencode-cgroup-shell" "$runtime_dir/bash"
 trap - EXIT

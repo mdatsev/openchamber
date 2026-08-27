@@ -87,3 +87,7 @@ Commit `d7b901fe` corrected all four concrete integration defects above. It also
 ## Evidence
 
 Primary evidence came from the three named Git snapshots, the upstream v1.18.2 commit range, the pre-merge fork requirement document, owning module documentation, and upstream PRs #2424, #2494, #2542, #2585, #2629, #2642, #2663, #2679, #2682, #2695, #2699, #2708, #2721, #2742, #2744, #2746, #2747, #2776, and #2791.
+
+## Follow-up, 2026-08-24
+
+The FC-008 recommendation above records the v1.18.2 assessment and is no longer current. The user approved retiring FC-008 and restoring upstream v1.20 `/btw` as the authoritative behavior. Sessions that still carry the old custom marker surface as ordinary sessions. They are not deleted or migrated.

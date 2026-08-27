@@ -77,6 +77,7 @@ import { getRuntimeLiveStatusSeed, LIVE_STATUS_TTL_MS } from "./runtime-live-mem
 import { getRuntimeKey } from "@/lib/runtime-switch"
 import { getRegisteredRuntimeAPIs } from "@/contexts/runtimeAPIRegistry"
 import { isFilesystemError } from "@/lib/api/files-errors"
+import { formatMessage, useI18nStore } from "@/lib/i18n"
 import { listGlobalSessionPages } from "@/stores/globalSessions"
 import { areRequestArraysReferentiallyEqual, collectScopedBlockingRequests, computeScopedSubtreeIds, computeSubtreeIds } from "./scoped-blocking-requests"
 import { EMPTY_USER_MESSAGE_HISTORY_SNAPSHOT, buildUserMessageHistorySnapshot, type UserMessageHistorySnapshot } from "./user-message-history"
@@ -477,6 +478,32 @@ const handleUiNotificationEvent = (payload: Event, fallbackDirectory: string): b
   }
 
   const notification = properties as UiNotificationPayload
+  const kind = asOptionalString(notification.kind)
+  const sessionId = asOptionalString(notification.sessionId)
+  const directory = asOptionalString(notification.directory)
+    ?? (fallbackDirectory !== "global" ? fallbackDirectory : "")
+
+  if (kind === "opencode-restart-interrupted") {
+    const dictionary = useI18nStore.getState().dictionary
+    const title = formatMessage(dictionary, "chat.toast.opencodeRestartInterrupted.title")
+    const options = {
+      id: "opencode-restart-interrupted",
+      description: formatMessage(dictionary, "chat.toast.opencodeRestartInterrupted.description"),
+      duration: Infinity,
+    }
+    if (sessionId && directory) {
+      toast.info(title, {
+        ...options,
+        action: {
+          label: formatMessage(dictionary, "chat.toast.opencodeRestartInterrupted.openSession"),
+          onClick: () => openSessionFromToast(sessionId, directory),
+        },
+      })
+    } else {
+      toast.info(title, options)
+    }
+  }
+
   if ((notification.desktopNotificationDelivered === true || notification.desktopStdoutActive === true) && getRuntimeKey() === "local") {
     return true
   }
@@ -490,9 +517,9 @@ const handleUiNotificationEvent = (payload: Event, fallbackDirectory: string): b
     title: asOptionalString(notification.title),
     body: asOptionalString(notification.body),
     tag: asOptionalString(notification.tag),
-    kind: asOptionalString(notification.kind),
-    sessionId: asOptionalString(notification.sessionId),
-    directory: asOptionalString(notification.directory) ?? (fallbackDirectory && fallbackDirectory !== "global" ? fallbackDirectory : undefined),
+    kind,
+    sessionId,
+    directory: directory || undefined,
     requireHidden: notification.requireHidden === true,
   }).catch((error) => {
     console.warn("[notifications] failed to dispatch UI notification", error)
@@ -797,7 +824,10 @@ async function reconcileAuthoritativeSessionInterruptions(
     const interrupted = interruptedTurnToolParts(store.getState(), sessionId, Date.now(), true)
     if (interrupted) {
       store.setState((current) => ({
-        part: { ...current.part, [interrupted.messageID]: interrupted.parts },
+        message: { ...current.message, [sessionId]: interrupted.messages },
+        ...(interrupted.parts
+          ? { part: { ...current.part, [interrupted.messageID]: interrupted.parts } }
+          : {}),
       }))
     }
     setGlobalSessionInterrupted(
@@ -2060,18 +2090,32 @@ export function handleEvent(
         messageID,
       })
     }
-    // The reducer already wrote the idle/error status into `draft`; mark the
-    // orphaned tools using the batched state and publish through the batch.
+    // The reducer already wrote the idle/error status into `draft`; finalize
+    // the interrupted message and orphaned tools through the same batch.
     if (sessionID) {
       const interrupted = interruptedTurnToolParts(state, sessionID)
       if (interrupted) {
-        cloneField("part", (value) => ({ ...(value ?? {}) }))
-        ;(draft as DirectoryStore).part[interrupted.messageID] = interrupted.parts
+        cloneField("message", (value) => ({ ...value }))
+        draft.message[sessionID] = interrupted.messages
+        if (interrupted.parts) {
+          cloneField("part", (value) => ({ ...(value ?? {}) }))
+          draft.part[interrupted.messageID] = interrupted.parts
+        }
         if (batch) {
           batch.states.set(store, draft as DirectoryStore)
           batch.changedStores.add(store)
         } else {
-          store.setState({ part: { ...(store.getState().part), [interrupted.messageID]: interrupted.parts } })
+          const currentState = store.getState()
+          if (interrupted.parts) {
+            store.setState({
+              message: { ...currentState.message, [sessionID]: interrupted.messages },
+              part: { ...currentState.part, [interrupted.messageID]: interrupted.parts },
+            })
+          } else {
+            store.setState({
+              message: { ...currentState.message, [sessionID]: interrupted.messages },
+            })
+          }
         }
       }
       setGlobalSessionInterrupted(
@@ -2106,24 +2150,22 @@ export function handleEvent(
 //
 // A managed OpenCode process can die mid-turn (crash, health-check restart).
 // The persisted turn then never settles: the trailing assistant message has
-// no `time.completed` and its tool parts stay `pending`/`running` forever —
-// the server never finalizes them (anomalyco/opencode#19023). The
+// no `time.completed`, and any tool parts can stay `pending`/`running`
+// forever — the server never finalizes them (anomalyco/opencode#19023). The
 // settle-triggered tail refresh above refetches the same stale records, so
-// the UI would keep running tool timers and "working" styling indefinitely
-// (#2577).
+// the UI would keep the assistant message unfinished and any tool timers and
+// "working" styling active indefinitely (#2577).
 //
 // OpenCode keeps a turn's session busy while it is genuinely alive —
 // including while waiting for a question/permission reply — so once a
 // session is AUTHORITATIVELY settled (a `session.idle`/`session.error`
 // event, or an authoritative status snapshot that lowers a previously busy
 // session) and the trailing assistant message is still unfinished with
-// active tool parts and no pending question/permission, the turn is
-// definitively interrupted. Finalize the orphaned parts locally as
-// `error`/`Interrupted` with an end time — the same shape OpenCode itself
-// writes for cancelled tools. A later terminal part event or a refresh that
-// carries the true terminal state supersedes the mark; a stale refresh that
-// still reports `running` is rejected by the reducer's and the materializer's
-// final-status preservation.
+// no pending question/permission anywhere in its descendant subtree, the turn
+// is definitively interrupted. Complete the assistant message locally with
+// MessageAbortedError and finalize any orphaned parts as `error`/`Interrupted`.
+// A later terminal event can supersede the mark; stale unfinished refreshes
+// cannot regress the locally final state.
 function clearInterruptedSessionsWaitingForInput(
   state: DirectoryStore,
   candidateSessionIDs: Iterable<string>,
@@ -2198,7 +2240,6 @@ function hasAuthoritativelyInterruptedTurn(
     return false
   }
 
-  const toolParts = (state.part[message.id] ?? []).filter((part) => part.type === "tool")
   const inactiveStatusSnapshotAt = state.sessionStatusSnapshotActiveIds?.has(sessionID)
     ? undefined
     : state.sessionStatusSnapshotAt
@@ -2208,61 +2249,78 @@ function hasAuthoritativelyInterruptedTurn(
   if (predatesAuthoritativeSnapshot) return true
 
   if (status?.type !== "idle") return false
-
-  const hasInterruptedTool = toolParts.some((part) => {
-    if (part.type !== "tool") return false
-    const partState = (part as { state?: { status?: unknown; error?: unknown } }).state
-    return partState?.status === "error" && partState.error === "Interrupted"
-  })
-  if (hasInterruptedTool) return true
   if (requireSnapshotAuthority) return false
-
-  const hasActiveTool = toolParts.some((part) => {
-    const status = (part as { state?: { status?: unknown } }).state?.status
-    return status === "pending" || status === "running"
-  })
-  if (hasActiveTool) return true
-
-  // Without newer snapshot authority, a terminal tool is enough to suppress
-  // the narrow missing-message-completion fallback.
-  const hasTerminalTool = toolParts.some((part) => {
-    const status = (part as { state?: { status?: unknown } }).state?.status
-    return typeof status === "string"
-  })
-  return !hasTerminalTool
+  return true
 }
+
+type AssistantMessage = Extract<Message, { role: "assistant" }>
+type SdkMessageAbortedError = Extract<NonNullable<AssistantMessage["error"]>, { name: "MessageAbortedError" }>
+type LocalMessageAbortedError = SdkMessageAbortedError & { message: string }
 
 export function interruptedTurnToolParts(
   state: DirectoryStore,
   sessionID: string,
   now = Date.now(),
   requireSnapshotAuthority = false,
-): { messageID: string; parts: Part[] } | null {
+): { messageID: string; messages: Message[]; parts?: Part[] } | null {
   if (!hasAuthoritativelyInterruptedTurn(state, sessionID, requireSnapshotAuthority)) return null
 
-  const messageID = getStaleRunningToolMessageID(state, sessionID)
-  if (!messageID) return null
-  const current = state.part[messageID]
-  if (!current) return null
+  const messages = state.message[sessionID] ?? []
+  let messageIndex = -1
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const candidate = messages[index]
+    if (candidate.role === "user") return null
+    if (candidate.role !== "assistant") continue
+    messageIndex = index
+    break
+  }
+  if (messageIndex < 0) return null
 
-  let changed = false
-  const nextParts = current.map((part) => {
+  const message = messages[messageIndex]
+  if (message.role !== "assistant") return null
+  if (message.time.completed !== undefined) {
+    // The turn finished; a missed terminal tool event is the tail refresh's
+    // job, not an interruption.
+    return null
+  }
+
+  const messageID = message.id
+  const nextMessages = [...messages]
+  const error = {
+    name: "MessageAbortedError",
+    data: { message: "aborted" },
+    message: "aborted",
+  } satisfies LocalMessageAbortedError
+  nextMessages[messageIndex] = {
+    ...message,
+    time: { ...message.time, completed: now },
+    error,
+  }
+
+  let partsChanged = false
+  const currentParts = state.part[messageID]
+  const nextParts = currentParts?.map((part) => {
     if (part.type !== "tool") return part
-    const partState = (part as { state?: { status?: unknown; time?: { start?: number } } }).state
-    if (!partState) return part
-    if (partState.status !== "pending" && partState.status !== "running") return part
-    changed = true
+    if (part.state.status !== "pending" && part.state.status !== "running") return part
+    partsChanged = true
+    const partTime = "time" in part.state ? part.state.time : undefined
+    const start = typeof partTime?.start === "number" ? partTime.start : now
     return {
       ...part,
       state: {
-        ...partState,
-        status: "error",
+        ...part.state,
+        status: "error" as const,
         error: "Interrupted",
-        time: { ...(partState.time ?? {}), end: now },
+        time: { start, end: now },
       },
-    } as Part
+    }
   })
-  return changed ? { messageID, parts: nextParts } : null
+
+  return {
+    messageID,
+    messages: nextMessages,
+    parts: partsChanged && nextParts ? nextParts : undefined,
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -12,6 +12,8 @@ export const createWebGitAPI = (): GitAPI => ({
   getGitFileDiff: gitApiHttp.getGitFileDiff,
   getGitRangeDiff: gitApiHttp.getGitRangeDiff,
   getWorktreeComparison: gitApiHttp.getWorktreeComparison,
+  getGitRangeFiles: gitApiHttp.getGitRangeFiles,
+  getBranchBase: gitApiHttp.getBranchBase,
   revertGitFile: gitApiHttp.revertGitFile,
   stageGitFile: gitApiHttp.stageGitFile,
   stageGitFiles: gitApiHttp.stageGitFiles,

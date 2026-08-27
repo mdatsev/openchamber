@@ -28,6 +28,8 @@ export type EmbeddedSessionRuntimeBootstrap = {
 
 export const EMBEDDED_RUNTIME_BOOTSTRAP_REQUEST = 'openchamber:embedded-runtime-bootstrap-request';
 export const EMBEDDED_RUNTIME_BOOTSTRAP_RESPONSE = 'openchamber:embedded-runtime-bootstrap-response';
+export const EMBEDDED_VISIBILITY_REQUEST = 'openchamber:embedded-visibility-request';
+export const EMBEDDED_VISIBILITY_UPDATE = 'openchamber:embedded-visibility';
 const EMBEDDED_RUNTIME_BOOTSTRAP_TIMEOUT_MS = 5_000;
 const EMBEDDED_RUNTIME_BOOTSTRAP_RETRY_MS = 100;
 
@@ -102,6 +104,13 @@ export const requestEmbeddedSessionRuntimeBootstrap = (): Promise<EmbeddedSessio
     window.addEventListener('message', handleMessage);
     sendRequest();
   });
+};
+
+export const requestEmbeddedSessionVisibility = (): void => {
+  if (!isEmbeddedSessionChat() || typeof window === 'undefined' || !window.parent || window.parent === window) {
+    return;
+  }
+  window.parent.postMessage({ type: EMBEDDED_VISIBILITY_REQUEST }, window.location.origin);
 };
 
 const buildEmbeddedSessionChatURLSignature = (
@@ -233,28 +242,4 @@ export const getEmbeddedSessionChatOriginSessionId = (): string | null => {
   } catch {
     return null;
   }
-};
-
-export const installEmbeddedSessionChatComposerFocusListener = (focus: () => void): (() => void) => {
-  if (typeof window === 'undefined' || !isEmbeddedSessionChat()) return () => {};
-  const listener = (event: MessageEvent) => {
-    if (event.source === window.parent && event.data?.type === 'openchamber:focus-chat-composer') focus();
-  };
-  window.addEventListener('message', listener);
-  return () => window.removeEventListener('message', listener);
-};
-
-export const focusEmbeddedSessionChatComposer = (sessionID: string): boolean => {
-  if (typeof document === 'undefined' || !sessionID) return false;
-  for (const iframe of document.querySelectorAll<HTMLIFrameElement>('iframe[src]')) {
-    try {
-      const url = new URL(iframe.src, window.location.href);
-      if (url.searchParams.get('ocPanel') !== 'session-chat' || url.searchParams.get('sessionId') !== sessionID) continue;
-      iframe.contentWindow?.postMessage({ type: 'openchamber:focus-chat-composer' }, url.origin);
-      return true;
-    } catch {
-      // Ignore unrelated iframes with invalid sources.
-    }
-  }
-  return false;
 };

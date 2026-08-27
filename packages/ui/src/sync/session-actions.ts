@@ -26,16 +26,17 @@ import {
   type SessionMetadataRecord,
 } from "@/lib/sessionReviewMetadata"
 import { withContextObligatoryMessage, type ContextObligatoryMessage } from "@/lib/contextObligatoryMessages"
+import { getBtwOriginalSessionID, getBtwSessionID, isBtwSession, withoutBtwSessionLink } from "@/lib/sessionBtwMetadata"
 import { withLinkedIssue, type LinkedIssue } from "@/lib/linkedIssues"
 import { getImperativeSessionMessageLoader } from "./session-message-loader"
 import { cleanupPersistedSessionState } from "./session-deletion-cleanup"
 import { getRuntimeKey } from "@/lib/runtime-switch"
 import { isAmbiguousTransportFailure } from "@/lib/relay/transport-error"
-import type { SideChatRuntimeOperation } from "@/lib/sideChats/runtimeOperation"
 import { getStaleRunningToolMessageID } from "./materialization"
 import { normalizePath } from "@/lib/pathNormalization"
 import { mergeMessages } from "./optimistic"
 import { messagesBefore, messagesFrom } from "./message-ordering"
+import { deleteChatDirectory } from "@/lib/chatDirectories"
 
 const MESSAGE_REFETCH_LIMIT = 100
 const SEND_CONFIRMATION_REFETCH_LIMIT = 30
@@ -239,7 +240,7 @@ function updateLiveSession(session: Session, directory?: string): boolean {
   return false
 }
 
-export function mirrorSessionIntoLiveStores(session: Session, directory?: string): void {
+function mirrorSessionIntoLiveStores(session: Session, directory?: string): void {
   if (directory && updateLiveSession(session, directory)) {
     return
   }
@@ -726,7 +727,11 @@ export async function createSession(
   directoryOverride?: string | null,
   parentID?: string | null,
   metadata?: Record<string, unknown>,
-  options?: { expectedRuntimeKey: string; select: boolean },
+  options?: {
+    expectedRuntimeKey?: string
+    select?: boolean
+    selectionTransition?: "submitted-draft"
+  },
 ): Promise<Session | null> {
   const assertRuntimeUnchanged = () => {
     if (isStaleRuntime(options?.expectedRuntimeKey)) {
@@ -755,7 +760,7 @@ export async function createSession(
       registerSessionDirectory(session.id, sessionDirectory)
     }
     if (options?.select !== false) {
-      useSessionUIStore.getState().setCurrentSession(session.id, sessionDirectory)
+      useSessionUIStore.getState().setCurrentSession(session.id, sessionDirectory, options?.selectionTransition)
     }
     useSessionUIStore.getState().markSessionAsOpenChamberCreated(session.id)
     useGlobalSessionsStore.getState().upsertSession(session)
@@ -803,6 +808,7 @@ export async function patchSessionMetadata(
   useGlobalSessionsStore.getState().upsertSession(updated)
   const sessionDirectory = (updated as { directory?: string | null }).directory ?? targetDirectory
   if (sessionDirectory) registerSessionDirectory(updated.id, sessionDirectory)
+  mirrorSessionIntoLiveStores(updated, sessionDirectory ?? undefined)
   return updated
 }
 
@@ -813,11 +819,8 @@ export async function setLinkedIssue(
   linked: boolean,
   expectedRuntimeKey?: string,
 ): Promise<Session> {
-  const updated = await patchSessionMetadata(sessionId, directory, (metadata) =>
+  return patchSessionMetadata(sessionId, directory, (metadata) =>
     withLinkedIssue(metadata, issue, linked), expectedRuntimeKey)
-  const sessionDirectory = (updated as Session & { directory?: string | null }).directory ?? directory ?? undefined
-  mirrorSessionIntoLiveStores(updated, sessionDirectory ?? undefined)
-  return updated
 }
 
 export async function setContextObligatoryMessage(
@@ -826,11 +829,8 @@ export async function setContextObligatoryMessage(
   message: ContextObligatoryMessage,
   pinned: boolean,
 ): Promise<Session> {
-  const updated = await patchSessionMetadata(sessionId, directory, (metadata) =>
+  return patchSessionMetadata(sessionId, directory, (metadata) =>
     withContextObligatoryMessage(metadata, message, pinned))
-  const sessionDirectory = (updated as Session & { directory?: string | null }).directory ?? directory ?? undefined
-  mirrorSessionIntoLiveStores(updated, sessionDirectory ?? undefined)
-  return updated
 }
 
 async function cleanupReviewMetadataBeforeDelete(
@@ -846,18 +846,41 @@ async function cleanupReviewMetadataBeforeDelete(
     return
   }
   if (isStaleRuntime(expectedRuntimeKey)) return
-  if (!isReviewSession(session)) return
-  const originalSessionID = getOriginalSessionID(session)
-  if (!originalSessionID) return
-  try {
-    await patchSessionMetadata(originalSessionID, directory ?? getSessionDirectory(originalSessionID), (metadata) =>
-      withoutReviewSessionLink(metadata, sessionId),
-      expectedRuntimeKey,
-    )
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    if (/not found/i.test(message)) return
-    console.warn("[session-actions] review metadata cleanup failed before delete", error)
+
+  const unlinkParent = async (originalSessionID: string, unlink: (metadata: SessionMetadataRecord) => SessionMetadataRecord) => {
+    try {
+      await patchSessionMetadata(originalSessionID, directory ?? getSessionDirectory(originalSessionID), unlink, expectedRuntimeKey)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (/not found/i.test(message)) return
+      console.warn("[session-actions] linked-session metadata cleanup failed before delete", error)
+    }
+  }
+
+  if (isReviewSession(session)) {
+    const originalSessionID = getOriginalSessionID(session)
+    if (originalSessionID) await unlinkParent(originalSessionID, (metadata) => withoutReviewSessionLink(metadata, sessionId))
+    return
+  }
+
+  if (isBtwSession(session)) {
+    const originalSessionID = getBtwOriginalSessionID(session)
+    if (originalSessionID) await unlinkParent(originalSessionID, (metadata) => withoutBtwSessionLink(metadata, sessionId))
+    return
+  }
+
+  // Deleting or archiving a session that has an active btw fork also removes
+  // the fork: it is a temporary session that only exists for its parent's
+  // panel. Best-effort — a failed fork delete must not block the parent's
+  // operation; the orphaned fork stays visible in the sidebar.
+  const btwSessionID = getBtwSessionID(session)
+  if (btwSessionID) {
+    try {
+      if (isStaleRuntime(expectedRuntimeKey)) return
+      await deleteSession(btwSessionID, { expectedRuntimeKey })
+    } catch (error) {
+      console.warn("[session-actions] failed to delete btw fork before parent delete", error)
+    }
   }
 }
 
@@ -973,6 +996,15 @@ function getKnownSessionSubtree(rootSessionId: string): Session[] {
   })
 }
 
+async function cleanupDeletedChatDirectory(directory: string | undefined, deleteDirectory: boolean): Promise<void> {
+  if (!directory || !deleteDirectory) return
+  try {
+    await deleteChatDirectory(directory)
+  } catch (error) {
+    console.warn("[session-actions] deleted chat directory cleanup failed", error)
+  }
+}
+
 export type DeleteSessionOptions = {
   /**
    * Runtime key the deletion is scoped to. Defaults to the active runtime when
@@ -1002,6 +1034,8 @@ export async function deleteSession(sessionId: string, options?: DeleteSessionOp
   if (isStaleRuntime(expectedRuntimeKey)) return false
   const sessionDirectory = getSessionDirectory(sessionId)
   const knownSubtree = getKnownSessionSubtree(sessionId)
+  const sessionSnapshot = getGlobalSessionSnapshot(sessionId)
+  const deleteManagedDirectory = Boolean(sessionSnapshot && sessionSnapshot.parentID == null)
   try {
     await cleanupReviewMetadataBeforeDelete(sessionId, sessionDirectory, expectedRuntimeKey)
     if (isStaleRuntime(expectedRuntimeKey)) return false
@@ -1011,6 +1045,9 @@ export async function deleteSession(sessionId: string, options?: DeleteSessionOp
       throw new Error("session.delete failed: server did not confirm deletion")
     }
     finalizeConfirmedSessionDeletion(sessionId, sessionDirectory, expectedRuntimeKey, knownSubtree)
+    if (!isStaleRuntime(expectedRuntimeKey)) {
+      await cleanupDeletedChatDirectory(sessionDirectory, deleteManagedDirectory)
+    }
     return true
   } catch (error) {
     console.error("[session-actions] deleteSession failed", error)
@@ -1020,6 +1057,9 @@ export async function deleteSession(sessionId: string, options?: DeleteSessionOp
     if ((error as { status?: number })?.status === 404) {
       if (isStaleRuntime(expectedRuntimeKey)) return false
       finalizeConfirmedSessionDeletion(sessionId, sessionDirectory, expectedRuntimeKey, knownSubtree)
+      if (!isStaleRuntime(expectedRuntimeKey)) {
+        await cleanupDeletedChatDirectory(sessionDirectory, deleteManagedDirectory)
+      }
       return true
     }
     return false
@@ -1034,6 +1074,8 @@ export async function deleteSessionInDirectory(
 ): Promise<boolean> {
   if (isStaleRuntime(expectedRuntimeKey)) return false
   const knownSubtree = getKnownSessionSubtree(sessionId)
+  const sessionSnapshot = getGlobalSessionSnapshot(sessionId)
+  const deleteManagedDirectory = Boolean(sessionSnapshot && sessionSnapshot.parentID == null)
   try {
     await cleanupReviewMetadataBeforeDelete(sessionId, directory, expectedRuntimeKey)
     if (isStaleRuntime(expectedRuntimeKey)) return false
@@ -1043,12 +1085,18 @@ export async function deleteSessionInDirectory(
       throw new Error("session.delete failed: server did not confirm deletion")
     }
     finalizeConfirmedSessionDeletion(sessionId, directory, expectedRuntimeKey, knownSubtree)
+    if (!isStaleRuntime(expectedRuntimeKey)) {
+      await cleanupDeletedChatDirectory(directory, deleteManagedDirectory)
+    }
     return true
   } catch (error) {
     console.error("[session-actions] deleteSessionInDirectory failed", error)
     if ((error as { status?: number })?.status === 404) {
       if (isStaleRuntime(expectedRuntimeKey)) return false
       finalizeConfirmedSessionDeletion(sessionId, directory, expectedRuntimeKey, knownSubtree)
+      if (!isStaleRuntime(expectedRuntimeKey)) {
+        await cleanupDeletedChatDirectory(directory, deleteManagedDirectory)
+      }
       return true
     }
     return false
@@ -1090,27 +1138,6 @@ export async function deleteSessions(
   }
 
   return { deletedIds, failedIds }
-}
-
-export async function deleteSessionInCapturedRuntime(
-  sessionId: string,
-  directory: string,
-  operation: SideChatRuntimeOperation,
-): Promise<boolean> {
-  const knownSubtree = getKnownSessionSubtree(sessionId)
-  try {
-    const result = await operation.client.session.delete({ sessionID: sessionId, directory })
-    if (assertSdkData(result, "session.delete") !== true) throw new Error("session.delete failed: server did not confirm deletion")
-    if (operation.isCurrent()) finalizeConfirmedSessionDeletion(sessionId, directory, operation.runtimeKey, knownSubtree)
-    return true
-  } catch (error) {
-    if (getErrorStatus(error) === 404) {
-      if (operation.isCurrent()) finalizeConfirmedSessionDeletion(sessionId, directory, operation.runtimeKey, knownSubtree)
-      return true
-    }
-    console.error("[session-actions] captured runtime delete failed", error)
-    return false
-  }
 }
 
 /**
@@ -1628,25 +1655,6 @@ export async function abortCurrentOperation(sessionId: string): Promise<void> {
   }
 }
 
-export async function abortSessionInDirectory(sessionId: string, directory: string): Promise<void> {
-  const result = await opencodeClient.getScopedSdkClient(directory).session.abort({
-    sessionID: sessionId,
-    directory,
-  })
-  if (assertSdkData(result, "session.abort") !== true) {
-    throw new Error("Session abort failed")
-  }
-}
-
-export async function abortSessionInCapturedRuntime(
-  sessionId: string,
-  directory: string,
-  operation: SideChatRuntimeOperation,
-): Promise<void> {
-  const result = await operation.client.session.abort({ sessionID: sessionId, directory })
-  if (assertSdkData(result, "session.abort") !== true) throw new Error("Session abort failed")
-}
-
 // ---------------------------------------------------------------------------
 // Permissions
 // ---------------------------------------------------------------------------
@@ -1673,22 +1681,6 @@ export async function respondToPermission(
   if (assertSdkData(result, "permission.reply") !== true) {
     throw new Error("Permission reply failed")
   }
-}
-
-export async function respondToPermissionInCapturedRuntime(
-  sessionId: string,
-  requestId: string,
-  response: "once" | "always" | "reject",
-  directory: string | undefined,
-  operation: SideChatRuntimeOperation,
-): Promise<void> {
-  if (!operation.isCurrent()) throw new Error("Permission reply runtime changed")
-  const result = await operation.client.permission.reply({
-    requestID: requestId,
-    reply: response,
-    ...(directory ? { directory } : {}),
-  })
-  if (assertSdkData(result, "permission.reply") !== true) throw new Error("Permission reply failed")
 }
 
 export async function dismissPermission(

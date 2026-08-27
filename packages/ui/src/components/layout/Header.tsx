@@ -17,12 +17,13 @@ import { SortableTabsStrip, type SortableTabsStripItem } from '@/components/ui/s
 
 import { DiffIcon } from '@/components/icons/DiffIcon';
 import { useUIStore, type ContextPanelMode, type MainTab } from '@/stores/useUIStore';
-import { requestContextPanelClose } from './contextPanelCloseRequest';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSessionWorktreeStore } from '@/sync/session-worktree-store';
 import { formatSessionWorktreeBadge } from '@/sync/session-worktree-contract';
 import { buildSessionMessageRecordsSnapshot, useDirectoryStore, useGlobalSessionStatus, useSessionMessagesResolved } from '@/sync/sync-context';
+import { useDirectoryStore as useAppDirectoryStore } from '@/stores/useDirectoryStore';
+import { isChatDirectoryForHome } from '@/lib/chatDirectories';
 import { useSync } from '@/sync/use-sync';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useQuotaAutoRefresh, useQuotaStore } from '@/stores/useQuotaStore';
@@ -1054,6 +1055,10 @@ export const Header: React.FC<HeaderProps> = ({
     }
     return normalize(state.newSessionDraft.bootstrapPendingDirectory ?? state.newSessionDraft.directoryOverride ?? '');
   });
+  const draftTarget = useSessionUIStore((state) => state.newSessionDraft.target);
+  const draftProjectId = useSessionUIStore((state) => state.newSessionDraft.selectedProjectId);
+  const selectedSessionDirectory = useSessionUIStore((state) => state.currentSessionDirectory);
+  const homeDirectory = useAppDirectoryStore((state) => state.homeDirectory);
 
   const openDirectory = React.useMemo(() => {
     return worktreeDirectory || sessionDirectory || draftDirectory;
@@ -1082,10 +1087,13 @@ export const Header: React.FC<HeaderProps> = ({
 
   const gitBranchForDirectory = useGitBranchLabel(openDirectory || null);
   const currentBranchLabel = gitBranchForDirectory || currentSessionWorktreeBranch || catalogWorktreeBranch;
+  const isChatContext = isNewSessionDraftOpen
+    ? draftTarget === 'chat'
+    : isChatDirectoryForHome(sessionDirectory || selectedSessionDirectory, homeDirectory);
 
   // Whether the title carries a second line under it. Hoisted because the
   // session menu's vertical alignment depends on the same answer.
-  const showHeaderMetaRow = !workStatusPanelVisible
+  const showHeaderMetaRow = !isChatContext && !workStatusPanelVisible
     && Boolean(activeProjectLabel || currentBranchLabel || (!isNewSessionDraftOpen && worktreeBadgeKind));
 
 
@@ -1425,14 +1433,14 @@ export const Header: React.FC<HeaderProps> = ({
 
   const handleOpenDraftMiniChat = React.useCallback(() => {
     void invokeDesktop('desktop_open_draft_mini_chat_window', {
-      directory: normalize(openDirectory || activeProject?.path || ''),
-      projectId: activeProject?.id ?? null,
+      directory: isChatContext ? '' : draftDirectory,
+      projectId: isChatContext ? null : draftProjectId,
       apiBaseUrl: getRuntimeApiBaseUrl(),
       clientToken: getRuntimeBearerTokenSync(),
     }).catch((error) => {
       console.warn('[header] failed to open draft mini chat window', error);
     });
-  }, [activeProject?.id, activeProject?.path, openDirectory]);
+  }, [draftDirectory, draftProjectId, isChatContext]);
 
   const handleOpenCurrentMiniChat = React.useCallback(() => {
     if (isNewSessionDraftOpen) {
@@ -1445,13 +1453,13 @@ export const Header: React.FC<HeaderProps> = ({
     }
     void invokeDesktop('desktop_open_session_mini_chat_window', {
       sessionId: currentSessionId,
-      directory: normalize(openDirectory || activeProject?.path || ''),
+      directory: sessionDirectory || normalize(selectedSessionDirectory || '') || worktreeDirectory,
       apiBaseUrl: getRuntimeApiBaseUrl(),
       clientToken: getRuntimeBearerTokenSync(),
     }).catch((error) => {
       console.warn('[header] failed to open session mini chat window', error);
     });
-  }, [activeProject?.path, currentSessionId, handleOpenDraftMiniChat, isNewSessionDraftOpen, openDirectory]);
+  }, [currentSessionId, handleOpenDraftMiniChat, isNewSessionDraftOpen, selectedSessionDirectory, sessionDirectory, worktreeDirectory]);
 
   const handleOpenContextPanel = React.useCallback(() => {
     const directory = normalize(openDirectory || '');
@@ -1461,7 +1469,7 @@ export const Header: React.FC<HeaderProps> = ({
 
     const panelState = useUIStore.getState().contextPanelByDirectory[directory];
     if (getActiveContextMode(panelState) === 'context') {
-      if (!requestContextPanelClose(directory)) closeContextPanel(directory);
+      closeContextPanel(directory);
       return;
     }
 
@@ -1479,7 +1487,7 @@ export const Header: React.FC<HeaderProps> = ({
 
     const panelState = useUIStore.getState().contextPanelByDirectory[directory];
     if (getActiveContextMode(panelState) === 'plan') {
-      if (!requestContextPanelClose(directory)) closeContextPanel(directory);
+      closeContextPanel(directory);
       return;
     }
 
@@ -1902,7 +1910,8 @@ export const Header: React.FC<HeaderProps> = ({
     <div
       onMouseDown={handleDragStart}
       className={cn(
-        'app-region-drag relative flex h-12 select-none items-center pr-3',
+        'app-region-drag relative flex h-12 select-none items-center',
+        usesFramelessChrome && windowControlsSide === 'right' ? 'pr-0' : 'pr-3',
         macosHeaderSizeClass
       )}
       style={webWindowControlsOverlayStyle}
@@ -2054,7 +2063,7 @@ export const Header: React.FC<HeaderProps> = ({
                       <DropdownMenuItem onClick={() => void shareCurrentSession()}><Icon name="share-2" className="mr-2 size-4" />{t('sessions.sidebar.session.menu.share')}</DropdownMenuItem>
                     )}
                     <DropdownMenuItem onClick={() => void exportCurrentSession()}><Icon name="download" className="mr-2 size-4" />{t('sessions.sidebar.session.menu.exportMarkdown')}</DropdownMenuItem>
-                    {!isVSCode && currentSession && !currentSession.parentId ? (
+                    {!isVSCode && !isChatContext && currentSession && !currentSession.parentId ? (
                       <Tooltip>
                         <TooltipTrigger asChild>
                           <span className="block">

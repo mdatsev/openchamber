@@ -20,7 +20,6 @@ const globalUpsertedSessions: unknown[] = []
 const globalRemovedSessionIds: string[] = []
 const deletedCleanupIdentities: Array<{ runtimeKey: string; directory: string; sessionId: string }> = []
 const movedSessionDirectories: Array<{ sessionID: string; directory: string }> = []
-const sideChatRequests: Array<Record<string, unknown>> = []
 const syncMessages: Message[] = []
 
 const mockScopedClient = {
@@ -127,6 +126,7 @@ mock.module("@/lib/opencode/client", () => ({
       return mockScopedClient
     },
     getDirectory: () => "/test/project",
+    getFilesystemHome: mock(async () => "/home/test"),
     getSdkClient: () => mockSdk,
     replyToPermission: mock((requestId: string, reply: string, options?: { directory?: string | null }) => {
       replyCalls.push({ method: "permission.reply", params: { requestID: requestId, reply, directory: options?.directory } })
@@ -167,16 +167,6 @@ mock.module("@/lib/opencode/client", () => ({
       return Promise.resolve({})
     }),
   },
-}))
-
-mock.module("@/lib/runtime-fetch", () => ({
-  runtimeFetch: mock(async (_path: string, init: RequestInit) => {
-    sideChatRequests.push(JSON.parse(String(init.body ?? '{}')))
-    return new Response(JSON.stringify({ id: 'session-side', title: 'Side chat', directory: '/test/project', time: { created: 2 } }), {
-      status: 201,
-      headers: { 'Content-Type': 'application/json' },
-    })
-  }),
 }))
 
 // Mock useConfigStore

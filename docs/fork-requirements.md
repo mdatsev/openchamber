@@ -37,13 +37,6 @@
 
 - Nest it in the spawning Task's chat summary. The child session may remain visible in session navigation.
 
-### FC-008: /side: Disposable side chats
-
-- On web and Desktop, `/btw` and `/side` open a disposable chat in a side panel.
-- The side chat inherits the context at the point of invocation, even if mid-turn.
-- Allow the side chat to be promoted to a normal session.
-- Repeating either command for an existing side chat focuses it and sends the new prompt there.
-
 ### FC-009: Prevent accidental file reverts
 
 - Ask for confirmation before reverting a file with uncommitted changes.
@@ -72,8 +65,8 @@
 - Be able to see changes not merged to the root branch for each worktree.
 - Not merged changes include both committed and uncommited changes.
 - Let the user view committed changes, uncommitted changes, or both together. Cherry-pick equivalence is not supported.
-- Show an orange repository icon on a project when its root checkout has uncommitted changes.
-- Show an orange worktree icon on a worktree entry when it has committed or uncommitted changes relative to the root branch.
+- Show an orange repository icon on a project when its root checkout has uncommitted changes or commits ahead of its tracked upstream.
+- Show an orange worktree icon on a worktree entry when it has committed or uncommitted changes relative to the root branch, or commits ahead of its tracked upstream.
 - Show an orange upward arrow on a project or worktree entry when its branch has commits ahead of its tracked upstream.
 - When a project is collapsed, show the repository icon, worktree icon, or both according to changes in its root checkout and worktrees.
 - Do not repeat checkout status on ordinary session rows inside an expanded project. A compact single-conversation worktree row acts as the worktree entry and shows its changed indicator there.

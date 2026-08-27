@@ -48,8 +48,8 @@ export const WorktreeChangesIndicator: React.FC<{
     : null;
   const indicator = (
     <span className={cn('inline-flex shrink-0 items-center gap-1 text-status-warning', className)}>
-      {changeLabel ? (
-        <span className="inline-flex size-4 items-center justify-center" aria-label={changeLabel} role="img">
+      {changeLabel || pushLabel ? (
+        <span className="inline-flex size-4 items-center justify-center" aria-label={changeLabel ?? pushLabel ?? undefined} role="img">
           <Icon name="node-tree" className="size-3.5" />
         </span>
       ) : null}
