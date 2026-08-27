@@ -104,3 +104,10 @@
 - Show matching archived sessions under their projects in sidebar search results.
 - Before sending a prompt, slash command, or shell input to an archived session, restore it and wait for server confirmation.
 - If restoration fails or the runtime changes, do not dispatch the message.
+
+### FC-021: Keep hosted mobile UI above the virtual keyboard
+
+- Support browsers such as Firefox Android that resize only the visual viewport when the virtual keyboard opens.
+- Keep the focused composer and fullscreen surfaces inside the keyboard-visible area.
+- As the composer grows, keep its controls visible and preserve enough layout space for the transcript to scroll fully above it.
+- Keep browser handling separate from Capacitor's native keyboard behavior.
