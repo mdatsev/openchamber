@@ -143,4 +143,44 @@ export function useMobileViewportPin(options: MobileViewportPinOptions): void {
             releaseForm(form);
         };
     }, [formRef, isDraftScreen, isFocused, isFullscreen, isMobile]);
+
+    // Existing chat: the form is in normal flow, but Android browsers can
+    // resize the layout viewport without moving that flow position above the
+    // keyboard. Pin the focused form to the visible bottom just like the draft
+    // screen does, while preserving the form's measured height and width.
+    React.useLayoutEffect(() => {
+        if (!isMobile || isCapacitorApp()) return;
+        if (isDraftScreen || isFullscreen || !isFocused) return;
+        const vv = window.visualViewport;
+        const form = formRef.current;
+        if (!vv || !form) return;
+
+        const rect = form.getBoundingClientRect();
+        form.style.position = 'fixed';
+        form.style.left = `${Math.floor(rect.left)}px`;
+        form.style.right = '';
+        form.style.width = `${Math.floor(rect.width)}px`;
+        form.style.height = `${Math.floor(rect.height)}px`;
+        form.style.zIndex = '40';
+        form.style.background = 'var(--background)';
+
+        let lastTop = Number.NaN;
+        let frame = 0;
+        const track = () => {
+            const layoutBottom = Math.max(document.documentElement.clientHeight, window.innerHeight);
+            const vvBottom = vv.offsetTop + vv.height;
+            const top = Math.max(0, Math.floor(Math.min(vvBottom, layoutBottom) - form.offsetHeight));
+            if (top !== lastTop) {
+                lastTop = top;
+                form.style.top = `${top}px`;
+            }
+            frame = requestAnimationFrame(track);
+        };
+        track();
+
+        return () => {
+            cancelAnimationFrame(frame);
+            releaseForm(form);
+        };
+    }, [formRef, isDraftScreen, isFocused, isFullscreen, isMobile]);
 }

@@ -644,6 +644,16 @@
   visibility: hidden;
 }
 
+/* Browser fullscreen surfaces render at <body> level. Fixed inset-0 can keep
+   the layout viewport's height while the keyboard only exposes a smaller
+   visual viewport. Use the live visual viewport geometry for every browser
+   surface; when the browser already resizes layout, these values match it. */
+:root.mobile-pointer:not(.oc-capacitor-app) .oc-keyboard-inset-surface {
+  top: var(--oc-visual-viewport-offset-top, 0px);
+  bottom: auto;
+  height: var(--oc-visual-viewport-height, 100dvh);
+}
+
 /* Installed PWA (standalone) safe areas. In the in-browser page Safari's own
    chrome covers the home indicator and status bar, and the Capacitor shell has
    its own choreography (--oc-app-bottom-safe + keyboard FLIP) — neither matches

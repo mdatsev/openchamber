@@ -100,8 +100,46 @@ const NATIVE_RESUME_SYNC_EVENT_THROTTLE_MS = 1_000;
     (Changes / Files / Terminal / Notes / MCP) are separate layers. */
 type MobileSurface = 'instances' | 'settings' | 'update';
 
+function useBrowserMobileViewport(): void {
+  React.useLayoutEffect(() => {
+    if (isCapacitorMobileApp() || typeof window === 'undefined' || !window.visualViewport) return;
+
+    const root = document.documentElement;
+    const visualViewport = window.visualViewport;
+    let frame = 0;
+
+    const apply = () => {
+      frame = 0;
+      const offsetTop = Math.max(0, visualViewport.offsetTop);
+      const bottom = visualViewport.offsetTop + visualViewport.height;
+      const height = Math.max(0, bottom - offsetTop);
+      root.style.setProperty('--oc-visual-viewport-offset-top', `${Math.round(offsetTop)}px`);
+      root.style.setProperty('--oc-visual-viewport-height', `${Math.round(height)}px`);
+    };
+    const schedule = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(apply);
+    };
+
+    apply();
+    visualViewport.addEventListener('resize', schedule);
+    visualViewport.addEventListener('scroll', schedule);
+    window.addEventListener('resize', schedule);
+
+    return () => {
+      if (frame) cancelAnimationFrame(frame);
+      visualViewport.removeEventListener('resize', schedule);
+      visualViewport.removeEventListener('scroll', schedule);
+      window.removeEventListener('resize', schedule);
+      root.style.removeProperty('--oc-visual-viewport-offset-top');
+      root.style.removeProperty('--oc-visual-viewport-height');
+    };
+  }, []);
+}
+
 const MobileShell: React.FC<{ onActiveConnectionDeleted: () => void }> = ({ onActiveConnectionDeleted }) => {
   const { t } = useI18n();
+  useBrowserMobileViewport();
   const [sessionsSheetOpen, setSessionsSheetOpen] = React.useState(false);
   const [activeSurface, setActiveSurface] = React.useState<MobileSurface | null>(null);
   // Phone right drawer with the workspace tabs; the tab persists across
