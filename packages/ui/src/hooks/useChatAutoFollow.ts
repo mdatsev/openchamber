@@ -681,8 +681,12 @@ export const useChatAutoFollow = ({
     React.useEffect(() => {
         const container = containerEl;
         if (!container || typeof ResizeObserver === 'undefined') return;
+        let previousClientHeight = container.clientHeight;
 
         const observer = new ResizeObserver(() => {
+            const clientHeight = container.clientHeight;
+            const viewportResized = Math.abs(clientHeight - previousClientHeight) > 1;
+            previousClientHeight = clientHeight;
             // Keyboard slide in flight: the container/composer resizes it reports
             // are part of the transform choreography — the settle handler does the
             // single deterministic re-pin, so chasing here would just fight it.
@@ -709,6 +713,13 @@ export const useChatAutoFollow = ({
                 if (grew) armEntryStickQuiet();
                 return;
             }
+            // Composer growth and hosted-browser keyboard changes resize the
+            // readable viewport without growing message content. Preserve a
+            // bottom-following idle chat, but leave a user-released chat alone.
+            if (viewportResized && el && stateRef.current === 'following') {
+                scrollToBottomNow('auto');
+                return;
+            }
             // Idle resize = layout churn (virtualizer re-measurement, async
             // tool/code rendering), NOT live growth. Never re-pin when idle, or
             // tall items re-measuring as the user scrolls cause an endless
@@ -723,7 +734,7 @@ export const useChatAutoFollow = ({
             observer.observe(inner);
         }
         return () => observer.disconnect();
-    }, [armEntryStickQuiet, containerEl, isActive, scrollToBottom, setStateValue, updateOverflowAndButton]);
+    }, [armEntryStickQuiet, containerEl, isActive, scrollToBottom, scrollToBottomNow, setStateValue, updateOverflowAndButton]);
 
     // ── native keyboard transitions (Capacitor choreography) ────────────────
     // The chat scroller gets NO transforms during the keyboard transition:

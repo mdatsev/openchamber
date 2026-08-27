@@ -5,8 +5,8 @@
  * composer stays where it belongs on its own. A mobile browser has nothing of
  * the sort: Safari pans the visual viewport over an unchanged layout instead
  * of shrinking it, so a composer positioned in normal flow ends up partly
- * off-screen or behind the keyboard. Both effects here exist to put it back,
- * and both are deliberately restricted to non-Capacitor mobile.
+ * off-screen or behind the keyboard. These effects put it back and are
+ * deliberately restricted to non-Capacitor mobile.
  *
  * Neither is verifiable from a test: they are corrections for specific WebKit
  * behaviors, and every guard in them marks a case that was observed breaking.
@@ -96,20 +96,26 @@ export function useMobileViewportPin(options: MobileViewportPinOptions): void {
         };
     }, [editorRef, formRef, isFullscreen, isMobile]);
 
-    // Draft screen with the keyboard up: anchor the normal-height composer to
-    // the visible bottom. The chat screen does not need this — its own
-    // focused-field reveal works there.
+    // Keep the focused, non-fullscreen composer at the visible bottom. Fixed
+    // positioning removes it from flex layout, so its slot must reserve both
+    // the form and the part of the layout hidden below the visual viewport.
     React.useLayoutEffect(() => {
         if (!isMobile || isCapacitorApp()) return;
-        if (!isDraftScreen || isFullscreen || !isFocused) return;
+        if (isFullscreen || !isFocused) return;
         const vv = window.visualViewport;
         const form = formRef.current;
         if (!vv || !form) return;
+        const slot = form.parentElement;
+        const bound = form.closest<HTMLElement>('[data-composer-bound]');
+        if (!slot || !bound) return;
 
         // Keep the in-flow horizontal geometry (page paddings) while fixed.
         const rect = form.getBoundingClientRect();
+        const previousSlotFlex = slot.style.flex;
+        const previousSlotHeight = slot.style.height;
         form.style.position = 'fixed';
         form.style.left = `${Math.floor(rect.left)}px`;
+        form.style.right = '';
         form.style.width = `${Math.floor(rect.width)}px`;
         form.style.zIndex = '40';
         form.style.background = 'var(--background)';
@@ -118,6 +124,7 @@ export function useMobileViewportPin(options: MobileViewportPinOptions): void {
         // can simply not fire), so track the pan with a rAF loop instead —
         // cheap math per frame, a style write only when the value changes.
         let lastTop = Number.NaN;
+        let lastReservation = Number.NaN;
         let frame = 0;
         const track = () => {
             // iOS standalone (PWA) can serve stale visualViewport metrics after
@@ -129,59 +136,15 @@ export function useMobileViewportPin(options: MobileViewportPinOptions): void {
             // keeps the visual-viewport anchor there.
             const layoutBottom = document.documentElement.clientHeight;
             const vvBottom = vv.offsetTop + vv.height;
-            const top = Math.max(0, Math.floor(Math.min(vvBottom, layoutBottom) - form.offsetHeight));
-            if (top !== lastTop) {
-                lastTop = top;
-                form.style.top = `${top}px`;
-            }
-            frame = requestAnimationFrame(track);
-        };
-        track();
-
-        return () => {
-            cancelAnimationFrame(frame);
-            releaseForm(form);
-        };
-    }, [formRef, isDraftScreen, isFocused, isFullscreen, isMobile]);
-
-    // Existing chat: the form is in normal flow, but Android browsers can
-    // resize the layout viewport without moving that flow position above the
-    // keyboard. Pin the focused form to the visible bottom just like the draft
-    // screen does, while preserving the form's measured width. Do not freeze
-    // its height: the editor grows as text wraps, and the next frame moves the
-    // taller form upward to keep its footer above the keyboard.
-    React.useLayoutEffect(() => {
-        if (!isMobile || isCapacitorApp()) return;
-        if (isDraftScreen || isFullscreen || !isFocused) return;
-        const vv = window.visualViewport;
-        const form = formRef.current;
-        if (!vv || !form) return;
-        const slot = form.parentElement;
-        if (!slot) return;
-
-        const rect = form.getBoundingClientRect();
-        const previousSlotHeight = slot.style.height;
-        form.style.position = 'fixed';
-        form.style.left = `${Math.floor(rect.left)}px`;
-        form.style.right = '';
-        form.style.width = `${Math.floor(rect.width)}px`;
-        form.style.zIndex = '40';
-        form.style.background = 'var(--background)';
-
-        let lastTop = Number.NaN;
-        let lastHeight = Number.NaN;
-        let frame = 0;
-        const track = () => {
-            const layoutBottom = Math.max(document.documentElement.clientHeight, window.innerHeight);
-            const vvBottom = vv.offsetTop + vv.height;
+            const visibleBottom = Math.min(vvBottom, layoutBottom);
             const height = form.offsetHeight;
-            const top = Math.max(0, Math.floor(Math.min(vvBottom, layoutBottom) - height));
-            if (height !== lastHeight) {
-                lastHeight = height;
-                // Fixed positioning removes the form from flex layout. Keep
-                // its slot at the live height so the transcript ends above it
-                // and its final content remains reachable by scrolling.
-                slot.style.height = `${height}px`;
+            const top = Math.max(0, Math.floor(visibleBottom - height));
+            const coveredLayout = Math.max(0, bound.getBoundingClientRect().bottom - visibleBottom);
+            const reservation = Math.ceil(height + coveredLayout);
+            if (reservation !== lastReservation) {
+                lastReservation = reservation;
+                slot.style.height = `${reservation}px`;
+                slot.style.flex = '0 0 auto';
             }
             if (top !== lastTop) {
                 lastTop = top;
@@ -194,6 +157,7 @@ export function useMobileViewportPin(options: MobileViewportPinOptions): void {
         return () => {
             cancelAnimationFrame(frame);
             releaseForm(form);
+            slot.style.flex = previousSlotFlex;
             slot.style.height = previousSlotHeight;
         };
     }, [formRef, isDraftScreen, isFocused, isFullscreen, isMobile]);
