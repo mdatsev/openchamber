@@ -56,19 +56,22 @@ copy.
 
 ## The editor
 
-`editor/` wraps CodeMirror. The document is a plain string: `getValue()` is
-exactly what gets sent, so nothing downstream serializes a rich document model
-back into a prompt.
+`editor/` uses CodeMirror on desktop and a native `<textarea>` on mobile. The
+mobile control is required for Gboard and OS-level speech-to-text, which do not
+reliably continue dictation in CodeMirror's managed `contenteditable` element.
+Both implementations expose the same composer handle and keep a plain string:
+`getValue()` is exactly what gets sent, so nothing downstream serializes a rich
+document model back into a prompt.
 
-The composer previously painted a transparent `<textarea>` over a mirror
+Before CodeMirror, the desktop composer painted a transparent `<textarea>` over a mirror
 `<div>`. That restricted highlighting to styles which do not change glyph
 advance width — colour, background, underline — because anything else made the
 mirror drift out from under the caret. Bold and italic were impossible, and the
 overlay was disabled outright on mobile, where wrapped text drifted anyway.
-**Those constraints are gone**; adding a width-affecting style is now a
-question of design, not of feasibility.
+**Those constraints are gone from the desktop editor**; mobile intentionally
+uses a plain textarea instead of syntax highlighting so native dictation works.
 
-Selection rendering: every device runs CodeMirror's `drawSelection()` — it
+CodeMirror selection rendering uses `drawSelection()` — it
 keeps typing on the drawn-selection code path, and removing it makes
 CodeMirror enforce cursor association on the native selection, which iOS
 answers with severe input lag. **That much is not platform-specific and must
@@ -112,10 +115,10 @@ token: themes define `--interactive-selection` with its own alpha, so mixing it
 with transparent again is nearly invisible. The iOS system overlay owns its
 visible selection fill.
 
-`composerLanguage.ts` retokenizes the whole document on every change. The
-composer holds a prompt, not a source file: it is short enough that a full pass
-is cheaper and far simpler than incremental mapping, and it keeps the editor
-and the send path reading the same grammar.
+On desktop, `composerLanguage.ts` retokenizes the whole document on every
+change. The composer holds a prompt, not a source file: it is short enough that
+a full pass is cheaper and far simpler than incremental mapping, and it keeps
+the editor and the send path reading the same grammar.
 
 ## Ordering rules worth knowing
 
@@ -133,7 +136,11 @@ and the send path reading the same grammar.
   where the page may stop running, because a pending timer is not a saved
   draft. Two orderings are load-bearing: the debounced write is skipped once
   while a draft is being restored, and a deleted draft's empty signature is
-  recorded before a queued write could resurrect it.
+  recorded before a queued write could resurrect it. Submit clears
+  optimistically. A rejected send restores the raw message, confirmed mentions,
+  original composer attachments, inline drafts, and queued entries to their
+  captured identity. Text typed while the request was pending is retained after
+  the failed message rather than overwritten.
 - `state/useDraftTarget.ts` — the draft can target a directory that does not
   exist yet (a worktree being created). It must survive not appearing in the
   branch list, or the selector snaps back to the project root mid-creation.

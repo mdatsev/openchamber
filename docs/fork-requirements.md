@@ -111,3 +111,14 @@
 - Keep the focused composer and fullscreen surfaces inside the keyboard-visible area.
 - As the composer grows, keep its controls visible and preserve enough layout space for the transcript to scroll fully above it.
 - Keep browser handling separate from Capacitor's native keyboard behavior.
+
+### FC-022: Preserve failed message submissions
+
+- When a prompt or command fails to send, restore its raw text, confirmed mentions, composer attachments, inline drafts, and queued messages to the original chat draft.
+- Preserve text, attachments, and queue entries added while the failed request was pending instead of overwriting them during recovery.
+- Persist recovery to the original chat even when the user switches chats before the failure arrives.
+
+### FC-023: Support native mobile dictation
+
+- Use a native text control for the mobile chat composer so Gboard and OS-level speech-to-text can dictate continuously from an empty prompt.
+- Keep the desktop composer on CodeMirror; mobile dictation reliability takes precedence over syntax highlighting in the prompt.
