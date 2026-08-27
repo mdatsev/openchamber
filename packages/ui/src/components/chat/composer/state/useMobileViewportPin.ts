@@ -156,8 +156,11 @@ export function useMobileViewportPin(options: MobileViewportPinOptions): void {
         const vv = window.visualViewport;
         const form = formRef.current;
         if (!vv || !form) return;
+        const slot = form.parentElement;
+        if (!slot) return;
 
         const rect = form.getBoundingClientRect();
+        const previousSlotHeight = slot.style.height;
         form.style.position = 'fixed';
         form.style.left = `${Math.floor(rect.left)}px`;
         form.style.right = '';
@@ -166,11 +169,20 @@ export function useMobileViewportPin(options: MobileViewportPinOptions): void {
         form.style.background = 'var(--background)';
 
         let lastTop = Number.NaN;
+        let lastHeight = Number.NaN;
         let frame = 0;
         const track = () => {
             const layoutBottom = Math.max(document.documentElement.clientHeight, window.innerHeight);
             const vvBottom = vv.offsetTop + vv.height;
-            const top = Math.max(0, Math.floor(Math.min(vvBottom, layoutBottom) - form.offsetHeight));
+            const height = form.offsetHeight;
+            const top = Math.max(0, Math.floor(Math.min(vvBottom, layoutBottom) - height));
+            if (height !== lastHeight) {
+                lastHeight = height;
+                // Fixed positioning removes the form from flex layout. Keep
+                // its slot at the live height so the transcript ends above it
+                // and its final content remains reachable by scrolling.
+                slot.style.height = `${height}px`;
+            }
             if (top !== lastTop) {
                 lastTop = top;
                 form.style.top = `${top}px`;
@@ -182,6 +194,7 @@ export function useMobileViewportPin(options: MobileViewportPinOptions): void {
         return () => {
             cancelAnimationFrame(frame);
             releaseForm(form);
+            slot.style.height = previousSlotHeight;
         };
     }, [formRef, isDraftScreen, isFocused, isFullscreen, isMobile]);
 }
