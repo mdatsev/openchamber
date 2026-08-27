@@ -147,7 +147,9 @@ export function useMobileViewportPin(options: MobileViewportPinOptions): void {
     // Existing chat: the form is in normal flow, but Android browsers can
     // resize the layout viewport without moving that flow position above the
     // keyboard. Pin the focused form to the visible bottom just like the draft
-    // screen does, while preserving the form's measured height and width.
+    // screen does, while preserving the form's measured width. Do not freeze
+    // its height: the editor grows as text wraps, and the next frame moves the
+    // taller form upward to keep its footer above the keyboard.
     React.useLayoutEffect(() => {
         if (!isMobile || isCapacitorApp()) return;
         if (isDraftScreen || isFullscreen || !isFocused) return;
@@ -160,7 +162,6 @@ export function useMobileViewportPin(options: MobileViewportPinOptions): void {
         form.style.left = `${Math.floor(rect.left)}px`;
         form.style.right = '';
         form.style.width = `${Math.floor(rect.width)}px`;
-        form.style.height = `${Math.floor(rect.height)}px`;
         form.style.zIndex = '40';
         form.style.background = 'var(--background)';
 
