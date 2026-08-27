@@ -218,10 +218,11 @@ ${desktopReturn ? `<a class="return" href="openchamber://focus/mcp-auth">Return 
         });
       }
 
-      const target = typeof req.body?.target === 'string' && req.body.target.trim().length > 0
+      const requestedTarget = typeof req.body?.target === 'string' && req.body.target.trim().length > 0
         ? req.body.target.trim()
         : undefined;
       const upgradeOperation = (async () => {
+        const target = requestedTarget ?? await fetchLatestOpenCodeVersion();
         const response = await fetch(buildOpenCodeUrl('/global/upgrade', ''), {
           method: 'POST',
           headers: {
@@ -229,7 +230,7 @@ ${desktopReturn ? `<a class="return" href="openchamber://focus/mcp-auth">Return 
             Accept: 'application/json',
             ...getOpenCodeAuthHeaders(),
           },
-          body: JSON.stringify(target ? { target } : {}),
+          body: JSON.stringify({ target }),
         });
         const payload = await response.json().catch(() => null);
         if (!response.ok) {

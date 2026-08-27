@@ -75,13 +75,33 @@ describe('VS Code OpenCode upgrades', () => {
     assert.equal((request?.headers as Record<string, string>).Authorization, 'Basic test');
   });
 
+  test('resolves the latest version when no target is supplied', async () => {
+    const { manager, getRestartCount } = createManager();
+    let upgradeRequest: RequestInit | undefined;
+    globalThis.fetch = async (input, init) => {
+      const url = String(input);
+      if (url.includes('registry.npmjs.org')) return new Response(JSON.stringify({ version: '1.18.9' }));
+      if (url.includes('api.github.com')) return new Response(JSON.stringify({ tag_name: 'v1.18.10' }));
+      assert.equal(url, 'http://127.0.0.1:4096/global/upgrade');
+      upgradeRequest = init;
+      return new Response(JSON.stringify({ success: true, version: '1.18.10' }));
+    };
+
+    assert.deepEqual(await upgradeManagedOpenCode(manager), {
+      status: 200,
+      body: { success: true, version: '1.18.10', restarted: true },
+    });
+    assert.equal(getRestartCount(), 1);
+    assert.deepEqual(JSON.parse(String(upgradeRequest?.body)), { target: '1.18.10' });
+  });
+
   test('serializes concurrent managed upgrades', async () => {
     const { manager } = createManager();
     let release: (response: Response) => void = () => {};
     globalThis.fetch = (() => new Promise<Response>((resolve) => { release = resolve; })) as typeof fetch;
 
-    const first = upgradeManagedOpenCode(manager);
-    const second = await upgradeManagedOpenCode(manager);
+    const first = upgradeManagedOpenCode(manager, '1.18.9');
+    const second = await upgradeManagedOpenCode(manager, '1.18.9');
     assert.equal(second.status, 409);
     assert.equal(second.body.code, 'OPENCODE_UPGRADE_IN_PROGRESS');
 

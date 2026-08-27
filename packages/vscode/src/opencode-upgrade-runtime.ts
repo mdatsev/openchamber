@@ -107,13 +107,14 @@ export const upgradeManagedOpenCode = async (manager: OpenCodeUpgradeManager | u
   if (openCodeUpgradePromise) {
     return { status: 409, body: { success: false, code: 'OPENCODE_UPGRADE_IN_PROGRESS', error: 'An OpenCode upgrade is already in progress.' } };
   }
-  const targetVersion = typeof target === 'string' ? target.trim() : '';
+  const requestedTarget = typeof target === 'string' ? target.trim() : '';
   const operation = (async (): Promise<UpgradeResult> => {
     try {
+      const targetVersion = requestedTarget || await fetchLatestVersion();
       const response = await fetch(new URL('global/upgrade', apiUrl).toString(), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...manager.getOpenCodeAuthHeaders() },
-        body: JSON.stringify(targetVersion ? { target: targetVersion } : {}),
+        body: JSON.stringify({ target: targetVersion }),
       });
       const payload = await response.json().catch(() => null) as { error?: unknown } | null;
       if (!response.ok) return { status: response.status, body: { success: false, error: typeof payload?.error === 'string' ? payload.error : response.statusText || 'Failed to upgrade OpenCode' } };

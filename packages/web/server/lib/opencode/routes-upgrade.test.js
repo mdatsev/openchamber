@@ -86,7 +86,7 @@ describe('OpenCode upgrade routes', () => {
 
     const first = request(app)
       .post('/api/opencode/upgrade')
-      .send({})
+      .send({ target: '1.18.9' })
       .expect(200, {
         success: true,
         version: '1.18.9',
@@ -96,10 +96,12 @@ describe('OpenCode upgrade routes', () => {
     await vi.waitFor(() => {
       expect(globalThis.fetch).toHaveBeenCalledTimes(1);
     });
+    const [, upgradeRequest] = globalThis.fetch.mock.calls[0];
+    expect(JSON.parse(upgradeRequest.body)).toEqual({ target: '1.18.9' });
 
     await request(app)
       .post('/api/opencode/upgrade')
-      .send({})
+      .send({ target: '1.18.9' })
       .expect(409, {
         success: false,
         code: 'OPENCODE_UPGRADE_IN_PROGRESS',
@@ -109,5 +111,39 @@ describe('OpenCode upgrade routes', () => {
     releaseUpgrade();
     await first;
     expect(dependencies.refreshOpenCodeAfterConfigChange).toHaveBeenCalledTimes(1);
+  });
+
+  it('resolves the latest version when the client omits a target', async () => {
+    let upgradeRequest;
+    globalThis.fetch = vi.fn(async (input, init) => {
+      const url = String(input);
+      if (url.includes('registry.npmjs.org')) {
+        return new Response(JSON.stringify({ version: '1.18.9' }));
+      }
+      if (url.includes('api.github.com')) {
+        return new Response(JSON.stringify({ tag_name: 'v1.18.10' }));
+      }
+      expect(url).toBe('http://127.0.0.1:4096/global/upgrade');
+      upgradeRequest = init;
+      return new Response(JSON.stringify({ success: true, version: '1.18.10' }));
+    });
+    const { app } = createApp({
+      getOpenCodeUpgradeCapability: () => ({
+        supported: true,
+        manager: 'opencode',
+        reason: null,
+      }),
+    });
+
+    await request(app)
+      .post('/api/opencode/upgrade')
+      .send({})
+      .expect(200, {
+        success: true,
+        version: '1.18.10',
+        restarted: true,
+      });
+
+    expect(JSON.parse(upgradeRequest.body)).toEqual({ target: '1.18.10' });
   });
 });
