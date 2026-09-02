@@ -228,8 +228,8 @@ async function main() {
   }
 
   const customElectronBinary = process.env.OPENCHAMBER_ELECTRON_BIN?.trim();
-  const electronCommand = customElectronBinary || 'npx';
-  const electronArgs = [...(customElectronBinary ? [] : ['electron']), './main.mjs'];
+  const electronCommand = customElectronBinary || 'bun';
+  const electronArgs = [...(customElectronBinary ? [] : ['x', 'electron']), './main.mjs'];
   const electron = spawnProcess(electronCommand, electronArgs, {
     cwd: electronDir,
     env: {
