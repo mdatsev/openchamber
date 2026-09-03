@@ -115,6 +115,18 @@ openchamber update
 
 OpenChamber binds to localhost by default. Use `--lan` only on a trusted network and protect browser access with `--ui-password`.
 
+### Clean-context Docker session
+
+Use the isolated Compose profile when OpenCode must not inherit the host's OpenCode configuration, global `AGENTS.md`, authentication files, or SSH keys:
+
+```bash
+OPENCHAMBER_UI_PASSWORD='choose-a-password' docker compose -f docker-compose.clean.yml up -d --build
+```
+
+Open the local UI at `http://127.0.0.1:3001`. The profile stores application and OpenCode state in separate Docker volumes and exposes only `data/clean/workspaces` to the container. Put a project there only when its repository-local instructions are intended to apply. Remove the clean instance and its state with `docker compose -f docker-compose.clean.yml down -v`.
+
+This isolates filesystem context, not OpenCode's built-in system prompt or OpenChamber's runtime features. It also cannot remove system or developer instructions injected by the host agent interface.
+
 ## Guides
 
 Go deeper with the OpenChamber guides:

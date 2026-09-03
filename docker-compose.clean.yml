@@ -1,0 +1,28 @@
+services:
+  openchamber-clean:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: openchamber-clean
+    ports:
+      - "127.0.0.1:${OPENCHAMBER_CLEAN_PORT:-3001}:3000"
+    volumes:
+      - clean-openchamber-config:/home/openchamber/.config/openchamber
+      - clean-opencode-config:/home/openchamber/.config/opencode
+      - clean-opencode-share:/home/openchamber/.local/share/opencode
+      - clean-opencode-state:/home/openchamber/.local/state/opencode
+      - clean-ssh:/home/openchamber/.ssh
+      - ./data/clean/workspaces:/home/openchamber/workspaces
+    environment:
+      HOME: /home/openchamber
+      OPENCHAMBER_HOST: 0.0.0.0
+      OPENCHAMBER_UI_PASSWORD: ${OPENCHAMBER_UI_PASSWORD:?Set OPENCHAMBER_UI_PASSWORD before starting the clean container}
+      OPENCODE_CONFIG_DIR: /home/openchamber/.config/opencode
+    restart: unless-stopped
+
+volumes:
+  clean-openchamber-config:
+  clean-opencode-config:
+  clean-opencode-share:
+  clean-opencode-state:
+  clean-ssh:

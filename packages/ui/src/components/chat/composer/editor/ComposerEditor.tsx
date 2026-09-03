@@ -90,6 +90,8 @@ export interface ComposerEditorProps {
     languageContext: ComposerLanguageContext;
     placeholder?: string;
     editable?: boolean;
+    /** Use a native form control for OS-level mobile dictation. */
+    nativeInput?: boolean;
     spellCheck?: boolean;
     /**
      * The content element's autocorrect keyword. See `autocorrect.ts` for the
@@ -154,7 +156,7 @@ function isDeferredSyntheticEvent(event: KeyboardEvent): boolean {
 const editableCompartment = new Compartment();
 const placeholderCompartment = new Compartment();
 
-export const ComposerEditor = React.forwardRef<ComposerEditorHandle, ComposerEditorProps>(
+const CodeMirrorComposerEditor = React.forwardRef<ComposerEditorHandle, ComposerEditorProps>(
     function ComposerEditor(props, ref) {
         const {
             value,
@@ -559,6 +561,199 @@ export const ComposerEditor = React.forwardRef<ComposerEditorHandle, ComposerEdi
                 )}
             />
         );
+    },
+);
+
+const NativeComposerEditor = React.forwardRef<ComposerEditorHandle, ComposerEditorProps>(
+    function NativeComposerEditor(props, ref) {
+        const {
+            value,
+            editable = true,
+            spellCheck = false,
+            autoCorrect = 'off',
+            autoCapitalize = 'none',
+            fillContainer = false,
+            maxLines = 8,
+            boundSelector,
+            boundGapPx = 0,
+            className,
+            contentClassName,
+        } = props;
+        const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
+        const handlersRef = React.useRef(props);
+        handlersRef.current = props;
+
+        const resizeTextarea = React.useCallback(() => {
+            const textarea = textareaRef.current;
+            if (!textarea) return;
+            if (fillContainer) {
+                textarea.style.height = '100%';
+                textarea.style.maxHeight = '';
+                textarea.style.overflowY = 'auto';
+                return;
+            }
+
+            textarea.style.height = 'auto';
+            const lineHeight = parseFloat(getComputedStyle(textarea).lineHeight || '');
+            if (!Number.isFinite(lineHeight) || lineHeight <= 0) return;
+
+            let cap = lineHeight * maxLines;
+            const bound = boundSelector ? textarea.closest(boundSelector) : null;
+            let branch: HTMLElement | null = null;
+            if (bound) {
+                branch = textarea;
+                while (branch.parentElement && branch.parentElement !== bound) {
+                    branch = branch.parentElement;
+                }
+            }
+            if (bound && branch) {
+                const chrome = branch.offsetHeight - textarea.offsetHeight;
+                const available = bound.clientHeight - chrome - boundGapPx;
+                if (available > 0) cap = Math.min(cap, available);
+            }
+
+            const height = Math.min(textarea.scrollHeight, cap);
+            textarea.style.height = `${height}px`;
+            textarea.style.maxHeight = `${cap}px`;
+            textarea.style.overflowY = textarea.scrollHeight > cap ? 'auto' : 'hidden';
+        }, [boundGapPx, boundSelector, fillContainer, maxLines]);
+
+        React.useLayoutEffect(() => {
+            resizeTextarea();
+        }, [resizeTextarea, value]);
+
+        React.useEffect(() => {
+            const textarea = textareaRef.current;
+            if (!textarea) return;
+            const observer = new ResizeObserver(resizeTextarea);
+            observer.observe(textarea);
+            const bound = boundSelector ? textarea.closest(boundSelector) : null;
+            if (bound) observer.observe(bound);
+            return () => observer.disconnect();
+        }, [boundSelector, resizeTextarea]);
+
+        const reportValue = (nextValue: string, start: number, end: number, insertedText: string) => {
+            handlersRef.current.onChange({
+                value: nextValue,
+                selection: { start, end },
+                fromPaste: false,
+                insertedText,
+            });
+        };
+
+        React.useImperativeHandle(ref, (): ComposerEditorHandle => ({
+            focus(options) {
+                textareaRef.current?.focus(options);
+            },
+            blur() {
+                textareaRef.current?.blur();
+            },
+            isFocused() {
+                return textareaRef.current === document.activeElement;
+            },
+            getValue() {
+                return textareaRef.current?.value ?? '';
+            },
+            getSelection() {
+                const textarea = textareaRef.current;
+                return textarea
+                    ? { start: textarea.selectionStart, end: textarea.selectionEnd }
+                    : { start: 0, end: 0 };
+            },
+            setSelection(start, end = start) {
+                const textarea = textareaRef.current;
+                if (!textarea) return;
+                const max = textarea.value.length;
+                textarea.setSelectionRange(
+                    Math.min(Math.max(start, 0), max),
+                    Math.min(Math.max(end, 0), max),
+                );
+            },
+            selectAll() {
+                textareaRef.current?.select();
+            },
+            insertText(text) {
+                const textarea = textareaRef.current;
+                if (!textarea || !text) return;
+                const from = textarea.selectionStart;
+                const to = textarea.selectionEnd;
+                const nextValue = `${textarea.value.slice(0, from)}${text}${textarea.value.slice(to)}`;
+                const caret = from + text.length;
+                textarea.value = nextValue;
+                textarea.setSelectionRange(caret, caret);
+                reportValue(nextValue, caret, caret, text);
+            },
+            replaceRange(from, to, text, selectionStart, selectionEnd = selectionStart) {
+                const textarea = textareaRef.current;
+                if (!textarea) return;
+                const nextValue = `${textarea.value.slice(0, from)}${text}${textarea.value.slice(to)}`;
+                const nextSelectionStart = selectionStart ?? from + text.length;
+                const nextSelectionEnd = selectionEnd ?? nextSelectionStart;
+                textarea.value = nextValue;
+                textarea.setSelectionRange(nextSelectionStart, nextSelectionEnd);
+                reportValue(nextValue, nextSelectionStart, nextSelectionEnd, text);
+            },
+            caretCoords() {
+                const textarea = textareaRef.current;
+                if (!textarea) return null;
+                const rect = textarea.getBoundingClientRect();
+                return { top: rect.top, bottom: rect.bottom, left: rect.left };
+            },
+            getScrollDOM() {
+                return textareaRef.current;
+            },
+        }), []);
+
+        return (
+            <textarea
+                ref={textareaRef}
+                data-testid={props['data-testid']}
+                data-chat-input="true"
+                value={value}
+                readOnly={!editable}
+                placeholder={props.placeholder}
+                spellCheck={spellCheck}
+                autoCorrect={autoCorrect === 'on' ? 'on' : 'off'}
+                autoCapitalize={autoCapitalize}
+                aria-label={props['aria-label']}
+                onChange={(event) => {
+                    reportValue(
+                        event.currentTarget.value,
+                        event.currentTarget.selectionStart,
+                        event.currentTarget.selectionEnd,
+                        '',
+                    );
+                }}
+                onSelect={(event) => {
+                    handlersRef.current.onSelectionChange?.({
+                        start: event.currentTarget.selectionStart,
+                        end: event.currentTarget.selectionEnd,
+                    });
+                }}
+                onKeyDown={(event) => {
+                    handlersRef.current.onKeyDown?.(event.nativeEvent);
+                }}
+                onFocus={() => handlersRef.current.onFocus?.()}
+                onBlur={() => handlersRef.current.onBlur?.()}
+                onPaste={(event) => handlersRef.current.onPaste?.(event.nativeEvent)}
+                className={cn(
+                    'w-full resize-none bg-transparent text-[color:var(--surface-foreground)] outline-none placeholder:text-[color:var(--surface-muted-foreground)]',
+                    fillContainer && 'h-full min-h-0 flex-1',
+                    className,
+                    contentClassName,
+                )}
+            />
+        );
+    },
+);
+
+export const ComposerEditor = React.forwardRef<ComposerEditorHandle, ComposerEditorProps>(
+    function ComposerEditor(props, ref) {
+        if (props.nativeInput) {
+            return <NativeComposerEditor ref={ref} {...props} />;
+        }
+
+        return <CodeMirrorComposerEditor ref={ref} {...props} />;
     },
 );
 

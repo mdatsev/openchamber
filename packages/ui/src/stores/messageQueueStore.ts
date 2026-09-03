@@ -106,6 +106,7 @@ interface MessageQueueActions {
     reorderQueue: (target: MessageQueueTarget, fromId: string, toId: string) => void;
     popToInput: (target: MessageQueueTarget, messageId: string) => QueuedMessage | null;
     clearQueue: (target: MessageQueueTarget) => void;
+    restoreQueueSnapshot: (target: MessageQueueTarget, snapshot: QueuedMessage[]) => void;
     clearAllQueues: () => void;
     markSending: (target: MessageQueueTarget, messageId: string) => void;
     clearSending: (target: MessageQueueTarget, messageId: string) => void;
@@ -265,6 +266,22 @@ export const useMessageQueueStore = create<MessageQueueStore>()(
                         const { [key]: _removed, ...rest } = state.queuedMessages;
                         void _removed;
                         return { queuedMessages: rest };
+                    });
+                },
+
+                restoreQueueSnapshot: (target, snapshot) => {
+                    if (snapshot.length === 0) return;
+                    const key = getMessageQueueKey(target);
+                    set((state) => {
+                        const snapshotIds = new Set(snapshot.map((message) => message.id));
+                        const addedWhileSending = (state.queuedMessages[key] ?? [])
+                            .filter((message) => !snapshotIds.has(message.id));
+                        return {
+                            queuedMessages: {
+                                ...state.queuedMessages,
+                                [key]: [...snapshot, ...addedWhileSending],
+                            },
+                        };
                     });
                 },
 
