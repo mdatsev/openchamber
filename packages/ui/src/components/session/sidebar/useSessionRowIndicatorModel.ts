@@ -17,7 +17,7 @@ import {
 import { useViewportStore, viewportSessionKey } from '@/sync/viewport-store';
 import type { SessionNode } from './types';
 import { normalizePath } from './utils';
-import { selectQuestionBadgeSessionScopes } from './sessionNodeItemUtils';
+import { selectQuestionBadgeSessionScopes } from './sessions/sessionNodeItemUtils';
 
 export type SessionLeadingIndicator = 'moving' | 'question' | 'active' | 'interrupted' | 'unread' | 'pinned' | null;
 

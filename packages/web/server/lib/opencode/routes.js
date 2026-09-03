@@ -221,6 +221,41 @@ ${desktopReturn ? `<a class="return" href="openchamber://focus/mcp-auth">Return 
     installedVersionPromise = null;
   };
 
+  // OpenCode's `/global/upgrade` requires an explicit semver target and rejects
+  // a bodyless call, so "update to the latest" has to name the version. The
+  // release lookup is the same one the upgrade-status check already uses to
+  // decide there is anything to offer.
+  const resolveOpenCodeUpgradeTarget = async (requestedTarget) => {
+    if (typeof requestedTarget === 'string' && requestedTarget.trim().length > 0) {
+      return { resolved: true, target: requestedTarget.trim() };
+    }
+    try {
+      const latest = await fetchLatestOpenCodeVersion();
+      if (!latest) {
+        return { resolved: false, reason: 'The latest OpenCode version could not be determined.' };
+      }
+      return { resolved: true, target: latest };
+    } catch (error) {
+      return {
+        resolved: false,
+        reason: error instanceof Error ? error.message : 'The latest OpenCode version could not be determined.',
+      };
+    }
+  };
+
+  // OpenCode reports a rejected upgrade as `{ name, data: { message, kind } }`,
+  // which carries no `error` field. Reading only `error` left the user with the
+  // bare HTTP status text ("Bad Request") and nothing to act on.
+  const readOpenCodeUpgradeErrorMessage = (payload, response) => {
+    const candidates = [payload?.error, payload?.data?.message, payload?.message];
+    for (const candidate of candidates) {
+      if (typeof candidate === 'string' && candidate.trim().length > 0) {
+        return candidate.trim();
+      }
+    }
+    return response.statusText || 'Failed to upgrade OpenCode';
+  };
+
   const pruneExpiredPendingMcpAuthContexts = () => {
     const now = Date.now();
     for (const [state, entry] of pendingMcpAuthContextByState.entries()) {
@@ -311,6 +346,18 @@ ${desktopReturn ? `<a class="return" href="openchamber://focus/mcp-auth">Return 
   };
 
   const performOpenCodeUpgrade = async ({ target, capability, signal }) => {
+    const targetResolution = await resolveOpenCodeUpgradeTarget(target);
+    if (!targetResolution.resolved) {
+      return {
+        status: 502,
+        body: {
+          success: false,
+          code: 'OPENCODE_UPGRADE_TARGET_UNRESOLVED',
+          error: `Could not determine which OpenCode version to install: ${targetResolution.reason}`,
+        },
+      };
+    }
+
     if (capability.manager === 'systemd') {
       await waitForSupervisedIdle(signal, 'upgrade');
     }
@@ -323,7 +370,7 @@ ${desktopReturn ? `<a class="return" href="openchamber://focus/mcp-auth">Return 
         Accept: 'application/json',
         ...getOpenCodeAuthHeaders(),
       },
-      body: JSON.stringify(target ? { target } : {}),
+      body: JSON.stringify({ target: targetResolution.target }),
       signal,
     });
     const payload = await response.json().catch(() => null);
@@ -332,7 +379,7 @@ ${desktopReturn ? `<a class="return" href="openchamber://focus/mcp-auth">Return 
         status: response.status,
         body: {
           success: false,
-          error: payload?.error || response.statusText || 'Failed to upgrade OpenCode',
+          error: readOpenCodeUpgradeErrorMessage(payload, response),
         },
       };
     }

@@ -152,7 +152,7 @@ export const SETTINGS_PAGE_METADATA: readonly SettingsPageMeta[] = [
     title: 'Git',
     group: 'projects',
     kind: 'single',
-    keywords: ['git', 'github', 'identity', 'identities', 'ssh', 'profiles', 'credentials', 'keys', 'commit', 'gitmoji', 'oauth', 'prs', 'issues'],
+    keywords: ['git', 'identity', 'identities', 'ssh', 'profiles', 'credentials', 'keys', 'commit', 'gitmoji'],
     isAvailable: (ctx) => !ctx.isVSCode,
   },
   {
@@ -205,7 +205,7 @@ export const SETTINGS_PAGE_METADATA: readonly SettingsPageMeta[] = [
   { slug: 'tunnel', title: 'External Tunnel', group: 'projects', kind: 'single', keywords: ['tunnel', 'external', 'cloudflare', 'qr', 'remote', 'mobile', 'share'], isAvailable: (ctx) => !ctx.isVSCode },
   { slug: 'fork', title: 'Fork Settings', group: 'fork', kind: 'single', keywords: ['custom fork', 'worktree', 'new chat', 'opencode', 'update', 'runtime'], isAvailable: (ctx) => !ctx.isVSCode },
   { slug: 'about', title: 'About', group: 'general', kind: 'single', keywords: ['about', 'version', 'updates', 'release', 'changelog'], isAvailable: (ctx) => ctx.isMobile && !ctx.isVSCode },
-  { slug: 'integrations', title: 'Integrations', group: 'general', kind: 'single', keywords: ['integration', 'plugin', 'provider', 'oauth', 'claude', 'cursor', 'command code', 'connect', 'discord', 'telegram', 'messenger'] },
+  { slug: 'integrations', title: 'Integrations', group: 'general', kind: 'single', keywords: ['integration', 'plugin', 'provider', 'oauth', 'claude', 'cursor', 'command code', 'connect', 'discord', 'telegram', 'messenger', 'github', 'linear'] },
 ] as const;
 
 const LEGACY_SIDEBAR_SECTION_TO_SETTINGS_SLUG: Record<SidebarSection, SettingsPageSlug> = {

@@ -1,6 +1,7 @@
-# Session Sidebar Documentation
+# Session Sidebar
 
-## Refactor result
+Sidebar code is organized by the business object it owns. Shared contracts are
+kept at this root in `types.ts` and `utils.tsx`.
 
 - `SessionSidebar.tsx` now acts mainly as orchestration; core logic moved to focused hooks/components.
 - Layout (web/desktop): top navigation (`SidebarNav`: New session, Scheduled, Multi-run, Archive), then OpenChamber-managed `chats`, optional project-only `recent` sessions, and one zone per project. The selected grouping mode controls whether project sessions render as a merged flat list or under compact worktree-aware presentation.
@@ -22,14 +23,51 @@
 - The new-worktree keyboard command is a silent no-op while a managed Chat draft is open. It must not retarget that draft to the active project or show a Git/worktree error because Chats never participate in worktrees.
 - Directory loading is demand-driven: the sidebar publishes one complete priority plan for all known project/worktree directories, while the sync layer owns bounded execution.
 - When multiple configured projects are checkouts of the same Git repository, exactly one project owns the shared worktree topology: the configured canonical primary root when present, otherwise the first configured source for that repository. Any worktree path that is also a configured project is omitted from subordinate worktree groups, so every directory has one sidebar location while remaining part of bootstrap demand.
+- `shell/` owns sidebar chrome, navigation, search, confirmations, and switcher effects.
+- `list/` owns global-first session collection, directory bootstrap demand,
+  layout-owned synchronization, authoritative cleanup, and nearby-session prefetch.
+- `projects/` owns project zones, grouping, ordering, scroller behavior, project
+  view state, repository state, and worktree presentation.
+- `sessions/` owns session rows, row actions, expansion, ownership, and activity indicators.
+- `recent/` owns Recent and managed Chats activity projections.
+- `folders/` owns folder DnD, bulk actions, archived folders, and folder UI.
+- Root session right-click and overflow menus expose `Move to worktree`: a submenu
+  listing the canonical primary and linked worktree destinations, with the current
+  target disabled and a separate `New worktree...` action. Opening the submenu
+  refreshes the worktree topology. Moving transfers the full idle subtree. Clean
+  and non-Git sources move session-only; a dirty Git source prompts to move only
+  the session, move all source changes, or cancel. Descendants move first without
+  changes and roll back session-only if a later descendant fails. The root moves
+  last and carries source changes once, which prevents rollback from replaying the
+  transferred patch into the source.
+- Failure cleanup: a worktree created for the move is removed only after a
+  definite failure. When the change-carrying request fails without confirming
+  its outcome, that worktree is KEPT (it may hold the only copy of the user's
+  changes), both directories are refreshed authoritatively because the session
+  may have moved server-side, and the toast points the user at the destination.
+  Existing destinations are never removed; they get the same guidance.
 
-## VS Code grouping
+`MainLayout` and `VSCodeLayout` call `useSessionListSync({ isVSCode })`
+unconditionally. The hook publishes complete directory bootstrap demand,
+refreshes newly added topology, coalesces control events, and performs
+authoritative cleanup. Root-level `useGlobalSessionsPolling` remains the only
+initial and 45-second global poller. `useSessionListSync` must not create a
+second global polling lifecycle.
 
-- VS Code uses the **same grouped project tree** as web/desktop (project headers + folders + pinned-first ordering), not a separate flat list. Each open VS Code workspace folder is a project header.
-- VS Code groups strictly **by open workspace**: `useSessionGrouping` funnels every non-archived session into the project's root group and emits **no per-worktree subgroups** (worktrees aren't registered in VS Code). `getSessionsForProject` buckets sessions to a workspace by exact directory match, so only sessions whose directory is an open workspace folder appear.
-- VS Code passes `hideDirectoryControls` (clean workspace headers, no worktree/close chrome) and no longer passes `showOnlyMainWorkspace`/`sharedSessionsOnly`. Folders and pinning therefore work natively, scoped to the workspace root.
+The global sessions cache is the complete source for active and archived
+coverage. Initialized directory stores only supply sessions missing from that
+cache. Live busy and retry state comes from `global-session-status`, never from
+the global cache or persisted history. A failed global or directory fetch keeps
+existing data; it is never treated as an authoritative empty list.
 
-## File summaries
+Web and desktop show managed Chats before optional Recent activity. Chats use
+their shared managed root for folders and never expose worktree actions. Project
+display can be all projects or one selected project. The mobile sessions sheet
+(`apps/MobileSessionsSheet.tsx`) partitions the same way through
+`partitionSidebarSessions` and lists Chats as a collapsible section above the
+project tree, with no Recent projection. VS Code excludes worktrees and managed
+Chats, while retaining its workspace-scoped grouped list and inline archived
+buckets.
 
 ### Components
 
@@ -72,6 +110,11 @@
 - `sessionBootstrapDemands.ts`: Builds the deduplicated directory demand plan. Selected directories rank above active projects, expanded groups, visible collapsed groups, and background/collapsed projects.
 - `utils.tsx`: Shared sidebar utilities (path normalization, dedupe, archived scope keys, project relation checks, text highlight, labels, compact/default date formatting). Shared session ranking lives in `sync/session-ordering.ts`.
 
+Directory demand always includes known project roots and worktrees. Visibility
+only changes priority. Row mounts must not start bootstrap work. Selection and
+activity subscriptions stay session-scoped so a structural list update does not
+make every row observe unrelated streaming updates.
+
 ## Loading rules
 
 - Always publish every known project root and worktree directory. Collapse/visibility changes priority only; they do not opt a directory out of authoritative refresh.
@@ -86,6 +129,7 @@
 - Folder membership may contain both a parent session and its descendants. Rendering treats only the highest assigned ancestors as folder roots because their normal session trees already include assigned descendants; persisted membership remains unchanged for cleanup and move semantics.
 - Sidebar selection holds the clicked row's viewport position across navigation-driven sidebar updates. Wheel or touch input cancels the hold immediately, so programmatic compensation never fights intentional scrolling.
 - Global session subscriptions are structural: create/delete, title, share, archive, directory, parent, and slug changes invalidate the tree. Recency-only `time.updated` changes do not trigger a rebuild. The separate lifecycle rank invalidates ordering only on `settled ↔ active` transitions, with root sessions ranked among roots and child sessions only among siblings of the same parent.
+- Opening the root-session `Move to worktree` submenu force-refreshes the owning project's worktree topology so externally created worktrees appear without a full reload. While that refresh runs, the menu keeps the last known primary/linked topology visible; if the refresh fails, the stale topology remains and the load failure state stays explicit. Failure cleanup never removes or manages an existing destination worktree.
 - CLI/server-created sessions use the low-frequency OpenChamber control event stream to refresh only the created session directory. The same event retriggers bounded worktree discovery so a newly created external worktree gains ownership without a view reload; it does not re-enable broad session or streaming subscriptions.
 - Recent membership includes active root sessions immediately even when their last committed `time.updated` falls outside the 48-hour window. Children and archived sessions remain excluded, and inactive roots remain timestamp-based. The active-ID subscription is disabled while the sidebar is hidden and ignores retry/status detail changes, avoiding streaming-frequency rerenders.
 - Desktop/web session discovery accepts exact configured project and discovered worktree directories. A directory is not accepted merely because it is below a configured project root; unrelated directories and undiscovered external worktrees remain excluded. VS Code continues to require exact open-workspace directories.
@@ -93,3 +137,4 @@
 - Empty successful lists, unresolved loads, and failed loads are separate UI states. Failed groups expose Retry and retain prior data.
 - Directory permission failures remain visible even when stale sessions are retained. Flat groups inspect every represented root/worktree directory; local Desktop may open the native picker for the exact failed directory, while other runtimes keep the ordinary Retry action.
 - Pins and folder assignments are not pruned from the first startup snapshot or from optimistic mutations. Confirmed local deletion and routed external deletion clean immediately; a later authoritative omission after an established baseline covers missed external delete events.
+- Pending-permission/question row badges fade with the same hover/menu-open rule as the date label, except on non-VS Code always-visible-actions rows, which reserve permanent padding and keep the badges shown. VS Code hover-reveals its actions over the row's right edge even under `alwaysShowActions`, so its badges keep fading (`selectRowBadgeVisibilityClass` in `sessions/sessionNodeItemUtils.ts`).
