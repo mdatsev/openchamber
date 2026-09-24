@@ -118,6 +118,8 @@ For live source reloading on macOS, run `bun run install:custom:hmr`. This addit
 
 Bundled source runs retain the isolated Electron profile `OpenChamber Dev`; the macOS HMR launcher uses `OpenChamber Dev HMR`. Canonical OpenChamber backend settings under `~/.config/openchamber` and OpenCode sessions remain shared with the packaged application. See [`../../docs/fork-runtime-state.md`](../../docs/fork-runtime-state.md) for browser-local state and simultaneous-runtime caveats.
 
+`desktop_restart` does not answer the renderer before the install is decided. On the apply-update path it calls `quitAndInstall()` and keeps the IPC call open until the app quits or `autoUpdater` emits `error`, which the platform installers do asynchronously (a rejected code signature, or a Squirrel session disabled by an earlier failure). A failed install rejects the IPC call so the update dialog can show it, and the quit/install flags are rolled back because the app is staying up. A still-running app after the grace period resolves the call.
+
 ### Updater End-to-End Fixture
 
 A loopback-only updater fixture is available for contributor QA of N-to-N+1 AppImage replacement and restart behavior. It is test infrastructure, not a user-configurable update source. See [`scripts/updater-e2e-fixture.md`](./scripts/updater-e2e-fixture.md) for the controlled test procedure. Unit tests cover feed selection, check failures, no-update results, and fixture generation; actual AppImage replacement and restart remains a manual native N-to-N+1 release boundary because it requires executing two packaged versions on each supported architecture.

@@ -3,8 +3,8 @@ import type { Session } from '@opencode-ai/sdk/v2';
 
 import { SessionActivityDuration } from '@/components/session/SessionActivityDuration';
 import { formatSessionCompactDateLabel, normalizePath } from '@/components/session/sidebar/utils';
-import { useSwitcherItems } from '@/components/session/sidebar/hooks/useSwitcherItems';
-import { selectQuestionBadgeSessionScopes } from '@/components/session/sidebar/sessionNodeItemUtils';
+import { useSwitcherItems } from '@/components/session/sidebar/shell/useSwitcherItems';
+import { selectQuestionBadgeSessionScopes } from '@/components/session/sidebar/sessions/sessionNodeItemUtils';
 import type { SessionNode } from '@/components/session/sidebar/types';
 import {
   SessionBlockingRequestBadges,

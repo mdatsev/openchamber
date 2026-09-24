@@ -17,6 +17,15 @@ import React from 'react';
 import { isCapacitorApp } from '@/lib/platform';
 import type { ComposerEditorHandle } from '../editor/ComposerEditor';
 
+// Android mobile browsers are the pan-mode holdouts this pin exists for on
+// the CHAT screen too: interactive-widget=resizes-content is ignored by a
+// fair share of Android WebView/Chrome builds, and unlike iOS Safari they do
+// not reliably reveal the focused field either — the composer just stays
+// behind the keyboard. iOS keeps its browser-native reveal on the chat
+// screen, so this stays Android-only there.
+// Callers are browser-only React effects, so navigator always exists here.
+const isAndroidBrowser = (): boolean => /Android/i.test(navigator.userAgent);
+
 export interface MobileViewportPinOptions {
     isMobile: boolean;
     /** Composer expanded to fullscreen on mobile. */
@@ -96,12 +105,16 @@ export function useMobileViewportPin(options: MobileViewportPinOptions): void {
         };
     }, [editorRef, formRef, isFullscreen, isMobile]);
 
-    // Keep the focused, non-fullscreen composer at the visible bottom. Fixed
-    // positioning removes it from flex layout, so its slot must reserve both
-    // the form and the part of the layout hidden below the visual viewport.
+    // Keyboard up: anchor the normal-height composer to the visible bottom.
+    // Draft screen on every mobile browser; chat screen only on Android,
+    // where neither viewport resizing nor the focused-field reveal can be
+    // relied on (iOS chat keeps the browser's own reveal). Fixed positioning
+    // removes it from flex layout, so its slot reserves the form and the part
+    // of the layout hidden below the visual viewport.
     React.useLayoutEffect(() => {
         if (!isMobile || isCapacitorApp()) return;
         if (isFullscreen || !isFocused) return;
+        if (!isDraftScreen && !isAndroidBrowser()) return;
         const vv = window.visualViewport;
         const form = formRef.current;
         if (!vv || !form) return;

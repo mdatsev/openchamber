@@ -34,7 +34,9 @@ import {
 
 import { cn } from '@/lib/utils';
 import type { ComposerLanguageContext } from '../language/tokenize';
+import type { ComposerAutoCorrect } from './autocorrect';
 import { composerLanguage, setLanguageContext } from './composerLanguage';
+import { replaceWithCaret } from './documentEdits';
 import type { ComposerEditorViewStore } from './viewStore';
 import { composerEditorTheme, composerSelectionExtension } from './theme';
 import { handleComposerHostMouseDown } from './hostMouseDown';
@@ -63,8 +65,8 @@ export interface ComposerEditorHandle {
     selectAll(): void;
     /** Replace the current selection, leaving the caret after the insertion. */
     insertText(text: string): void;
-    /** Replace an explicit range; the caret lands at `caret` or after the text. */
-    replaceRange(from: number, to: number, text: string, caret?: number): void;
+    /** Replace a range; selection defaults to a caret after the inserted text. */
+    replaceRange(from: number, to: number, text: string, selectionStart?: number, selectionEnd?: number): void;
     /** Viewport coordinates of the caret, for positioning popups. */
     caretCoords(position?: number): { top: number; bottom: number; left: number } | null;
     /** The scrollable element, for measuring and scroll compensation. */
@@ -91,8 +93,11 @@ export interface ComposerEditorProps {
     /** Use a native form control for OS-level mobile dictation. */
     nativeInput?: boolean;
     spellCheck?: boolean;
-    /** Mobile keyboards; ignored on desktop. */
-    autoCorrect?: boolean;
+    /**
+     * The content element's autocorrect keyword. See `autocorrect.ts` for the
+     * case-sensitive CodeMirror workaround.
+     */
+    autoCorrect?: ComposerAutoCorrect;
     autoCapitalize?: 'none' | 'sentences';
     /** Fill the available height instead of growing with the content. */
     fillContainer?: boolean;
@@ -159,7 +164,7 @@ const CodeMirrorComposerEditor = React.forwardRef<ComposerEditorHandle, Composer
             placeholder,
             editable = true,
             spellCheck = false,
-            autoCorrect = false,
+            autoCorrect = 'off',
             autoCapitalize = 'none',
             fillContainer = false,
             maxLines = 8,
@@ -289,7 +294,7 @@ const CodeMirrorComposerEditor = React.forwardRef<ComposerEditorHandle, Composer
                         }),
                         EditorView.contentAttributes.of({
                             spellcheck: String(handlersRef.current.spellCheck ?? false),
-                            autocorrect: handlersRef.current.autoCorrect ? 'on' : 'off',
+                            autocorrect: handlersRef.current.autoCorrect ?? 'off',
                             autocapitalize: handlersRef.current.autoCapitalize ?? 'none',
                             ...(handlersRef.current['aria-label']
                                 ? { 'aria-label': handlersRef.current['aria-label'] }
@@ -349,17 +354,14 @@ const CodeMirrorComposerEditor = React.forwardRef<ComposerEditorHandle, Composer
             // A stale value echo can differ from CodeMirror's newer document,
             // and replacing it would interrupt the IME session and move the caret.
             if (view.compositionStarted) return;
-            view.dispatch({
-                changes: { from: 0, to: current.length, insert: value },
-                // An external rewrite (draft restore, history navigation,
-                // "add to chat", dictation insert) lands the caret at the END,
-                // matching what a plain textarea did when its value was
-                // replaced. Every rewrite that reaches here appends or
-                // replaces wholesale; keeping the old caret instead left it
-                // stranded before the inserted text, and the next insertion
-                // or keystroke landed inside the previous one.
-                selection: { anchor: value.length },
-            });
+            // An external rewrite (draft restore, history navigation,
+            // "add to chat", dictation insert) lands the caret at the END,
+            // matching what a plain textarea did when its value was replaced.
+            // Every rewrite that reaches here appends or replaces wholesale;
+            // keeping the old caret instead left it stranded before the
+            // inserted text, and the next insertion or keystroke landed inside
+            // the previous one.
+            view.dispatch(replaceWithCaret(view.state, 0, current.length, value));
             // A large insert can push the caret below the fold, and a
             // transaction-time `scrollIntoView` cannot reach it: wrapped-line
             // heights are still estimates during the update, and the
@@ -456,7 +458,7 @@ const CodeMirrorComposerEditor = React.forwardRef<ComposerEditorHandle, Composer
             if (!view) return;
             const content = view.contentDOM;
             content.setAttribute('spellcheck', String(spellCheck));
-            content.setAttribute('autocorrect', autoCorrect ? 'on' : 'off');
+            content.setAttribute('autocorrect', autoCorrect);
             content.setAttribute('autocapitalize', autoCapitalize);
         }, [autoCapitalize, autoCorrect, spellCheck]);
 
@@ -513,17 +515,18 @@ const CodeMirrorComposerEditor = React.forwardRef<ComposerEditorHandle, Composer
                 if (!view || !text) return;
                 const { from, to } = view.state.selection.main;
                 view.dispatch({
-                    changes: { from, to, insert: text },
-                    selection: { anchor: from + text.length },
+                    ...replaceWithCaret(view.state, from, to, text),
                     userEvent: 'input.type',
                 });
             },
-            replaceRange(from, to, text, caret) {
+            replaceRange(from, to, text, selectionStart, selectionEnd = selectionStart) {
                 const view = viewRef.current;
                 if (!view) return;
+                const caret = selectionStart === undefined
+                    ? undefined
+                    : { anchor: selectionStart, head: selectionEnd ?? selectionStart };
                 view.dispatch({
-                    changes: { from, to, insert: text },
-                    selection: { anchor: caret ?? from + text.length },
+                    ...replaceWithCaret(view.state, from, to, text, caret),
                     userEvent: 'input.type',
                 });
             },
@@ -567,7 +570,7 @@ const NativeComposerEditor = React.forwardRef<ComposerEditorHandle, ComposerEdit
             value,
             editable = true,
             spellCheck = false,
-            autoCorrect = false,
+            autoCorrect = 'off',
             autoCapitalize = 'none',
             fillContainer = false,
             maxLines = 8,
@@ -680,14 +683,15 @@ const NativeComposerEditor = React.forwardRef<ComposerEditorHandle, ComposerEdit
                 textarea.setSelectionRange(caret, caret);
                 reportValue(nextValue, caret, caret, text);
             },
-            replaceRange(from, to, text, caret) {
+            replaceRange(from, to, text, selectionStart, selectionEnd = selectionStart) {
                 const textarea = textareaRef.current;
                 if (!textarea) return;
                 const nextValue = `${textarea.value.slice(0, from)}${text}${textarea.value.slice(to)}`;
-                const nextCaret = caret ?? from + text.length;
+                const nextSelectionStart = selectionStart ?? from + text.length;
+                const nextSelectionEnd = selectionEnd ?? nextSelectionStart;
                 textarea.value = nextValue;
-                textarea.setSelectionRange(nextCaret, nextCaret);
-                reportValue(nextValue, nextCaret, nextCaret, text);
+                textarea.setSelectionRange(nextSelectionStart, nextSelectionEnd);
+                reportValue(nextValue, nextSelectionStart, nextSelectionEnd, text);
             },
             caretCoords() {
                 const textarea = textareaRef.current;
@@ -709,7 +713,7 @@ const NativeComposerEditor = React.forwardRef<ComposerEditorHandle, ComposerEdit
                 readOnly={!editable}
                 placeholder={props.placeholder}
                 spellCheck={spellCheck}
-                autoCorrect={autoCorrect ? 'on' : 'off'}
+                autoCorrect={autoCorrect === 'on' ? 'on' : 'off'}
                 autoCapitalize={autoCapitalize}
                 aria-label={props['aria-label']}
                 onChange={(event) => {
