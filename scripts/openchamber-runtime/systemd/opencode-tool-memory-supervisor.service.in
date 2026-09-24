@@ -5,6 +5,7 @@ StartLimitIntervalSec=0
 [Service]
 Type=simple
 Environment="PATH=@SERVICE_PATH@"
+Environment="OPENCHAMBER_HOST_MEMORY_MIN_AVAILABLE_KIB=2097152"
 ExecStart=@RUNTIME_DIR@/opencode-tool-memory-supervisor
 Restart=always
 RestartSec=100ms

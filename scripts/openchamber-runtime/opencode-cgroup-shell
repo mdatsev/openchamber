@@ -98,6 +98,9 @@ print_diagnosis() {
     read -r diagnosis < "$diagnosis_file.pending" || true
   fi
   case "$diagnosis" in
+    host-memory-pressure)
+      printf 'OpenCode command terminated: host memory was low; this was the largest active command tree at selection time.\n' >&2
+      ;;
     aggregate-oom)
       printf 'OpenCode command terminated: aggregate tool-command memory limit exceeded; this was the largest active command tree at selection time.\n' >&2
       ;;
@@ -105,7 +108,7 @@ print_diagnosis() {
       printf 'OpenCode command terminated: aggregate memory enforcement is unavailable; the command was cancelled rather than run without a reliable aggregate limit.\n' >&2
       ;;
     selection-failed)
-      printf 'OpenCode command terminated: aggregate memory limit exceeded, but the largest active command tree could not be selected reliably; all active tool commands were cancelled without claiming deterministic victim selection.\n' >&2
+      printf 'OpenCode command terminated: memory pressure was detected, but the largest active command tree could not be selected reliably; all active tool commands were cancelled without claiming deterministic victim selection.\n' >&2
       ;;
     cleanup-failed)
       printf 'OpenCode command terminated: the aggregate tool slice could not be thawed after memory enforcement, so frozen commands were terminated to avoid leaked work.\n' >&2

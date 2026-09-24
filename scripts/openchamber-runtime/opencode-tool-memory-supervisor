@@ -4,6 +4,8 @@ set -u -o pipefail
 
 tools_slice='opencode-tools.slice'
 cgroup_root="${OPENCHAMBER_CGROUP_ROOT:-/sys/fs/cgroup}"
+meminfo_path="${OPENCHAMBER_MEMINFO_PATH:-/proc/meminfo}"
+host_memory_min_available_kib="${OPENCHAMBER_HOST_MEMORY_MIN_AVAILABLE_KIB:-2097152}"
 runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 diagnosis_dir="$runtime_dir/openchamber-opencode-tools"
 lock_file="$diagnosis_dir/aggregate.lock"
@@ -12,6 +14,8 @@ slice_control_group=''
 aggregate_high=''
 
 [[ "$cgroup_root" == /* ]] || exit 1
+[[ "$meminfo_path" == /* && -r "$meminfo_path" ]] || exit 1
+[[ "$host_memory_min_available_kib" =~ ^[1-9][0-9]*$ ]] || exit 1
 mkdir -p -m 0700 "$diagnosis_dir" || exit 1
 chmod 0700 "$diagnosis_dir" || exit 1
 exec 8>"$lock_file"
@@ -29,6 +33,17 @@ read_key() {
     printf '%s\n' "$value"
     return 0
   done < "$file"
+  return 1
+}
+
+read_host_memory_available() {
+  local key value unit
+  while read -r key value unit; do
+    [[ "$key" == 'MemAvailable:' ]] || continue
+    [[ "$value" =~ ^[0-9]+$ && "$unit" == 'kB' ]] || return 1
+    printf '%s\n' "$value"
+    return 0
+  done < "$meminfo_path"
   return 1
 }
 
@@ -164,13 +179,12 @@ snapshot_scopes() {
   snapshot=''
   snapshot_victim=''
   snapshot_victim_memory=-1
-  for child in "$slice_path"/*; do
+  for child in "$slice_path"/opencode-tool-*.scope; do
     [[ -d "$child" ]] || continue
     populated="$(read_key "$child/cgroup.events" populated 2>/dev/null)" || return 1
     [[ "$populated" == '0' ]] && continue
     scope="${child##*/}"
-    [[ "$populated" == '1' && "$scope" == opencode-tool-*.scope ]] \
-      && validate_scope "$scope" || return 1
+    [[ "$populated" == '1' ]] && validate_scope "$scope" || return 1
     memory="$(<"$child/memory.current")" || return 1
     [[ "$memory" =~ ^[0-9]+$ ]] || return 1
     snapshot+="$scope=$memory;"
@@ -181,7 +195,7 @@ snapshot_scopes() {
       snapshot_victim_memory="$memory"
     fi
   done
-  [[ -n "$snapshot_victim" ]]
+  [[ -n "$snapshot_victim" ]] || return 2
 }
 
 fail_selection() {
@@ -196,21 +210,38 @@ fail_selection() {
     printf 'OpenCode tool memory supervisor: terminated marked commands but could not confirm that the tool slice thawed.\n' >&2
     return 1
   fi
-  printf 'OpenCode tool memory supervisor: reliable aggregate victim selection failed; all active tool commands were terminated.\n' >&2
+  printf 'OpenCode tool memory supervisor: reliable memory-pressure victim selection failed; all active tool commands were terminated.\n' >&2
 }
 
 enforce() {
-  local current first_snapshot victim
+  local available current diagnosis first_snapshot result victim
   current="$(<"$slice_path/memory.current")" || return 1
   [[ "$current" =~ ^[0-9]+$ ]] || return 1
-  (( current > aggregate_high )) || return 0
+  available="$(read_host_memory_available 2>/dev/null)" || return 1
+  [[ "$available" =~ ^[0-9]+$ ]] || return 1
+  if (( available < host_memory_min_available_kib )); then
+    diagnosis=host-memory-pressure
+  elif (( current > aggregate_high )); then
+    diagnosis=aggregate-oom
+  else
+    return 0
+  fi
   printf '1\n' 2>/dev/null > "$slice_path/cgroup.freeze" || return 1
   wait_frozen 1 || { thaw || true; return 1; }
   current="$(<"$slice_path/memory.current")" || { fail_selection; return $?; }
   [[ "$current" =~ ^[0-9]+$ ]] || { fail_selection; return $?; }
-  if (( current <= aggregate_high )); then thaw; return; fi
+  available="$(read_host_memory_available 2>/dev/null)" \
+    || { fail_selection; return $?; }
+  [[ "$available" =~ ^[0-9]+$ ]] || { fail_selection; return $?; }
+  if (( current <= aggregate_high && available >= host_memory_min_available_kib )); then
+    thaw
+    return
+  fi
 
-  snapshot_scopes || { fail_selection; return $?; }
+  snapshot_scopes
+  result=$?
+  if [[ "$result" == '2' ]]; then thaw; return; fi
+  [[ "$result" == '0' ]] || { fail_selection; return $?; }
   first_snapshot="$snapshot"
   victim="$snapshot_victim"
   run sleep 0.02
@@ -218,7 +249,7 @@ enforce() {
     fail_selection
     return $?
   fi
-  write_pending "$victim" aggregate-oom || { fail_selection; return $?; }
+  write_pending "$victim" "$diagnosis" || { fail_selection; return $?; }
   finish_pending || { fail_selection; return $?; }
   thaw || return 1
   run sleep 0.25
