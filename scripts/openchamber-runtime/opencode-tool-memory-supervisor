@@ -56,8 +56,8 @@ resolve_slice() {
   [[ "$slice_control_group" == /* ]] || return 1
   slice_path="$cgroup_root$slice_control_group"
   [[ -d "$slice_path" ]] || return 1
-  aggregate_high="$(<"$slice_path/memory.high")" || return 1
-  hard_limit="$(<"$slice_path/memory.max")" || return 1
+  IFS= read -r aggregate_high < "$slice_path/memory.high" || return 1
+  IFS= read -r hard_limit < "$slice_path/memory.max" || return 1
   [[ "$aggregate_high" =~ ^[0-9]+$ \
     && "$hard_limit" =~ ^[0-9]+$ \
     && "$aggregate_high" -lt "$hard_limit" ]]
@@ -185,7 +185,7 @@ snapshot_scopes() {
     [[ "$populated" == '0' ]] && continue
     scope="${child##*/}"
     [[ "$populated" == '1' ]] && validate_scope "$scope" || return 1
-    memory="$(<"$child/memory.current")" || return 1
+    IFS= read -r memory < "$child/memory.current" || return 1
     [[ "$memory" =~ ^[0-9]+$ ]] || return 1
     snapshot+="$scope=$memory;"
     if (( memory > snapshot_victim_memory )) \
@@ -215,7 +215,7 @@ fail_selection() {
 
 enforce() {
   local available current diagnosis first_snapshot result victim
-  current="$(<"$slice_path/memory.current")" || return 1
+  IFS= read -r current < "$slice_path/memory.current" || return 1
   [[ "$current" =~ ^[0-9]+$ ]] || return 1
   available="$(read_host_memory_available 2>/dev/null)" || return 1
   [[ "$available" =~ ^[0-9]+$ ]] || return 1
@@ -228,7 +228,7 @@ enforce() {
   fi
   printf '1\n' 2>/dev/null > "$slice_path/cgroup.freeze" || return 1
   wait_frozen 1 || { thaw || true; return 1; }
-  current="$(<"$slice_path/memory.current")" || { fail_selection; return $?; }
+  IFS= read -r current < "$slice_path/memory.current" || { fail_selection; return $?; }
   [[ "$current" =~ ^[0-9]+$ ]] || { fail_selection; return $?; }
   available="$(read_host_memory_available 2>/dev/null)" \
     || { fail_selection; return $?; }
